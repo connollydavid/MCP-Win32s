@@ -98,15 +98,17 @@ These constraints are non-negotiable. Violating any of them breaks compatibility
 ### Visual C++ 6.0 (reference retro build)
 
 ```batch
-cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
+cl /W3 /O2 /TC /G3 /Isrc /FIXED:NO /BASE:0x10000 ^
+   src\mcp-w32s.c src\serial.c src\json_parser.c ^
    kernel32.lib user32.lib wsock32.lib
 ```
 
 ### Visual Studio 2022 (modern development)
 
 ```batch
-cl /W4 /O2 /TC /std:c11 /arch:IA32 /FIXED:NO /BASE:0x10000 ^
-   mcp-w32s.c kernel32.lib user32.lib wsock32.lib
+cl /W4 /O2 /TC /std:c11 /arch:IA32 /Isrc /FIXED:NO /BASE:0x10000 ^
+   src\mcp-w32s.c src\serial.c src\json_parser.c ^
+   kernel32.lib user32.lib wsock32.lib
 ```
 
 ### MinGW-w64 (CI / cross-compile from Linux)
@@ -115,25 +117,42 @@ cl /W4 /O2 /TC /std:c11 /arch:IA32 /FIXED:NO /BASE:0x10000 ^
 i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
   -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
   -Wl,--dynamicbase -Wl,--image-base,0x10000 \
-  -o mcp-w32s.exe mcp-w32s.c \
+  -Isrc -o mcp-w32s.exe \
+  src/mcp-w32s.c src/serial.c src/json_parser.c \
   -lkernel32 -luser32 -lwsock32
 ```
 
 ### Building Tests (MinGW example)
 
 ```bash
-i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src \
-  -o test_json.exe test_json.c ../src/json_parser.c -lkernel32
+# JSON parser tests
+i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Isrc \
+  -o tests/test_json.exe tests/test_json.c src/json_parser.c -lkernel32
+
+# Serial + main loop tests
+i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Isrc -DTEST_BUILD \
+  -o tests/test_serial.exe tests/test_serial.c \
+  src/mcp-w32s.c src/serial.c src/json_parser.c \
+  -lkernel32 -luser32 -lwsock32
 ```
 
 ### Running Tests
 
 ```bash
 # On Windows
-test_json.exe
+tests\test_json.exe
+tests\test_serial.exe
 
 # On Linux CI (via Wine)
-wine test_json.exe
+wine tests/test_json.exe
+wine tests/test_serial.exe
+```
+
+### Running Tests Locally (native GCC, for quick iteration)
+
+```bash
+gcc -std=c89 -Wall -Werror -pedantic -Isrc \
+  -o test_json tests/test_json.c src/json_parser.c && ./test_json
 ```
 
 ## Code Conventions
@@ -145,7 +164,7 @@ wine test_json.exe
 | Global variables | `g_` prefix | `g_tests_run`, `g_tests_failed` |
 | Functions | camelCase or Win32 style | `ExecuteCommand`, `ParseJson` |
 | Constants/macros | UPPER_SNAKE_CASE | `MAX_PATH`, `GENERIC_READ` |
-| Structs | PascalCase | `JsonCommand`, `TransportCaps` |
+| Structs | PascalCase | `JsonCommand`, `TransportConfig` |
 
 ### Strings
 

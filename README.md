@@ -76,17 +76,20 @@ Thanks to Win32's forward compatibility, the same console shell works everywhere
    REM Visual C++ 6.0 (retro target - creates universal binary)
    REM /BASE:0x10000 - Win32s requires low base (not default 0x400000)
    REM /FIXED:NO - Win32s needs relocation info
-   cl /W3 /O2 /TC /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
+   cl /W3 /O2 /TC /G3 /Isrc /FIXED:NO /BASE:0x10000 ^
+      src\mcp-w32s.c src\serial.c src\json_parser.c ^
       kernel32.lib user32.lib wsock32.lib
    REM This binary runs on Win3.1+Win32s 1.25a → Win11!
-   
+
    REM Visual Studio 2022 (modern development)
-   cl /W4 /O2 /TC /std:c11 /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
+   cl /W4 /O2 /TC /std:c11 /arch:IA32 /Isrc /FIXED:NO /BASE:0x10000 ^
+      src\mcp-w32s.c src\serial.c src\json_parser.c ^
       kernel32.lib user32.lib wsock32.lib
-   
+
    REM MinGW-w64 (GitHub Actions CI)
    i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Wl,--dynamicbase ^
-     -Wl,--image-base,0x10000 -o mcp-w32s.exe mcp-w32s.c ^
+     -Wl,--image-base,0x10000 -Isrc ^
+     -o mcp-w32s.exe src/mcp-w32s.c src/serial.c src/json_parser.c ^
      -lkernel32 -luser32 -lwsock32
    ```
 
@@ -1154,139 +1157,41 @@ The serial transport works on **every Win32 platform** because:
 
 **Runtime Detection Strategy:**
 
-Our code detects TCP/IP availability at runtime and falls back gracefully:
+The current implementation (Phase 1) parses command-line flags and defaults to serial.
+Full runtime detection with LoadLibraryA probing will be added when TCP (Phase 3)
+and named pipe support (Phase 3+) are implemented.
 
 ```c
-/* Runtime TCP/IP detection */
-BOOL HasTcpIpStack(void) {
-    HMODULE hWsock32;
-    FARPROC pfnWSAStartup;
-    FARPROC pfnSocket;
-    
-    /* Attempt to load wsock32.dll */
-    hWsock32 = LoadLibraryA("wsock32.dll");
-    
-    if (hWsock32 == NULL) {
-        /* No 32-bit Winsock - TCP/IP not available */
-        return FALSE;
-    }
-    
-    /* Verify critical functions exist */
-    pfnWSAStartup = GetProcAddress(hWsock32, "WSAStartup");
-    pfnSocket = GetProcAddress(hWsock32, "socket");
-    
-    FreeLibrary(hWsock32);
-    
-    /* Both must be present */
-    return (pfnWSAStartup != NULL && pfnSocket != NULL);
-}
+/* serial.h - Transport configuration (actual implementation) */
 
-/* Named pipes detection (Win95+) */
-BOOL HasNamedPipes(void) {
-    DWORD version;
-    DWORD majorVersion;
-    
-    version = GetVersion();
-    majorVersion = (DWORD)(LOBYTE(LOWORD(version)));
-    
-    /* Windows 95 is version 4.0, Win32s is 3.x */
-    return (majorVersion >= 4);
-}
+#define TRANSPORT_SERIAL 1
+#define TRANSPORT_TCP    2
+#define TRANSPORT_PIPE   3
 
-/* Comprehensive capability detection */
 typedef struct {
-    BOOL hasSerial;      /* Always TRUE */
-    BOOL hasTcpIp;       /* wsock32.dll available */
-    BOOL hasNamedPipes;  /* Win95+ */
-    DWORD osVersion;     /* For informational messages */
-} TransportCaps;
+    int transport;               /* TRANSPORT_SERIAL, TRANSPORT_TCP, etc. */
+    char port[32];               /* "COM1", "COM2", etc. */
+    DWORD baudRate;              /* CBR_115200, CBR_57600, etc. */
+    int tcpPort;                 /* TCP port number (for TRANSPORT_TCP) */
+    char pipeName[260];          /* Named pipe path (for TRANSPORT_PIPE) */
+} TransportConfig;
 
-TransportCaps DetectCapabilities(void) {
-    TransportCaps caps;
-    
-    caps.hasSerial = TRUE;  /* Always available */
-    caps.hasTcpIp = HasTcpIpStack();
-    caps.hasNamedPipes = HasNamedPipes();
-    caps.osVersion = GetVersion();
-    
-    return caps;
-}
+/* ParseCommandLine - extract transport from /SERIAL:COMx, /TCP:port, etc. */
+int ParseCommandLine(const char *cmdLine, TransportConfig *config);
 
-/* User-friendly startup message */
-void ShowCapabilities(TransportCaps caps) {
-    char msg[512];
-    
-    lstrcpy(msg, "MCP-Win32s Shell Starting\n\n");
-    lstrcat(msg, "Available transports:\n");
-    lstrcat(msg, "  [X] Serial ports (COM1-COM4)\n");
-    
-    if (caps.hasTcpIp) {
-        lstrcat(msg, "  [X] TCP/IP (Winsock 1.1)\n");
-    } else {
-        lstrcat(msg, "  [ ] TCP/IP - not available\n");
-        lstrcat(msg, "      (Requires WfW 3.11 + TCP/IP-32)\n");
-    }
-    
-    if (caps.hasNamedPipes) {
-        lstrcat(msg, "  [X] Named Pipes\n");
-    } else {
-        lstrcat(msg, "  [ ] Named Pipes - not available\n");
-        lstrcat(msg, "      (Requires Windows 95+)\n");
-    }
-    
-    MessageBoxA(NULL, msg, "MCP-Win32s", MB_OK | MB_ICONINFORMATION);
-}
+/* BuildSerialDCB - populate DCB with 8N1, no flow control */
+void BuildSerialDCB(DWORD baudRate, DCB *dcb);
 
-/* Startup logic with graceful fallback */
-void SelectTransport(const char* cmdLine) {
-    TransportCaps caps;
-    
-    /* Detect what's available */
-    caps = DetectCapabilities();
-    
-    /* Check for explicit transport override */
-    if (strstr(cmdLine, "/TCP:") != NULL) {
-        if (caps.hasTcpIp) {
-            StartTcpServer(8932);
-        } else {
-            MessageBoxA(NULL,
-                "TCP/IP stack not found.\n\n"
-                "TCP/IP requires:\n"
-                "- Windows for Workgroups 3.11 or later\n"
-                "- TCP/IP-32 stack installed (tcp32b.exe)\n"
-                "- Or Windows 95+ with built-in TCP/IP\n\n"
-                "Falling back to serial (COM1)...",
-                "MCP-Win32s - No TCP/IP", MB_OK | MB_ICONWARNING);
-            StartSerialServer("COM1");
-        }
-    }
-    else if (strstr(cmdLine, "/SERIAL:") != NULL) {
-        StartSerialServer("COM1");
-    }
-    else if (strstr(cmdLine, "/PIPE:") != NULL) {
-        if (caps.hasNamedPipes) {
-            StartNamedPipeServer("\\\\.\\pipe\\mcp");
-        } else {
-            MessageBoxA(NULL,
-                "Named Pipes not available.\n\n"
-                "Requires Windows 95 or later.\n\n"
-                "Falling back to serial (COM1)...",
-                "MCP-Win32s - No Named Pipes", MB_OK | MB_ICONWARNING);
-            StartSerialServer("COM1");
-        }
-    }
-    else {
-        /* Auto-detect: prefer TCP > Pipes > Serial */
-        if (caps.hasTcpIp) {
-            StartTcpServer(8932);
-        } else if (caps.hasNamedPipes) {
-            StartNamedPipeServer("\\\\.\\pipe\\mcp");
-        } else {
-            StartSerialServer("COM1");
-        }
-    }
-}
+/* OpenSerialPort - CreateFileA + SetCommState + SetCommTimeouts */
+HANDLE OpenSerialPort(const char *portName, DWORD baudRate);
 ```
+
+**Planned runtime detection** (not yet implemented):
+
+TCP/IP availability will be detected at runtime by probing for wsock32.dll
+with `LoadLibraryA("wsock32.dll")` and `GetProcAddress`. Named pipe support
+will be detected via `GetVersion()` (Win95+ = version 4.0+). Fallback order:
+TCP > Pipes > Serial. This is Phase 3+ work.
 
 **Command Line Options:**
 
@@ -1391,12 +1296,13 @@ int HasNamedPipeSupport(void) {
 
 ---
 
-### Unified Transport Implementation
+### Unified Transport Implementation (Planned - Phase 3+)
 
-**Beautiful Design**: All three transports share identical I/O:
+**Design**: All three transports share identical I/O via ReadFile/WriteFile.
+Phase 1 implements serial only; TCP and pipe support will follow this pattern:
 
 ```c
-/* Unified transport abstraction with runtime detection */
+/* Planned unified transport abstraction (not yet implemented) */
 HANDLE OpenTransport(const char* spec) {
     HANDLE hTransport = INVALID_HANDLE_VALUE;
     
@@ -1651,128 +1557,123 @@ mcp-w32s.exe
 {"id":"126","status":"ok","files":["test.c","main.c"]}
 ```
 
-### Implementation Sketch (Win32s-Compatible C)
+### Implementation (Win32s-Compatible C)
+
+The actual implementation splits into three source files: `serial.c` (port init + config),
+`json_parser.c` (protocol parsing), and `mcp-w32s.c` (main loop + dispatch). Key excerpts:
 
 ```c
-/* mcp-w32s.c - Strict C89, Win32s-compatible */
+/* serial.c - Serial port configuration (actual implementation) */
 
-#include <windows.h>
-#include <stdio.h>
-
-/* No Unicode - ANSI only for Win32s compatibility */
-#define UNICODE_NOT_SUPPORTED
-
-HANDLE hComm;  /* Global handle - C89 style */
-
-void InitSerial(void) {
+HANDLE OpenSerialPort(const char *portName, DWORD baudRate)
+{
+    HANDLE hPort;
     DCB dcb;
     COMMTIMEOUTS timeouts;
-    
-    /* ANSI version only - CreateFileW not in Win32s */
-    hComm = CreateFileA("COM1", 
+
+    hPort = CreateFileA(portName,
                         GENERIC_READ | GENERIC_WRITE,
                         0, NULL, OPEN_EXISTING, 0, NULL);
-    
-    if (hComm == INVALID_HANDLE_VALUE) {
-        MessageBoxA(NULL, "COM1 open failed", "Error", MB_OK);
-        ExitProcess(1);
+    if (hPort == INVALID_HANDLE_VALUE) {
+        return INVALID_HANDLE_VALUE;
     }
-    
-    memset(&dcb, 0, sizeof(dcb));
-    dcb.DCBlength = sizeof(dcb);
-    GetCommState(hComm, &dcb);
-    dcb.BaudRate = CBR_115200;
-    dcb.ByteSize = 8;
-    dcb.Parity = NOPARITY;
-    dcb.StopBits = ONESTOPBIT;
-    SetCommState(hComm, &dcb);
-    
-    memset(&timeouts, 0, sizeof(timeouts));
-    timeouts.ReadIntervalTimeout = 50;
-    timeouts.ReadTotalTimeoutMultiplier = 10;
-    timeouts.ReadTotalTimeoutConstant = 50;
-    SetCommTimeouts(hComm, &timeouts);
-}
 
-void ExecuteCommand(const char* cmdline, char* output) {
-    HANDLE hReadPipe, hWritePipe;
-    SECURITY_ATTRIBUTES sa;
-    STARTUPINFOA si;
-    PROCESS_INFORMATION pi;
-    DWORD bytesRead;
-    char buffer[4096];
-    
-    memset(&sa, 0, sizeof(sa));
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-    
-    CreatePipe(&hReadPipe, &hWritePipe, &sa, 0);
-    
-    memset(&si, 0, sizeof(si));
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = hWritePipe;
-    si.hStdError = hWritePipe;
-    
-    /* CreateProcessA only - no Unicode in Win32s */
-    CreateProcessA(NULL, (char*)cmdline, NULL, NULL, TRUE, 
-                   0, NULL, NULL, &si, &pi);
-    
-    CloseHandle(hWritePipe);
-    
-    output[0] = '\0';
-    while (ReadFile(hReadPipe, buffer, sizeof(buffer)-1, &bytesRead, NULL) 
-           && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
-        lstrcat(output, buffer);  /* Win32s-compatible string concat */
-    }
-    
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(hReadPipe);
-}
+    BuildSerialDCB(baudRate, &dcb);     /* 8N1, no flow control */
+    SetCommState(hPort, &dcb);
 
-void ProcessCommand(const char* jsonCmd) {
-    /* Simple JSON parser - no external libs for Win32s compat */
-    /* Parse command type, id, parameters */
-    /* Execute based on cmd type */
-    /* Format JSON response */
-    /* Write back to hComm */
-}
+    BuildSerialTimeouts(&timeouts);     /* 50ms interval, 10ms multiplier */
+    SetCommTimeouts(hPort, &timeouts);
 
-void MainLoop(void) {
-    char buffer[8192];
-    int bufPos;
-    char ch;
-    DWORD bytesRead;
-    
-    bufPos = 0;
-    
-    while (1) {
-        if (ReadFile(hComm, &ch, 1, &bytesRead, NULL) && bytesRead > 0) {
-            if (ch == '\n') {
-                buffer[bufPos] = '\0';
-                ProcessCommand(buffer);
-                bufPos = 0;
-            } else if (bufPos < sizeof(buffer)-1) {
-                buffer[bufPos++] = ch;
+    return hPort;
+}
+```
+
+```c
+/* mcp-w32s.c - Main executable (actual implementation) */
+
+#include <windows.h>
+#include <string.h>
+#include "common.h"
+#include "json_parser.h"
+#include "serial.h"
+
+#define READY_MESSAGE "MCP_WIN32S_READY\n"
+
+/* ProcessBuffer accumulates bytes and splits on newline boundaries */
+int ProcessBuffer(LineBuffer *buf, const char *input, int inputLen,
+                  void (*handler)(const char *line, HANDLE hOutput),
+                  HANDLE hOutput)
+{
+    int i;
+    int lines;
+
+    lines = 0;
+    for (i = 0; i < inputLen; i++) {
+        if (input[i] == '\n') {
+            buf->data[buf->pos] = '\0';
+            if (handler != NULL) {
+                handler(buf->data, hOutput);
             }
+            buf->pos = 0;
+            lines++;
+        } else if (buf->pos < CMD_BUF_SIZE - 1) {
+            buf->data[buf->pos++] = input[i];
         }
     }
+    return lines;
 }
 
-int main(void) {
+/* ProcessCommand parses JSON, dispatches by cmd, writes response */
+void ProcessCommand(const char *line, HANDLE hOutput)
+{
+    JsonCommand cmd;
+    char response[MCP_MAX_RESPONSE];
+    int responseLen;
     DWORD bytesWritten;
-    const char* readyMsg = "WIN32_SHELL_READY\n";
-    
-    InitSerial();
-    
-    /* Write ready message */
-    WriteFile(hComm, readyMsg, lstrlen(readyMsg), &bytesWritten, NULL);
-    
-    MainLoop();
-    
+
+    if (line == NULL || line[0] == '\0') {
+        return;
+    }
+
+    if (!ParseJsonCommand(line, &cmd)) {
+        responseLen = BuildJsonResponse("", "error", "error",
+                                        "invalid JSON", response,
+                                        sizeof(response));
+        if (responseLen > 0 && hOutput != INVALID_HANDLE_VALUE) {
+            WriteFile(hOutput, response, (DWORD)responseLen,
+                      &bytesWritten, NULL);
+        }
+        return;
+    }
+
+    /* Phase 3 will add: exec, read, write, list, delete handlers */
+    /* For now, acknowledge known commands */
+    if (strcmp(cmd.cmd, "exec") == 0 || strcmp(cmd.cmd, "read") == 0 ||
+        strcmp(cmd.cmd, "write") == 0 || strcmp(cmd.cmd, "list") == 0 ||
+        strcmp(cmd.cmd, "delete") == 0) {
+        responseLen = BuildJsonResponse(cmd.id, "ok", "message",
+                                        "command received",
+                                        response, sizeof(response));
+    } else {
+        responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                        "unknown command",
+                                        response, sizeof(response));
+    }
+
+    if (responseLen > 0 && hOutput != INVALID_HANDLE_VALUE) {
+        WriteFile(hOutput, response, (DWORD)responseLen,
+                  &bytesWritten, NULL);
+    }
+}
+
+int main(void)
+{
+    TransportConfig config;
+    HANDLE hTransport;
+
+    ParseCommandLine(GetCommandLineA(), &config);
+    hTransport = OpenSerialPort(config.port, config.baudRate);
+    /* ... send MCP_WIN32S_READY, enter MainLoop ... */
     return 0;
 }
 ```
@@ -2059,7 +1960,7 @@ int main(void) {
 }
 ```
 
-### Example Test Suite for File Operations
+### Example Test Suite for File Operations (Planned - Phase 2)
 
 ```c
 /* test_file_ops.c - File operation tests */
@@ -2156,12 +2057,14 @@ int main(void) {
 ```batch
 REM Build tests with VC++ 6.0
 cd tests
-cl /W3 /O2 /TC /I..\src test_json.c ..\src\json_parser.c kernel32.lib
-cl /W3 /O2 /TC /I..\src test_file_ops.c ..\src\file_ops.c kernel32.lib
+cl /W3 /O2 /TC /G3 /I..\src test_json.c ..\src\json_parser.c kernel32.lib
+cl /W3 /O2 /TC /G3 /I..\src /DTEST_BUILD ^
+   test_serial.c ..\src\mcp-w32s.c ..\src\serial.c ..\src\json_parser.c ^
+   kernel32.lib user32.lib wsock32.lib
 
 REM Run tests
 test_json.exe
-test_file_ops.exe
+test_serial.exe
 
 REM Exit with error if any test failed
 if %ERRORLEVEL% NEQ 0 exit /b 1
@@ -2169,94 +2072,88 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 
 ```bash
 # Build and run tests with MinGW (GitHub Actions)
-cd tests
-
-# Compile test framework
 i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src \
-  -o test_json.exe test_json.c ../src/json_parser.c -lkernel32
+  -o tests/test_json.exe tests/test_json.c src/json_parser.c -lkernel32
 
-i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src \
-  -o test_file_ops.exe test_file_ops.c ../src/file_ops.c -lkernel32
+i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src -DTEST_BUILD \
+  -o tests/test_serial.exe tests/test_serial.c \
+  src/mcp-w32s.c src/serial.c src/json_parser.c \
+  -lkernel32 -luser32 -lwsock32
 
 # Run with Wine (on Linux CI)
-wine test_json.exe
-if [ $? -ne 0 ]; then exit 1; fi
-
-wine test_file_ops.exe
-if [ $? -ne 0 ]; then exit 1; fi
+wine tests/test_json.exe
+wine tests/test_serial.exe
 ```
 
 ### GitHub Actions CI with Tests
 
 ```yaml
-# .github/workflows/build-and-test.yml
+# .github/workflows/build-and-test.yml (actual, simplified)
 name: Build and Test MCP-Win32s
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install MinGW and Wine
+    - uses: actions/checkout@v4
+
+    - name: Install MinGW-w64 and Wine
       run: |
+        sudo dpkg --add-architecture i386
         sudo apt-get update
         sudo apt-get install -y mingw-w64 wine wine32
-    
-    - name: Build Win32 Shell
+
+    - name: Build main executable (C89 strict, i386 target)
       run: |
-        i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Werror \
-          -o mcp-w32s.exe src/mcp-w32s.c \
-          src/json_parser.c src/file_ops.c \
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+          -Isrc -o mcp-w32s.exe \
+          src/mcp-w32s.c src/serial.c src/json_parser.c \
           -lkernel32 -luser32 -lwsock32
-    
-    - name: Build Unit Tests
+
+    - name: Build and run tests
       run: |
-        cd tests
-        i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src \
-          -o test_json.exe test_json.c ../src/json_parser.c -lkernel32
-        i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src \
-          -o test_file_ops.exe test_file_ops.c ../src/file_ops.c -lkernel32
-    
-    - name: Run Unit Tests (Wine)
+        # JSON parser tests
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 ... \
+          -Isrc -o tests/test_json.exe \
+          tests/test_json.c src/json_parser.c -lkernel32
+        wine tests/test_json.exe
+        # Serial + main loop tests
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 ... \
+          -Isrc -DTEST_BUILD -o tests/test_serial.exe \
+          tests/test_serial.c src/mcp-w32s.c src/serial.c \
+          src/json_parser.c -lkernel32 -luser32 -lwsock32
+        wine tests/test_serial.exe
+
+    - name: Verify no FPU/486+ instructions in application code
       run: |
-        cd tests
-        wine test_json.exe
-        wine test_file_ops.exe
-    
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: mcp-win32s-build
-        path: |
-          mcp-w32s.exe
-          tests/*.exe
+        # Compile to .o, disassemble, grep for forbidden instructions
+        # (see actual workflow for full details)
 ```
 
 ### Test Organization
 
 ```
-mcp-win32s/
+MCP-Win32s/
 ├── src/
-│   ├── mcp-w32s.c       # Main program
-│   ├── json_parser.c      # JSON parsing
-│   ├── json_parser.h
-│   ├── file_ops.c         # File operations
-│   ├── file_ops.h
-│   ├── serial.c           # Serial port handling
-│   ├── serial.h
-│   └── common.h           # Shared types/defines
+│   ├── common.h             # Shared types (JsonCommand struct)
+│   ├── json_parser.c        # JSON parsing + response building
+│   ├── json_parser.h        # Parser/builder public API
+│   ├── mcp-w32s.c           # Main executable (protocol loop, dispatch)
+│   ├── serial.c             # Serial port init + config builders
+│   └── serial.h             # Serial/transport API
 ├── tests/
-│   ├── test_framework.h   # Minimal test framework
-│   ├── test_json.c        # JSON parser tests
-│   ├── test_file_ops.c    # File operation tests
-│   ├── test_serial.c      # Serial port tests
-│   └── run_all_tests.bat  # Test runner script
-├── build.bat              # VC++ 6.0 build
-├── build.sh               # MinGW build
+│   ├── test_framework.h     # Minimal C89 test framework (header-only)
+│   ├── test_json.c          # 31 JSON parser unit tests
+│   └── test_serial.c        # 28 serial + main loop tests
+├── vc6/
+│   ├── mcp-w32s.dsw         # VC++ 6.0 workspace
+│   └── mcp-w32s.dsp         # VC++ 6.0 project (Debug + Release)
+├── build.bat                # VC++ 6.0 build script
+├── build.sh                 # MinGW cross-compile build script
 └── README.md
 ```
 
@@ -2569,7 +2466,7 @@ async def main():
     
     # Wait for Win32 shell ready message
     ready_msg = bridge.serial.readline().decode('utf-8')
-    if "WIN32_SHELL_READY" not in ready_msg:
+    if "MCP_WIN32S_READY" not in ready_msg:
         raise Exception("Win32 shell not ready")
     
     async with stdio_server() as (read_stream, write_stream):
@@ -2632,30 +2529,31 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 
 ## Implementation Phases
 
-### Phase 1: Test Framework + JSON Parser + CI (Complete)
+### Phase 1: Test Framework + JSON Parser + CI + Serial Init + Main Exe (Complete)
 
 **Delivered:**
 - [x] Minimal C89 test framework (`tests/test_framework.h`, header-only)
 - [x] Hand-coded JSON parser (`src/json_parser.c` + `src/json_parser.h`, ~334 lines C89)
 - [x] Shared types header (`src/common.h`, JsonCommand struct)
-- [x] 31 unit tests covering parsing, escaping, edge cases, response building (`tests/test_json.c`)
+- [x] Serial port initialization + transport config (`src/serial.c` + `src/serial.h`)
+- [x] Main executable with protocol loop and command dispatch stub (`src/mcp-w32s.c`)
+- [x] VC++ 6.0 workspace and project (`vc6/mcp-w32s.dsw` + `vc6/mcp-w32s.dsp`)
+- [x] 31 JSON parser unit tests (`tests/test_json.c`)
+- [x] 28 serial + main loop unit tests (`tests/test_serial.c`)
 - [x] MinGW cross-compile build script (`build.sh`)
 - [x] VC++ 6.0 build script (`build.bat`)
 - [x] GitHub Actions CI: C89/i386 compilation, Wine test execution, FPU instruction verification, 486+ instruction verification
-- [x] All 31 tests pass under Wine on Linux CI
+- [x] All 59 tests pass under Wine on Linux CI
 
-### Phase 2: Serial/File Operations + Tests
+### Phase 2: File Operations + Serial Echo Test
 
-- [x] Implement serial port initialization (`serial.c/.h`)
 - [ ] Echo test: read character, write back over serial
 - [ ] Implement file read/write/list/delete operations (`file_ops.c/.h`)
-- [ ] Unit tests for serial port handling (`test_serial.c`)
 - [ ] Unit tests for file operations (`test_file_ops.c`)
 - [ ] Test with HyperTerminal or equivalent
 
 ### Phase 3: Command Execution + Protocol
 
-- [x] Implement main program (`mcp-w32s.c`)
 - [ ] Add `exec` command handler (process execution, stdout/stderr capture)
 - [ ] Implement full JSON command/response protocol loop
 - [ ] Implement command/response protocol with timeout and retry logic
