@@ -1,0 +1,8 @@
+# Compiled binaries
+*.exe
+*.obj
+*.o
+
+# Disassembly output
+disasm.txt
+app_disasm.txt
