@@ -1,0 +1,266 @@
+# CLAUDE.md — AI Assistant Guide for MCP-Win32s
+
+## Project Overview
+
+MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables MCP clients (Claude Code, Claude Desktop) to interact with any Windows system from Windows 3.1 + Win32s 1.25a (1995) through Windows 11. It is a single Win32 console application (`win32shell.exe`) that runs unmodified across 30+ years of Windows versions.
+
+**License:** Public Domain (Unlicense)
+
+**Current status:** Design specification phase. The README.md contains a comprehensive ~3000-line technical specification. No source code has been implemented yet.
+
+## Repository Structure
+
+```
+MCP-Win32s/
+├── README.md              # Comprehensive technical specification (~3000 lines)
+├── LICENSE                # Unlicense (public domain)
+└── CLAUDE.md              # This file
+```
+
+### Planned Source Layout (not yet created)
+
+```
+mcp-win32s/
+├── src/
+│   ├── win32shell.c       # Main program (C89, Win32s-compatible)
+│   ├── json_parser.c      # JSON parsing (hand-coded, no dependencies)
+│   ├── json_parser.h
+│   ├── file_ops.c         # File read/write/list operations
+│   ├── file_ops.h
+│   ├── serial.c           # Serial port handling
+│   ├── serial.h
+│   ├── tcp.c              # TCP socket handling (Winsock 1.1)
+│   ├── tcp.h
+│   ├── named_pipes.c      # Named pipe support (Win95+)
+│   ├── named_pipes.h
+│   └── common.h           # Shared types/defines
+├── tests/
+│   ├── test_framework.h   # Minimal C89 test framework
+│   ├── test_json.c        # JSON parser tests
+│   ├── test_file_ops.c    # File operation tests
+│   ├── test_serial.c      # Serial port tests
+│   └── run_all_tests.bat  # Test runner
+├── build.bat              # VC++ 6.0 build script
+├── build.sh               # MinGW build script
+└── README.md
+```
+
+## Hard Technical Constraints
+
+These constraints are non-negotiable. Violating any of them breaks compatibility with the primary target platform (Windows 3.1 + Win32s 1.25a).
+
+### Language
+
+- **C89 only.** No C99, C11, or C++ features.
+- All variable declarations must be at the top of blocks (no mixed declarations and code).
+- No `//` comments — use `/* */` only (C89 compliance).
+- No `inline`, `restrict`, `_Bool`, `long long`, or other C99+ keywords.
+
+### Floating Point
+
+- **Absolute ban on floating-point operations.** All arithmetic must be integer-only.
+- Modern CPUs (Intel Ivy Bridge 2012+) deprecate FCS/FDS registers, breaking old FPU exception handling.
+- Compiler flags `-Wdouble-promotion -Wfloat-equal` enforce this on MinGW.
+
+### CPU Target
+
+- **i386 (80386) minimum.** No 486+ or Pentium instructions.
+- Prohibited instructions: `CPUID`, `CMPXCHG`, `BSWAP`, `XADD`, `RDTSC`, `CMPXCHG8B`, `CMOVcc`, all SSE/SSE2/MMX.
+- Use `-march=i386 -mtune=i386` (MinGW) or `/G3` (VC++ 6.0) or `/arch:IA32` (VS2022).
+- Verify with: `objdump -d win32shell.exe | grep -E 'cpuid|cmpxchg|bswap|rdtsc|fld|fst'` (must be empty).
+
+### Win32 API
+
+- **Win32s 1.25a API subset only** (February 1995 baseline).
+- **ANSI APIs only:** `CreateFileA`, `CreateProcessA`, `MessageBoxA` — never `W` (Unicode) variants.
+- **Winsock 1.1 only:** Link `wsock32.lib`, never `ws2_32.lib`.
+- **No:** Shell32, advapi32, COM/OLE, MFC/ATL, modern networking (WinHTTP/WinINet).
+- **No threading.** Win32s does not support multithreading. Single-threaded only.
+- **No async I/O.** Synchronous operations only.
+
+### Linker
+
+- **`/FIXED:NO`** (or MinGW equivalent) — must include relocation info (Win32s requirement).
+- **`/BASE:0x10000`** — Win32s uses shared memory space; default 0x400000 is unavailable.
+
+### Memory
+
+- 16MB per application limit on Win32s.
+- Use `malloc`/`free` for portable code, `GlobalAlloc`/`GlobalFree` for Win32s-specific code.
+- No C++ `new`/`delete`. No RAII.
+
+## Build Commands
+
+### Visual C++ 6.0 (reference retro build)
+
+```batch
+cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 win32shell.c ^
+   kernel32.lib user32.lib wsock32.lib
+```
+
+### Visual Studio 2022 (modern development)
+
+```batch
+cl /W4 /O2 /TC /std:c11 /arch:IA32 /FIXED:NO /BASE:0x10000 ^
+   win32shell.c kernel32.lib user32.lib wsock32.lib
+```
+
+### MinGW-w64 (CI / cross-compile from Linux)
+
+```bash
+i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+  -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+  -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+  -o win32shell.exe win32shell.c \
+  -lkernel32 -luser32 -lwsock32
+```
+
+### Building Tests (MinGW example)
+
+```bash
+i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src \
+  -o test_json.exe test_json.c ../src/json_parser.c -lkernel32
+```
+
+### Running Tests
+
+```bash
+# On Windows
+test_json.exe
+
+# On Linux CI (via Wine)
+wine test_json.exe
+```
+
+## Code Conventions
+
+### Naming
+
+| Element | Convention | Example |
+|---------|-----------|---------|
+| Global variables | `g_` prefix | `g_tests_run`, `g_tests_failed` |
+| Functions | camelCase or Win32 style | `ExecuteCommand`, `ParseJson` |
+| Constants/macros | UPPER_SNAKE_CASE | `MAX_PATH`, `GENERIC_READ` |
+| Structs | PascalCase | `JsonCommand`, `TransportCaps` |
+
+### Strings
+
+- Use `lstrlen`, `lstrcpy`, `lstrcat` (Win32s ANSI string functions).
+- Fixed-size `char` arrays preferred over dynamic allocation.
+- Base64 encoding for all binary data in JSON payloads.
+- No `wchar_t`, no Unicode.
+
+### Error Handling
+
+- Win32 API errors via `GetLastError()`.
+- Explicit handle checks: `if (hFile == INVALID_HANDLE_VALUE)`.
+- No exceptions (not available in C89 or Win32s).
+- Return codes: 0 = failure, nonzero = success (Win32 convention).
+
+### File I/O
+
+- `CreateFileA` / `ReadFile` / `WriteFile` for all I/O (files, COM ports, pipes).
+- `FindFirstFileA` / `FindNextFileA` for directory listing.
+
+### Includes
+
+```c
+#include <windows.h>    /* Win32 API (monolithic) */
+#include <stdio.h>      /* ANSI C I/O */
+#include <stdlib.h>     /* ANSI C utilities */
+#include <string.h>     /* ANSI C string functions */
+#include "json_parser.h" /* Project headers — quoted, relative */
+```
+
+No C++ headers (`<iostream>`, `<vector>`, etc.) ever.
+
+## Protocol
+
+- JSON-over-newline-delimited text.
+- Hand-coded JSON parser (no external libraries — they won't compile on VC++ 6.0).
+- Request format: `{"cmd":"...", "id":"...", "path":"...", ...}`
+- Response format: `{"id":"...", "status":"ok|error", ...}`
+- Binary data transmitted as Base64 within JSON fields.
+
+## Transport Layers
+
+| Transport | Availability | API |
+|-----------|-------------|-----|
+| Serial (COM ports) | All Win32 systems | `CreateFileA("COM1:", ...)` |
+| TCP (Winsock 1.1) | WfW 3.11+ with TCP/IP-32, Win95+ | `socket()`, `bind()`, `listen()`, `accept()` |
+| Named Pipes | Win95+ only, **not** Win32s | `CreateFileA("\\\\.\\pipe\\name", ...)` |
+
+Runtime detection with graceful fallback is required.
+
+## Dependencies
+
+### C-level (compile-time, all provided by the OS)
+
+| Library | Purpose |
+|---------|---------|
+| `kernel32.dll` | Core Win32 API (file I/O, process control, memory) |
+| `user32.dll` | User interface (`MessageBoxA`) |
+| `wsock32.dll` | Winsock 1.1 (TCP/IP sockets) |
+
+**No external C libraries.** The project produces a single standalone executable with zero DLL dependencies beyond what the OS provides.
+
+### Python-level (modern MCP bridge side)
+
+```
+pyserial    # Serial port access
+mcp         # Model Context Protocol SDK
+```
+
+### Build tools
+
+| Tool | Purpose |
+|------|---------|
+| Visual C++ 6.0 | Reference retro compiler |
+| MinGW-w64 | Cross-compile from Linux for CI |
+| Visual Studio 2015+ | Modern Windows development |
+| Wine | Run Win32 binaries on Linux for CI testing |
+
+## CI/CD
+
+GitHub Actions workflow (planned) will:
+
+1. Build with MinGW-w64 on Ubuntu (`-std=c89 -march=i386 -Wall -Werror -pedantic`)
+2. Build unit tests
+3. Run unit tests via Wine
+4. Verify no FPU instructions in binary (`objdump -d ... | grep fld|fst`)
+5. Verify no 486+ instructions in binary (`objdump -d ... | grep cpuid|cmpxchg|bswap`)
+6. Upload compiled artifacts
+
+## Implementation Phases
+
+| Phase | Focus | Status |
+|-------|-------|--------|
+| 1 | Test framework + JSON parser | Not started |
+| 2 | Serial/file operations + tests | Not started |
+| 3 | Command execution + protocol | Not started |
+| 4 | MCP integration | Not started |
+| 5 | Cross-platform testing | Not started |
+| 6 | GitHub Actions CI | Not started |
+| 7 | Documentation & polish | Not started |
+
+## Common Mistakes to Avoid
+
+1. **Using C99+ features** — `for (int i = 0; ...)` won't compile on VC++ 6.0. Declare variables at block top.
+2. **Using `//` comments** — Not valid C89. Use `/* */`.
+3. **Using Unicode APIs** — `CreateFileW` does not exist in Win32s. Always use `A` suffix.
+4. **Linking ws2_32** — Win32s has Winsock 1.1 only. Link `wsock32`.
+5. **Using floating-point** — Banned entirely. Use integer arithmetic.
+6. **Forgetting `/FIXED:NO /BASE:0x10000`** — Binary won't load on Win32s without these.
+7. **Using 486+ instructions** — `CPUID`, `CMPXCHG`, `BSWAP` etc. will crash on a 386.
+8. **Using threads** — Win32s is single-threaded only.
+9. **Dynamic memory without cleanup** — No RAII; every `malloc` needs a matching `free`.
+10. **Using `printf` format specifiers beyond C89** — No `%zu`, `%lld`, etc.
+
+## Key Design Decisions
+
+- **Win32s 1.25a** chosen over 1.30/1.30c for stability (1.30c crashes on QEMU/VMware).
+- **Base address 0x10000** because Win32s occupies the default 0x400000 region.
+- **No floating-point** because modern CPUs deprecate FCS/FDS, breaking old FPU code.
+- **JSON hand-parser** because no external JSON library compiles on VC++ 6.0.
+- **Base64 for file transfers** to avoid encoding issues across different code pages.
+- **DBCS-aware string handling** required for CJK systems (`IsDBCSLeadByte`, `CharNext`).
