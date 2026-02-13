@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables MCP clients (Claude Code, Claude Desktop) to interact with any Windows system from Windows 3.1 + Win32s 1.25a (1995) through Windows 11. It is a single Win32 console application (`win32shell.exe`) that runs unmodified across 30+ years of Windows versions.
+MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables MCP clients (Claude Code, Claude Desktop) to interact with any Windows system from Windows 3.1 + Win32s 1.25a (1995) through Windows 11. It is a single Win32 console application (`mcp-w32s.exe`) that runs unmodified across 30+ years of Windows versions.
 
 **License:** Public Domain (Unlicense)
 
-**Current status:** Phase 1 complete (test framework + JSON parser + CI). See Implementation Phases below.
+**Current status:** Phase 1 complete (test framework + JSON parser + CI + serial init + main executable). See Implementation Phases below.
 
 ## Repository Structure
 
@@ -17,14 +17,21 @@ MCP-Win32s/
 │       └── build-and-test.yml  # GitHub Actions CI (MinGW + Wine)
 ├── src/
 │   ├── common.h                # Shared types (JsonCommand struct)
-│   ├── json_parser.c           # JSON parsing + response building (~320 lines C89)
-│   └── json_parser.h           # Parser/builder public API
+│   ├── json_parser.c           # JSON parsing + response building (~334 lines C89)
+│   ├── json_parser.h           # Parser/builder public API
+│   ├── mcp-w32s.c              # Main executable (protocol loop, dispatch)
+│   ├── serial.c                # Serial port init + config builders
+│   └── serial.h                # Serial/transport API
 ├── tests/
 │   ├── test_framework.h        # Minimal C89 test framework (header-only)
-│   └── test_json.c             # 31 JSON parser unit tests
+│   ├── test_json.c             # 31 JSON parser unit tests
+│   └── test_serial.c           # 28 serial + main loop tests
+├── vc6/
+│   ├── mcp-w32s.dsw            # VC++ 6.0 workspace
+│   └── mcp-w32s.dsp            # VC++ 6.0 project (Debug + Release)
 ├── build.bat                   # VC++ 6.0 build script
 ├── build.sh                    # MinGW cross-compile build script
-├── .gitignore                  # Ignores *.exe, *.o, *.obj
+├── .gitignore                  # Ignores *.exe, *.o, *.obj, VC6 output
 ├── README.md                   # Technical specification (~3000 lines)
 ├── LICENSE                     # Unlicense (public domain)
 └── CLAUDE.md                   # This file
@@ -34,14 +41,11 @@ MCP-Win32s/
 
 ```
 src/
-├── win32shell.c       # Main program
 ├── file_ops.c/.h      # File read/write/list operations
-├── serial.c/.h        # Serial port handling
 ├── tcp.c/.h           # TCP socket handling (Winsock 1.1)
 └── named_pipes.c/.h   # Named pipe support (Win95+)
 tests/
 ├── test_file_ops.c    # File operation tests
-├── test_serial.c      # Serial port tests
 └── run_all_tests.bat  # Test runner
 ```
 
@@ -67,7 +71,7 @@ These constraints are non-negotiable. Violating any of them breaks compatibility
 - **i386 (80386) minimum.** No 486+ or Pentium instructions.
 - Prohibited instructions: `CPUID`, `CMPXCHG`, `BSWAP`, `XADD`, `RDTSC`, `CMPXCHG8B`, `CMOVcc`, all SSE/SSE2/MMX.
 - Use `-march=i386 -mtune=i386` (MinGW) or `/G3` (VC++ 6.0) or `/arch:IA32` (VS2022).
-- Verify with: `objdump -d win32shell.exe | grep -E 'cpuid|cmpxchg|bswap|rdtsc|fld|fst'` (must be empty).
+- Verify with: `objdump -d mcp-w32s.exe | grep -E 'cpuid|cmpxchg|bswap|rdtsc|fld|fst'` (must be empty).
 
 ### Win32 API
 
@@ -94,7 +98,7 @@ These constraints are non-negotiable. Violating any of them breaks compatibility
 ### Visual C++ 6.0 (reference retro build)
 
 ```batch
-cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 win32shell.c ^
+cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
    kernel32.lib user32.lib wsock32.lib
 ```
 
@@ -102,7 +106,7 @@ cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 win32shell.c ^
 
 ```batch
 cl /W4 /O2 /TC /std:c11 /arch:IA32 /FIXED:NO /BASE:0x10000 ^
-   win32shell.c kernel32.lib user32.lib wsock32.lib
+   mcp-w32s.c kernel32.lib user32.lib wsock32.lib
 ```
 
 ### MinGW-w64 (CI / cross-compile from Linux)
@@ -111,7 +115,7 @@ cl /W4 /O2 /TC /std:c11 /arch:IA32 /FIXED:NO /BASE:0x10000 ^
 i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
   -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
   -Wl,--dynamicbase -Wl,--image-base,0x10000 \
-  -o win32shell.exe win32shell.c \
+  -o mcp-w32s.exe mcp-w32s.c \
   -lkernel32 -luser32 -lwsock32
 ```
 
@@ -250,8 +254,8 @@ build.bat test
 
 | Phase | Focus | Status |
 |-------|-------|--------|
-| 1 | Test framework + JSON parser + CI | **Complete** |
-| 2 | Serial/file operations + tests | Not started |
+| 1 | Test framework + JSON parser + CI + serial init + main exe | **Complete** |
+| 2 | File operations + serial echo test | Not started |
 | 3 | Command execution + protocol | Not started |
 | 4 | MCP integration | Not started |
 | 5 | Cross-platform testing | Not started |

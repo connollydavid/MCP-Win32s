@@ -76,17 +76,17 @@ Thanks to Win32's forward compatibility, the same console shell works everywhere
    REM Visual C++ 6.0 (retro target - creates universal binary)
    REM /BASE:0x10000 - Win32s requires low base (not default 0x400000)
    REM /FIXED:NO - Win32s needs relocation info
-   cl /W3 /O2 /TC /FIXED:NO /BASE:0x10000 win32shell.c ^
+   cl /W3 /O2 /TC /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
       kernel32.lib user32.lib wsock32.lib
    REM This binary runs on Win3.1+Win32s 1.25a → Win11!
    
    REM Visual Studio 2022 (modern development)
-   cl /W4 /O2 /TC /std:c11 /FIXED:NO /BASE:0x10000 win32shell.c ^
+   cl /W4 /O2 /TC /std:c11 /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
       kernel32.lib user32.lib wsock32.lib
    
    REM MinGW-w64 (GitHub Actions CI)
    i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Wl,--dynamicbase ^
-     -Wl,--image-base,0x10000 -o win32shell.exe win32shell.c ^
+     -Wl,--image-base,0x10000 -o mcp-w32s.exe mcp-w32s.c ^
      -lkernel32 -luser32 -lwsock32
    ```
 
@@ -117,9 +117,9 @@ Thanks to Win32's forward compatibility, the same console shell works everywhere
 5. **Run**: Start Win32 shell, then start MCP bridge
    ```batch
    REM On Windows machine (any version from Win3.1 to Win11)
-   win32shell.exe /SERIAL:COM1
+   mcp-w32s.exe /SERIAL:COM1
    REM or
-   win32shell.exe /TCP:8932
+   mcp-w32s.exe /TCP:8932
    ```
 
 **Important:** Test on Win3.1 + Win32s 1.25a to verify proper linking!
@@ -274,14 +274,14 @@ We get a **single codebase** that compiles everywhere and **runs everywhere** (W
 
 ```batch
 REM Visual C++ 6.0 (and earlier)
-cl /W3 /O2 /TC win32shell.c kernel32.lib user32.lib wsock32.lib
+cl /W3 /O2 /TC mcp-w32s.c kernel32.lib user32.lib wsock32.lib
 
 REM Visual C++ 5.0 and later - MUST OVERRIDE BASE ADDRESS
 REM Default 0x400000 is NOT available in Win32s!
 REM /G3 - Target i386 (no 486+ instructions)
 REM /FIXED:NO - Win32s needs relocation info
 REM /BASE:0x10000 - Win32s-compatible base address
-cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 win32shell.c ^
+cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
    kernel32.lib user32.lib wsock32.lib
 
 REM MinGW-w64 - must also specify base address AND i386 target
@@ -290,14 +290,14 @@ REM -mtune=i386 - Optimize for 386
 i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 ^
   -Wall -Wdouble-promotion -Wfloat-equal ^
   -Wl,--dynamicbase -Wl,--image-base,0x10000 ^
-  -o win32shell.exe win32shell.c ^
+  -o mcp-w32s.exe mcp-w32s.c ^
   -lkernel32 -luser32 -lwsock32
 
 REM Visual Studio 2022 - modern compiler, retro target
 REM /arch:IA32 - Pure x86, no SSE/SSE2
 REM Note: VS2022 minimum is actually i686, but we avoid 686+ features
 cl /W4 /O2 /TC /std:c11 /arch:IA32 /FIXED:NO /BASE:0x10000 ^
-   win32shell.c kernel32.lib user32.lib wsock32.lib
+   mcp-w32s.c kernel32.lib user32.lib wsock32.lib
 ```
 
 **CPU Target: i386 (80386)**
@@ -402,7 +402,7 @@ _mm_pause()                 /* PAUSE (Pentium 4+) */
 
 ```bash
 # Check that binary only uses i386 instructions
-i686-w64-mingw32-objdump -d win32shell.exe > disasm.txt
+i686-w64-mingw32-objdump -d mcp-w32s.exe > disasm.txt
 
 # These should NOT appear (486+ instructions):
 grep -i 'cpuid' disasm.txt   # Should be empty
@@ -523,17 +523,17 @@ int permille = (value * 1000) / total;  /* Parts per thousand */
 **Compiler Enforcement:**
 ```batch
 REM Visual C++ - Warn on any FP usage
-cl /W4 /WX /TC /FIXED:NO /BASE:0x10000 win32shell.c
+cl /W4 /WX /TC /FIXED:NO /BASE:0x10000 mcp-w32s.c
 
 REM MinGW - Error on FP usage
 i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Werror -Wdouble-promotion ^
-  -Wfloat-equal -o win32shell.exe win32shell.c
+  -Wfloat-equal -o mcp-w32s.exe mcp-w32s.c
 ```
 
 **Verification:**
 ```bash
 # Check binary for FPU instructions
-objdump -d win32shell.exe | grep -E 'fld|fst|fadd|fmul|fsqrt'
+objdump -d mcp-w32s.exe | grep -E 'fld|fst|fadd|fmul|fsqrt'
 # Should return EMPTY - no FPU instructions!
 ```
 
@@ -1038,7 +1038,7 @@ We **completely prohibit** all floating-point operations in MCP-Win32s. See "Lan
 **Verification:**
 ```bash
 # Binary should contain ZERO FPU instructions
-objdump -d win32shell.exe | grep -E 'fld|fst|fadd|fmul'
+objdump -d mcp-w32s.exe | grep -E 'fld|fst|fadd|fmul'
 # Empty output = Success!
 ```
 
@@ -1064,12 +1064,12 @@ objdump -d win32shell.exe | grep -E 'fld|fst|fadd|fmul'
 **Example:**
 ```batch
 REM build.bat - Works on VC++ 6.0 (1998) and VS 2022
-cl /W3 /O2 /Fewin32shell.exe win32shell.c kernel32.lib user32.lib wsock32.lib
+cl /W3 /O2 /Femcp-w32s.exe mcp-w32s.c kernel32.lib user32.lib wsock32.lib
 ```
 
 ```bash
 # build.sh - MinGW cross-compile on Linux/GitHub Actions
-i686-w64-mingw32-gcc -O2 -o win32shell.exe win32shell.c -lkernel32 -luser32 -lwsock32
+i686-w64-mingw32-gcc -O2 -o mcp-w32s.exe mcp-w32s.c -lkernel32 -luser32 -lwsock32
 ```
 
 ### Testing Requirements
@@ -1292,16 +1292,16 @@ void SelectTransport(const char* cmdLine) {
 
 ```batch
 REM Auto-detect (tries TCP, falls back to serial)
-win32shell.exe
+mcp-w32s.exe
 
 REM Force TCP (shows error if unavailable, falls back to serial)
-win32shell.exe /TCP:8932
+mcp-w32s.exe /TCP:8932
 
 REM Force serial (always works)
-win32shell.exe /SERIAL:COM1
+mcp-w32s.exe /SERIAL:COM1
 
 REM Force named pipe (Win95+, falls back if unavailable)
-win32shell.exe /PIPE:\\.\\pipe\\mcp
+mcp-w32s.exe /PIPE:\\.\\pipe\\mcp
 ```
 
 **Winsock 1.1 APIs Used (Win32s Compatible):**
@@ -1528,7 +1528,7 @@ SOCKET CreateTcpListener(int port) {
 **User Experience Example:**
 
 ```
-C:\WINDOWS> win32shell.exe
+C:\WINDOWS> mcp-w32s.exe
 
 MCP-Win32s Bridge v1.0
 ═══════════════════════════════════════
@@ -1614,16 +1614,16 @@ The Win32 shell auto-detects or accepts a transport mode flag:
 
 ```batch
 REM Serial mode (default on Win95/98/ME if COM port available)
-win32shell.exe /SERIAL:COM1
+mcp-w32s.exe /SERIAL:COM1
 
 REM TCP server mode (modern Windows)
-win32shell.exe /TCP:8932
+mcp-w32s.exe /TCP:8932
 
 REM Named pipe mode (VMs, WSL)
-win32shell.exe /PIPE:\\.\pipe\mcp-win32s
+mcp-w32s.exe /PIPE:\\.\pipe\mcp-win32s
 
 REM Auto-detect (tries TCP, then serial, then pipe)
-win32shell.exe
+mcp-w32s.exe
 ```
 
 **Implementation Note**: `CreateFile` works for ALL these transports on Windows:
@@ -1654,7 +1654,7 @@ win32shell.exe
 ### Implementation Sketch (Win32s-Compatible C)
 
 ```c
-/* win32shell.c - Strict C89, Win32s-compatible */
+/* mcp-w32s.c - Strict C89, Win32s-compatible */
 
 #include <windows.h>
 #include <stdio.h>
@@ -1799,11 +1799,11 @@ int main(void) {
 REM Visual C++ 6.0 (Windows 98/ME/XP)
 REM /G3 - Target i386 (no 486+ instructions like CPUID, CMPXCHG)
 cd C:\PROJECTS\MCP32S
-cl /W3 /O2 /TC /G3 win32shell.c kernel32.lib user32.lib wsock32.lib
+cl /W3 /O2 /TC /G3 mcp-w32s.c kernel32.lib user32.lib wsock32.lib
 
 REM Visual Studio 2022 (modern Windows)
 REM /arch:IA32 - No SSE/SSE2 (pure x86)
-cl /W4 /O2 /TC /std:c11 /arch:IA32 win32shell.c ^
+cl /W4 /O2 /TC /std:c11 /arch:IA32 mcp-w32s.c ^
    kernel32.lib user32.lib wsock32.lib
 
 REM MinGW-w64 (cross-compile from Linux for GitHub Actions)
@@ -1811,12 +1811,12 @@ REM -march=i386 - Only 386 instructions
 REM -mtune=i386 - Optimize for 386
 i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 ^
   -Wall -Wdouble-promotion -Wfloat-equal ^
-  -o win32shell.exe win32shell.c ^
+  -o mcp-w32s.exe mcp-w32s.c ^
   -lkernel32 -luser32 -lwsock32
 
 REM Alternative: Borland C++ 5.5 (retro)
 REM -3 flag targets 386
-bcc32 -O2 -w -3 win32shell.c
+bcc32 -O2 -w -3 mcp-w32s.c
 ```
 
 **Critical Flags:**
@@ -1830,7 +1830,7 @@ bcc32 -O2 -w -3 win32shell.c
 REM The SAME .exe should run on:
 REM - Windows 3.1 + Win32s 1.25a (1995)
 REM - Windows 11 - decades later!
-win32shell.exe /SERIAL:COM1
+mcp-w32s.exe /SERIAL:COM1
 ```
 
 **Verification Checklist:**
@@ -2065,7 +2065,7 @@ int main(void) {
 /* test_file_ops.c - File operation tests */
 
 #include "test_framework.h"
-#include "win32shell.h"
+#include "mcp-w32s.h"
 #include <windows.h>
 
 TEST_CASE(file_read_success) {
@@ -2209,7 +2209,7 @@ jobs:
     - name: Build Win32 Shell
       run: |
         i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Werror \
-          -o win32shell.exe src/win32shell.c \
+          -o mcp-w32s.exe src/mcp-w32s.c \
           src/json_parser.c src/file_ops.c \
           -lkernel32 -luser32 -lwsock32
     
@@ -2232,7 +2232,7 @@ jobs:
       with:
         name: mcp-win32s-build
         path: |
-          win32shell.exe
+          mcp-w32s.exe
           tests/*.exe
 ```
 
@@ -2241,7 +2241,7 @@ jobs:
 ```
 mcp-win32s/
 ├── src/
-│   ├── win32shell.c       # Main program
+│   ├── mcp-w32s.c       # Main program
 │   ├── json_parser.c      # JSON parsing
 │   ├── json_parser.h
 │   ├── file_ops.c         # File operations
@@ -2347,13 +2347,13 @@ jobs:
         i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
           -Wall -Werror -pedantic \
           -Wdouble-promotion -Wfloat-equal \
-          -o win32shell.exe src/win32shell.c \
+          -o mcp-w32s.exe src/mcp-w32s.c \
           -lkernel32 -luser32 -lwsock32
     
     - name: Verify i386-only instructions (no 486+)
       run: |
         # Binary must NOT contain 486+ instructions
-        i686-w64-mingw32-objdump -d win32shell.exe > disasm.txt
+        i686-w64-mingw32-objdump -d mcp-w32s.exe > disasm.txt
         
         # Check for forbidden 486+ instructions
         if grep -iE 'cpuid|cmpxchg|bswap|xadd' disasm.txt; then
@@ -2381,14 +2381,14 @@ jobs:
     - name: Verify no Unicode APIs
       run: |
         # Check that binary uses only ANSI functions
-        i686-w64-mingw32-objdump -p win32shell.exe | grep -v "CreateFileW"
-        i686-w64-mingw32-objdump -p win32shell.exe | grep -v "MessageBoxW"
+        i686-w64-mingw32-objdump -p mcp-w32s.exe | grep -v "CreateFileW"
+        i686-w64-mingw32-objdump -p mcp-w32s.exe | grep -v "MessageBoxW"
     
     - name: Upload artifact
       uses: actions/upload-artifact@v3
       with:
-        name: win32shell-ci-build
-        path: win32shell.exe
+        name: mcp-w32s-ci-build
+        path: mcp-w32s.exe
 ```
 
 **Testing on Windows:**
@@ -2400,12 +2400,12 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3
       with:
-        name: win32shell-ci-build
+        name: mcp-w32s-ci-build
     
     - name: Test on Windows 11
       run: |
         # MinGW binary should run on Windows 11
-        ./win32shell.exe --version
+        ./mcp-w32s.exe --version
 ```
 
 This ensures every commit produces a Win32s-compatible binary that works on Windows 11!
@@ -2646,7 +2646,7 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 
 ### Phase 2: Serial/File Operations + Tests
 
-- [ ] Implement serial port initialization (`serial.c/.h`)
+- [x] Implement serial port initialization (`serial.c/.h`)
 - [ ] Echo test: read character, write back over serial
 - [ ] Implement file read/write/list/delete operations (`file_ops.c/.h`)
 - [ ] Unit tests for serial port handling (`test_serial.c`)
@@ -2655,7 +2655,7 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 
 ### Phase 3: Command Execution + Protocol
 
-- [ ] Implement main program (`win32shell.c`)
+- [x] Implement main program (`mcp-w32s.c`)
 - [ ] Add `exec` command handler (process execution, stdout/stderr capture)
 - [ ] Implement full JSON command/response protocol loop
 - [ ] Implement command/response protocol with timeout and retry logic
