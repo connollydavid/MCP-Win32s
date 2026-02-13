@@ -6,43 +6,43 @@ MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables
 
 **License:** Public Domain (Unlicense)
 
-**Current status:** Design specification phase. The README.md contains a comprehensive ~3000-line technical specification. No source code has been implemented yet.
+**Current status:** Phase 1 complete (test framework + JSON parser + CI). See Implementation Phases below.
 
 ## Repository Structure
 
 ```
 MCP-Win32s/
-├── README.md              # Comprehensive technical specification (~3000 lines)
-├── LICENSE                # Unlicense (public domain)
-└── CLAUDE.md              # This file
-```
-
-### Planned Source Layout (not yet created)
-
-```
-mcp-win32s/
+├── .github/
+│   └── workflows/
+│       └── build-and-test.yml  # GitHub Actions CI (MinGW + Wine)
 ├── src/
-│   ├── win32shell.c       # Main program (C89, Win32s-compatible)
-│   ├── json_parser.c      # JSON parsing (hand-coded, no dependencies)
-│   ├── json_parser.h
-│   ├── file_ops.c         # File read/write/list operations
-│   ├── file_ops.h
-│   ├── serial.c           # Serial port handling
-│   ├── serial.h
-│   ├── tcp.c              # TCP socket handling (Winsock 1.1)
-│   ├── tcp.h
-│   ├── named_pipes.c      # Named pipe support (Win95+)
-│   ├── named_pipes.h
-│   └── common.h           # Shared types/defines
+│   ├── common.h                # Shared types (JsonCommand struct)
+│   ├── json_parser.c           # JSON parsing + response building (~320 lines C89)
+│   └── json_parser.h           # Parser/builder public API
 ├── tests/
-│   ├── test_framework.h   # Minimal C89 test framework
-│   ├── test_json.c        # JSON parser tests
-│   ├── test_file_ops.c    # File operation tests
-│   ├── test_serial.c      # Serial port tests
-│   └── run_all_tests.bat  # Test runner
-├── build.bat              # VC++ 6.0 build script
-├── build.sh               # MinGW build script
-└── README.md
+│   ├── test_framework.h        # Minimal C89 test framework (header-only)
+│   └── test_json.c             # 31 JSON parser unit tests
+├── build.bat                   # VC++ 6.0 build script
+├── build.sh                    # MinGW cross-compile build script
+├── .gitignore                  # Ignores *.exe, *.o, *.obj
+├── README.md                   # Technical specification (~3000 lines)
+├── LICENSE                     # Unlicense (public domain)
+└── CLAUDE.md                   # This file
+```
+
+### Planned (not yet created)
+
+```
+src/
+├── win32shell.c       # Main program
+├── file_ops.c/.h      # File read/write/list operations
+├── serial.c/.h        # Serial port handling
+├── tcp.c/.h           # TCP socket handling (Winsock 1.1)
+└── named_pipes.c/.h   # Named pipe support (Win95+)
+tests/
+├── test_file_ops.c    # File operation tests
+├── test_serial.c      # Serial port tests
+└── run_all_tests.bat  # Test runner
 ```
 
 ## Hard Technical Constraints
@@ -222,26 +222,42 @@ mcp         # Model Context Protocol SDK
 
 ## CI/CD
 
-GitHub Actions workflow (planned) will:
+GitHub Actions runs on **every push and pull request** (`.github/workflows/build-and-test.yml`):
 
-1. Build with MinGW-w64 on Ubuntu (`-std=c89 -march=i386 -Wall -Werror -pedantic`)
-2. Build unit tests
+1. Install MinGW-w64 and Wine on Ubuntu
+2. Build with strict C89/i386 flags: `-std=c89 -march=i386 -mtune=i386 -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal`
 3. Run unit tests via Wine
-4. Verify no FPU instructions in binary (`objdump -d ... | grep fld|fst`)
-5. Verify no 486+ instructions in binary (`objdump -d ... | grep cpuid|cmpxchg|bswap`)
+4. Verify no FPU instructions in application object code (`objdump -d json_parser.o | grep fld|fst`)
+5. Verify no 486+ instructions in application object code (`objdump -d json_parser.o | grep cpuid|cmpxchg|bswap`)
 6. Upload compiled artifacts
+
+**Strategy: CI from day one.** Every commit must pass the full pipeline. Binary instruction verification is done on application `.o` files only (not CRT startup code, which contains MinGW runtime FPU/atomic instructions that don't affect Win32s compatibility).
+
+### Running Tests Locally
+
+```bash
+# Linux (MinGW cross-compile + Wine)
+./build.sh test
+
+# Linux (native GCC, for quick iteration)
+gcc -std=c89 -Wall -Werror -pedantic -Isrc -o test_json tests/test_json.c src/json_parser.c && ./test_json
+
+# Windows (VC++ 6.0)
+build.bat test
+```
 
 ## Implementation Phases
 
 | Phase | Focus | Status |
 |-------|-------|--------|
-| 1 | Test framework + JSON parser | Not started |
+| 1 | Test framework + JSON parser + CI | **Complete** |
 | 2 | Serial/file operations + tests | Not started |
 | 3 | Command execution + protocol | Not started |
 | 4 | MCP integration | Not started |
 | 5 | Cross-platform testing | Not started |
-| 6 | GitHub Actions CI | Not started |
-| 7 | Documentation & polish | Not started |
+| 6 | Documentation & polish | Not started |
+
+**Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically.
 
 ## Common Mistakes to Avoid
 

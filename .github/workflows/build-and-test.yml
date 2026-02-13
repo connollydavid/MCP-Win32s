@@ -1,0 +1,56 @@
+name: Build and Test MCP-Win32s
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install MinGW-w64 and Wine
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo apt-get install -y mingw-w64 wine wine32
+
+    - name: Build tests (C89 strict, i386 target)
+      run: |
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+          -Isrc -o tests/test_json.exe \
+          tests/test_json.c src/json_parser.c \
+          -lkernel32
+
+    - name: Run unit tests (Wine)
+      run: wine tests/test_json.exe
+
+    - name: Verify no FPU instructions in application code
+      run: |
+        # Compile json_parser.c to object file only (no CRT)
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Isrc -c -o /tmp/json_parser.o src/json_parser.c
+        i686-w64-mingw32-objdump -d /tmp/json_parser.o > app_disasm.txt
+        if grep -E 'fld|fst[^r]|fadd|fmul|fdiv|fsub|fsqrt|fcom|fild|fistp' app_disasm.txt; then
+          echo "ERROR: Application code contains FPU instructions!"
+          exit 1
+        fi
+        echo "OK: No FPU instructions in application code."
+
+    - name: Verify no 486+ instructions in application code
+      run: |
+        if grep -iE 'cpuid|cmpxchg|bswap|xadd|rdtsc|cmpxchg8b' app_disasm.txt; then
+          echo "ERROR: Application code contains 486+ instructions!"
+          exit 1
+        fi
+        echo "OK: Only i386 instructions in application code."
+
+    - name: Upload test binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: test_json.exe
+        path: tests/test_json.exe
