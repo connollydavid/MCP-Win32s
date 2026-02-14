@@ -6,3 +6,14 @@
 # Disassembly output
 disasm.txt
 app_disasm.txt
+
+# VC++ 6.0 build output
+vc6/Debug/
+vc6/Release/
+*.pdb
+*.pch
+*.idb
+*.ilk
+*.ncb
+*.opt
+*.plg
