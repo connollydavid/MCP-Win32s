@@ -16,7 +16,16 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y mingw-w64 wine wine32
 
-    - name: Build tests (C89 strict, i386 target)
+    - name: Build main executable (C89 strict, i386 target)
+      run: |
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+          -Isrc -o mcp-w32s.exe \
+          src/mcp-w32s.c src/serial.c src/json_parser.c \
+          -lkernel32 -luser32 -lwsock32
+
+    - name: Build JSON parser tests
       run: |
         i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
           -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
@@ -25,16 +34,35 @@ jobs:
           tests/test_json.c src/json_parser.c \
           -lkernel32
 
-    - name: Run unit tests (Wine)
+    - name: Build serial + main loop tests
+      run: |
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+          -Isrc -DTEST_BUILD -o tests/test_serial.exe \
+          tests/test_serial.c src/mcp-w32s.c src/serial.c src/json_parser.c \
+          -lkernel32 -luser32 -lwsock32
+
+    - name: Run JSON parser tests (Wine)
       run: wine tests/test_json.exe
+
+    - name: Run serial + main loop tests (Wine)
+      run: wine tests/test_serial.exe
 
     - name: Verify no FPU instructions in application code
       run: |
-        # Compile json_parser.c to object file only (no CRT)
+        # Compile application .c files to object files (no CRT)
         i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
           -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
           -Isrc -c -o /tmp/json_parser.o src/json_parser.c
-        i686-w64-mingw32-objdump -d /tmp/json_parser.o > app_disasm.txt
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Isrc -c -o /tmp/serial.o src/serial.c
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Isrc -c -o /tmp/mcp-w32s.o src/mcp-w32s.c
+        # Disassemble all application object files
+        i686-w64-mingw32-objdump -d /tmp/json_parser.o /tmp/serial.o /tmp/mcp-w32s.o > app_disasm.txt
         if grep -E 'fld|fst[^r]|fadd|fmul|fdiv|fsub|fsqrt|fcom|fild|fistp' app_disasm.txt; then
           echo "ERROR: Application code contains FPU instructions!"
           exit 1
@@ -49,8 +77,16 @@ jobs:
         fi
         echo "OK: Only i386 instructions in application code."
 
-    - name: Upload test binary
+    - name: Upload main executable
       uses: actions/upload-artifact@v4
       with:
-        name: test_json.exe
-        path: tests/test_json.exe
+        name: mcp-w32s.exe
+        path: mcp-w32s.exe
+
+    - name: Upload test binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-binaries
+        path: |
+          tests/test_json.exe
+          tests/test_serial.exe
