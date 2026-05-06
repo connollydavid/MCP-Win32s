@@ -97,6 +97,14 @@ SOURCE=..\src\serial.c
 
 SOURCE=..\src\json_parser.c
 # End Source File
+# Begin Source File
+
+SOURCE=..\src\base64.c
+# End Source File
+# Begin Source File
+
+SOURCE=..\src\file_ops.c
+# End Source File
 # End Group
 # Begin Group "Header Files"
 
@@ -112,6 +120,14 @@ SOURCE=..\src\json_parser.h
 # Begin Source File
 
 SOURCE=..\src\serial.h
+# End Source File
+# Begin Source File
+
+SOURCE=..\src\base64.h
+# End Source File
+# Begin Source File
+
+SOURCE=..\src\file_ops.h
 # End Source File
 # End Group
 # End Target

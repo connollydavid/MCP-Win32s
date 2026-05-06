@@ -2547,9 +2547,10 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 
 ### Phase 2: File Operations + Serial Echo Test
 
-- [ ] Echo test: read character, write back over serial
-- [ ] Implement file read/write/list/delete operations (`file_ops.c/.h`)
-- [ ] Unit tests for file operations (`test_file_ops.c`)
+- [x] Echo command: echo back command data
+- [x] Base64 encode/decode (`base64.c/.h`)
+- [x] Implement file read/write/list/delete operations (`file_ops.c/.h`)
+- [x] Unit tests for base64 (14 tests) and file operations (10 tests)
 - [ ] Test with HyperTerminal or equivalent
 
 ### Phase 3: Command Execution + Protocol
@@ -2795,7 +2796,7 @@ def unix_to_win32(unix_path):
 | Week | Phase | Focus | Status |
 |------|-------|-------|--------|
 | 1 | Phase 1 | Test framework + JSON parser + CI | **Complete** |
-| 2 | Phase 2 | Serial/file operations + tests | Not started |
+| 2 | Phase 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
 | 3 | Phase 3 | Command execution + protocol | Not started |
 | 4 | Phase 4 | MCP integration | Not started |
 | 5 | Phase 5 | Cross-platform testing | Not started |
@@ -2847,7 +2848,7 @@ def unix_to_win32(unix_path):
 
 ## Project Status
 
-**Current Phase:** Phase 1 complete (test framework + JSON parser + CI). Phase 2 not yet started.
+**Current Phase:** Phase 2 complete (file operations + base64 + echo + 87 tests incl. PBT). Phase 3 next.
 
 This is a technical design specification for bridging MCP clients with Win32 systems across the full Windows family (Win32s 1.25a through Windows 11). The project emphasizes maximum compatibility through strict adherence to the Win32s 1.25a API subset and i386 instruction set.
 

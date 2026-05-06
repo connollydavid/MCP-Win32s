@@ -16,6 +16,8 @@
 #include "common.h"
 #include "json_parser.h"
 #include "serial.h"
+#include "base64.h"
+#include "file_ops.h"
 
 /* Protocol constants */
 #define READY_MESSAGE   "MCP_WIN32S_READY\n"
@@ -85,6 +87,12 @@ void ProcessCommand(const char *line, HANDLE hOutput)
     char response[MCP_MAX_RESPONSE];
     int responseLen;
     DWORD bytesWritten;
+    static unsigned char raw[MCP_MAX_DATA];
+    static char b64[MCP_MAX_DATA];
+    static char fileList[MCP_MAX_DATA];
+    char errMsg[128];
+    int rawLen;
+    int b64Len;
 
     if (line == NULL || line[0] == '\0') {
         return;
@@ -101,16 +109,66 @@ void ProcessCommand(const char *line, HANDLE hOutput)
         return;
     }
 
-    /*
-     * Command dispatch stub.
-     * Phase 3 will add: exec, read, write, list, delete handlers.
-     * For now, acknowledge with the command name and id.
-     */
-    if (strcmp(cmd.cmd, "exec") == 0 ||
-        strcmp(cmd.cmd, "read") == 0 ||
-        strcmp(cmd.cmd, "write") == 0 ||
-        strcmp(cmd.cmd, "list") == 0 ||
-        strcmp(cmd.cmd, "delete") == 0) {
+    if (strcmp(cmd.cmd, "echo") == 0) {
+        responseLen = BuildJsonResponse(cmd.id, "ok", "data",
+                                        cmd.line, response,
+                                        sizeof(response));
+    } else if (strcmp(cmd.cmd, "read") == 0) {
+        if (FileOpRead(cmd.path, raw, (int)sizeof(raw),
+                       &rawLen, errMsg, sizeof(errMsg))) {
+            b64Len = Base64Encode(raw, rawLen, b64, (int)sizeof(b64));
+            if (b64Len > 0) {
+                responseLen = BuildJsonResponse(cmd.id, "ok", "data",
+                                                b64, response,
+                                                sizeof(response));
+            } else {
+                responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                                "encode error",
+                                                response, sizeof(response));
+            }
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
+    } else if (strcmp(cmd.cmd, "write") == 0) {
+        rawLen = Base64Decode(cmd.data, raw, (int)sizeof(raw));
+        if (rawLen < 0) {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            "invalid base64",
+                                            response, sizeof(response));
+        } else if (FileOpWrite(cmd.path, raw, rawLen,
+                               errMsg, sizeof(errMsg))) {
+            responseLen = BuildJsonResponse(cmd.id, "ok", "message",
+                                            "written",
+                                            response, sizeof(response));
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
+    } else if (strcmp(cmd.cmd, "list") == 0) {
+        if (FileOpList(cmd.path, fileList, (int)sizeof(fileList),
+                       errMsg, sizeof(errMsg))) {
+            responseLen = BuildJsonResponse(cmd.id, "ok", "files",
+                                            fileList, response,
+                                            sizeof(response));
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
+    } else if (strcmp(cmd.cmd, "delete") == 0) {
+        if (FileOpDelete(cmd.path, errMsg, sizeof(errMsg))) {
+            responseLen = BuildJsonResponse(cmd.id, "ok", "message",
+                                            "deleted",
+                                            response, sizeof(response));
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
+    } else if (strcmp(cmd.cmd, "exec") == 0) {
         responseLen = BuildJsonResponse(cmd.id, "ok", "message",
                                         "command received",
                                         response, sizeof(response));

@@ -22,7 +22,7 @@ jobs:
           -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
           -Wl,--dynamicbase -Wl,--image-base,0x10000 \
           -Isrc -o mcp-w32s.exe \
-          src/mcp-w32s.c src/serial.c src/json_parser.c \
+          src/mcp-w32s.c src/serial.c src/json_parser.c src/base64.c src/file_ops.c \
           -lkernel32 -luser32 -lwsock32
 
     - name: Build JSON parser tests
@@ -41,13 +41,50 @@ jobs:
           -Wl,--dynamicbase -Wl,--image-base,0x10000 \
           -Isrc -DTEST_BUILD -o tests/test_serial.exe \
           tests/test_serial.c src/mcp-w32s.c src/serial.c src/json_parser.c \
+          src/base64.c src/file_ops.c \
           -lkernel32 -luser32 -lwsock32
+
+    - name: Build base64 tests
+      run: |
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+          -Isrc -o tests/test_base64.exe \
+          tests/test_base64.c src/base64.c \
+          -lkernel32
+
+    - name: Build file ops tests
+      run: |
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+          -Isrc -o tests/test_file_ops.exe \
+          tests/test_file_ops.c src/file_ops.c \
+          -lkernel32
+
+    - name: Build property-based tests
+      run: |
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
+          -Isrc -Itests -o tests/test_pbt_base64.exe \
+          tests/test_pbt_base64.c src/base64.c \
+          -lkernel32
 
     - name: Run JSON parser tests (Wine)
       run: wine tests/test_json.exe
 
     - name: Run serial + main loop tests (Wine)
       run: wine tests/test_serial.exe
+
+    - name: Run base64 tests (Wine)
+      run: wine tests/test_base64.exe
+
+    - name: Run file ops tests (Wine)
+      run: wine tests/test_file_ops.exe
+
+    - name: Run property-based tests (Wine)
+      run: wine tests/test_pbt_base64.exe
 
     - name: Verify no FPU instructions in application code
       run: |
@@ -61,8 +98,15 @@ jobs:
         i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
           -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
           -Isrc -c -o /tmp/mcp-w32s.o src/mcp-w32s.c
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Isrc -c -o /tmp/base64.o src/base64.c
+        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
+          -Isrc -c -o /tmp/file_ops.o src/file_ops.c
         # Disassemble all application object files
-        i686-w64-mingw32-objdump -d /tmp/json_parser.o /tmp/serial.o /tmp/mcp-w32s.o > app_disasm.txt
+        i686-w64-mingw32-objdump -d /tmp/json_parser.o /tmp/serial.o /tmp/mcp-w32s.o \
+          /tmp/base64.o /tmp/file_ops.o > app_disasm.txt
         if grep -E 'fld|fst[^r]|fadd|fmul|fdiv|fsub|fsqrt|fcom|fild|fistp' app_disasm.txt; then
           echo "ERROR: Application code contains FPU instructions!"
           exit 1
@@ -90,3 +134,6 @@ jobs:
         path: |
           tests/test_json.exe
           tests/test_serial.exe
+          tests/test_base64.exe
+          tests/test_file_ops.exe
+          tests/test_pbt_base64.exe
