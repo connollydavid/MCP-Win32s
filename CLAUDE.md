@@ -6,7 +6,7 @@ MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables
 
 **License:** Public Domain (Unlicense)
 
-**Current status:** Phase 1 complete (test framework + JSON parser + CI + serial init + main executable). See Implementation Phases below.
+**Current status:** Phase 2 complete (file operations + base64 + echo + 87 tests incl. PBT). See Implementation Phases below.
 
 ## Repository Structure
 
@@ -16,15 +16,23 @@ MCP-Win32s/
 │   └── workflows/
 │       └── build-and-test.yml  # GitHub Actions CI (MinGW + Wine)
 ├── src/
+│   ├── base64.c                # Base64 encode/decode (integer-only)
+│   ├── base64.h                # Base64 public API
 │   ├── common.h                # Shared types (JsonCommand struct)
+│   ├── file_ops.c              # File read/write/list/delete
+│   ├── file_ops.h              # File ops public API
 │   ├── json_parser.c           # JSON parsing + response building (~334 lines C89)
 │   ├── json_parser.h           # Parser/builder public API
 │   ├── mcp-w32s.c              # Main executable (protocol loop, dispatch)
 │   ├── serial.c                # Serial port init + config builders
 │   └── serial.h                # Serial/transport API
 ├── tests/
+│   ├── prop.h                  # Minimal C89 property-based testing framework
+│   ├── test_base64.c           # 14 base64 encode/decode tests
+│   ├── test_file_ops.c         # 10 file operation tests
 │   ├── test_framework.h        # Minimal C89 test framework (header-only)
 │   ├── test_json.c             # 31 JSON parser unit tests
+│   ├── test_pbt_base64.c       # 4 property-based tests (4000 random trials)
 │   └── test_serial.c           # 28 serial + main loop tests
 ├── vc6/
 │   ├── mcp-w32s.dsw            # VC++ 6.0 workspace
@@ -41,12 +49,8 @@ MCP-Win32s/
 
 ```
 src/
-├── file_ops.c/.h      # File read/write/list operations
 ├── tcp.c/.h           # TCP socket handling (Winsock 1.1)
 └── named_pipes.c/.h   # Named pipe support (Win95+)
-tests/
-├── test_file_ops.c    # File operation tests
-└── run_all_tests.bat  # Test runner
 ```
 
 ## Hard Technical Constraints
@@ -274,7 +278,7 @@ build.bat test
 | Phase | Focus | Status |
 |-------|-------|--------|
 | 1 | Test framework + JSON parser + CI + serial init + main exe | **Complete** |
-| 2 | File operations + serial echo test | Not started |
+| 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
 | 3 | Command execution + protocol | Not started |
 | 4 | MCP integration | Not started |
 | 5 | Cross-platform testing | Not started |
