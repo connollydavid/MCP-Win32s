@@ -1,0 +1,166 @@
+-- allium: 3
+-- file-ops.allium
+
+-- Scope: File operations on the Win32 filesystem
+-- Includes: File read, write, list, delete
+-- Excludes:
+--   - Protocol transport (handled by mcp-protocol.allium)
+--   - Command execution (Phase 3)
+-- Dependencies: none
+
+entity File {
+    path: String
+    status: present | deleted | missing | error
+
+    transitions status {
+        present -> deleted
+        present -> present
+        missing -> present
+        terminal: deleted
+    }
+}
+
+entity Directory {
+    path: String
+}
+
+entity FileReadResult {
+    file: File
+    data: String
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+entity FileWriteResult {
+    file: File
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+entity FileListResult {
+    directory: Directory
+    entries: List<String>
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+entity FileDeleteResult {
+    file: File
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+rule FileCreatedMissing {
+    when: f: File.created
+    ensures: f.status = missing
+}
+
+rule FileReadSuccess {
+    when: result: FileReadResult.created
+    requires: result.file.status = present
+    ensures: result.status = ok
+}
+
+rule FileReadNotFound {
+    when: result: FileReadResult.created
+    requires: result.file.status = missing
+    ensures: result.status = error
+    ensures: result.error_reason = "file not found"
+}
+
+rule FileReadTooLarge {
+    when: result: FileReadResult.created
+    requires: result.file.status = error
+    ensures: result.status = error
+    ensures: result.error_reason = "file too large"
+}
+
+rule FileWriteSuccess {
+    when: result: FileWriteResult.created
+    requires: result.file.status = present or result.file.status = missing
+    ensures: result.file.status = present
+    ensures: result.status = ok
+}
+
+rule FileWriteError {
+    when: result: FileWriteResult.created
+    requires: result.file.status = error
+    ensures: result.status = error
+}
+
+rule FileListSuccess {
+    when: result: FileListResult.created
+    requires: result.directory.path.size > 0
+    ensures: result.status = ok
+}
+
+rule FileListNotFound {
+    when: result: FileListResult.created
+    requires: result.directory.path.size = 0
+    ensures: result.status = error
+    ensures: result.error_reason = "directory not found"
+}
+
+rule FileDeleteSuccess {
+    when: result: FileDeleteResult.created
+    requires: result.file.status = present
+    ensures: result.file.status = deleted
+    ensures: result.status = ok
+}
+
+rule FileDeleteNotFound {
+    when: result: FileDeleteResult.created
+    requires: result.file.status = missing
+    ensures: result.status = error
+    ensures: result.error_reason = "delete failed"
+}
+
+rule FileReadAfterDelete {
+    when: result: FileReadResult.created
+    requires: result.file.status = deleted
+    ensures: result.status = error
+    ensures: result.error_reason = "file not found"
+}
+
+rule FileWriteAfterDelete {
+    when: result: FileWriteResult.created
+    requires: result.file.status = deleted
+    ensures: result.status = error
+}
+
+invariant ReadResultHasData {
+    for result in FileReadResults:
+        result.status = ok implies result.data.size >= 0
+}
+
+invariant ListResultHasEntries {
+    for result in FileListResults:
+        result.status = ok implies result.entries.size >= 0
+}
+
+open question "Should write operations preserve existing file permissions or set defaults?"
+open question "Should list operations include hidden files?"
