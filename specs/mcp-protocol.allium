@@ -1,0 +1,246 @@
+-- allium: 3
+-- mcp-protocol.allium
+
+-- Scope: MCP-Win32s command protocol
+-- Includes: command dispatch, response correlation, transport contract
+-- Excludes:
+--   - Authentication (not applicable)
+--   - TCP transport (Phase 3)
+--   - Named pipes (Phase 3+)
+-- Dependencies: file-ops.allium
+
+use "./file-ops.allium" as fileops
+
+entity Command {
+    cmd: String
+    id: String
+    path: String
+    line: String
+    data: String
+    status: pending | processed | error
+
+    transitions status {
+        pending -> processed
+        pending -> error
+        terminal: processed, error
+    }
+}
+
+entity Response {
+    command: Command
+    id: String
+    status: ok | error
+    key: String
+    value: String
+
+    transitions status {
+        terminal: ok, error
+    }
+}
+
+entity Transport {
+    ready: Boolean
+}
+
+given {
+    transport: Transport
+}
+
+rule CommandCreated {
+    when: cmd: Command.created
+    ensures: cmd.status = pending
+}
+
+rule CommandDispatch {
+    when: cmd: Command.status becomes pending
+    requires: cmd.cmd in {echo, read, write, list, delete, exec}
+    ensures: cmd.status = processed
+}
+
+rule CommandUnknown {
+    when: cmd: Command.status becomes pending
+    requires: cmd.cmd not in {echo, read, write, list, delete, exec}
+    ensures: cmd.status = error
+    ensures: Response.created(
+        command: cmd,
+        id: cmd.id,
+        status: error,
+        key: "error",
+        value: "unknown command"
+    )
+}
+
+rule EchoCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = echo
+    ensures: Response.created(
+        command: cmd,
+        id: cmd.id,
+        status: ok,
+        key: "data",
+        value: cmd.line
+    )
+}
+
+rule ReadCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = read
+    ensures: fileops/FileReadResult.created(
+        file: fileops/File(path: cmd.path),
+        data: cmd.data,
+        request_id: cmd.id
+    )
+}
+
+rule ReadSuccess {
+    when: result: fileops/FileReadResult.status becomes ok
+    ensures: Response.created(
+        command: result.file,
+        id: result.request_id,
+        status: ok,
+        key: "data",
+        value: result.data
+    )
+}
+
+rule ReadError {
+    when: result: fileops/FileReadResult.status becomes error
+    ensures: Response.created(
+        command: result.file,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule WriteCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = write
+    ensures: fileops/FileWriteResult.created(
+        file: fileops/File(path: cmd.path),
+        data: cmd.data,
+        request_id: cmd.id
+    )
+}
+
+rule WriteSuccess {
+    when: result: fileops/FileWriteResult.status becomes ok
+    ensures: Response.created(
+        command: result.file,
+        id: result.request_id,
+        status: ok,
+        key: "message",
+        value: "written"
+    )
+}
+
+rule WriteError {
+    when: result: fileops/FileWriteResult.status becomes error
+    ensures: Response.created(
+        command: result.file,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule ListCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = list
+    ensures: fileops/FileListResult.created(
+        directory: fileops/Directory(path: cmd.path),
+        request_id: cmd.id
+    )
+}
+
+rule ListSuccess {
+    when: result: fileops/FileListResult.status becomes ok
+    ensures: Response.created(
+        command: result.directory,
+        id: result.request_id,
+        status: ok,
+        key: "files",
+        value: result.entries.join("\n")
+    )
+}
+
+rule ListError {
+    when: result: fileops/FileListResult.status becomes error
+    ensures: Response.created(
+        command: result.directory,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule DeleteCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = delete
+    ensures: fileops/FileDeleteResult.created(
+        file: fileops/File(path: cmd.path),
+        request_id: cmd.id
+    )
+}
+
+rule DeleteSuccess {
+    when: result: fileops/FileDeleteResult.status becomes ok
+    ensures: Response.created(
+        command: result.file,
+        id: result.request_id,
+        status: ok,
+        key: "message",
+        value: "deleted"
+    )
+}
+
+rule DeleteError {
+    when: result: fileops/FileDeleteResult.status becomes error
+    ensures: Response.created(
+        command: result.file,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule ExecCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = exec
+    ensures: Response.created(
+        command: cmd,
+        id: cmd.id,
+        status: ok,
+        key: "message",
+        value: "command received"
+    )
+}
+
+rule ResponseCorrelation {
+    when: resp: Response.created
+    ensures: resp.id = resp.command.id
+}
+
+invariant ResponseHasContent {
+    for resp in Responses:
+        resp.status = ok implies resp.value.size >= 0 and resp.key.size >= 0
+}
+
+surface SerialPort {
+    facing transport: Transport
+
+    exposes:
+        transport.ready
+
+    provides:
+        CommandSent(cmd: Command)
+            when transport.ready = true
+}
+
+deferred ExecCommand.implementation    -- see: Phase 3 (command execution)
+
+open question "Should the ready message include transport metadata (baud rate, code page)?"
