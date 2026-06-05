@@ -23,6 +23,31 @@ Phase 3 is fully self-contained — argv quoting, timeouts, stdin pass-through, 
 
 **Hooks the existing stub at** `src/mcp-w32s.c:171–174`. Reuses `Base64Encode` (`src/base64.h`) and `BuildJsonResponse` (`src/json_parser.h`).
 
+### Required workflow (Allium lifecycle — order is mandatory)
+
+Phase 3 runs spec-first using the Allium plugin skills (see CLAUDE.md "Specification & Test Workflow"):
+
+1. **`/allium:elicit`** — resolve the open question in `specs/mcp-protocol.allium` ("Should the ready message include transport metadata?") — answer: yes, the extended ready message below carries `codepage`, `version`, `features`. Confirm the exec/catalog/capability domain model before specifying.
+2. **`/allium:tend`** — write `specs/process-ops.allium` + `specs/catalog.allium` and update `specs/mcp-protocol.allium`. The spec sketches in this plan are *input*; tend owns the final form. `allium check` must pass on all specs.
+3. **`/allium:propagate`** — generate the test-obligation list from the three specs. The test tables in this plan are a floor; propagated obligations may add tests, never remove them. Each test file documents which obligation it covers.
+4. **Implement** — `src/*.c` + `tests/*.c`, coding to the specs.
+5. **`/allium:distill`** — backfill specs for the pre-existing unspecified modules: `specs/base64.allium`, `specs/json-parser.allium`, `specs/serial.allium`. This is Phases 1–2 spec debt, folded into Phase 3 (no sub-phase).
+6. **`/allium:weed`** — audit all specs against implementation. Zero drift is a hard gate for marking Phase 3 Complete.
+
+### theft host-side PBT harness (new in Phase 3)
+
+`vendor/theft` is vendored but unwired. Phase 3 wires it as a **host-native** test layer (Linux `gcc -std=c99`, no MinGW, no Wine) for OS-independent modules. Shipped sources stay C89; only `tests/host/*.c` harness files are C99. Win32-API-dependent code is out of theft's scope.
+
+| File | Properties (autoshrinking, ≥50k trials each) |
+|------|----------------------------------------------|
+| `tests/host/theft_base64.c` | roundtrip, alphabet validity, length formula — deep version of the prop.h suite |
+| `tests/host/theft_json.c` | parse(build(cmd)) == cmd; parser never reads past terminator; malformed input never crashes |
+| `tests/host/theft_argv.c` | ArgvEscapeArg/ArgvJoin roundtrip against a reference CommandLineToArgvW tokenizer implemented in the harness |
+| `tests/host/theft_catalog.c` | CatalogValidateArgs never accepts unknown flags; glued (`/A:v`) and split (`/A v`) flag-arg forms validate identically |
+
+- `build.sh host-pbt`: builds `vendor/theft` + harness natively, runs it. Same properties mirrored in `prop.h` at lower trial counts for the Wine/target run.
+- CI: new `host-pbt` step runs **before** the Wine suite (fail fast on logic bugs with minimal counterexamples).
+
 ### Critical Win32 quirks to design around
 
 | # | Quirk | Mitigation |
@@ -280,8 +305,15 @@ README §1554 (current protocol doc using `output` key) is updated to `stdout_b6
 | `tests/test_catalog.c` | 8 tests for load + lookup + validation |
 | `tests/argv_echo.c` | Helper: prints argc + each argv[i] base64-encoded for PBT roundtrip |
 | `tests/fixtures/{tiny_mz.exe,tiny_ne.exe}` | Minimal binary headers for `binfmt` classification tests |
-| `specs/process-ops.allium` | `Process` + `ExecResult` + `Capabilities` entities, 8+ rules (incl. capability-gated rules), 3+ invariants |
-| `specs/catalog.allium` | `Catalog` + `CatalogEntry` entities, lookup/validate rules |
+| `specs/process-ops.allium` | `Process` + `ExecResult` + `Capabilities` entities, 8+ rules (incl. capability-gated rules), 3+ invariants — written via `/allium:tend` |
+| `specs/catalog.allium` | `Catalog` + `CatalogEntry` entities, lookup/validate rules — written via `/allium:tend` |
+| `specs/base64.allium` | Distilled from `src/base64.c` via `/allium:distill` (Phase 1–2 spec debt) |
+| `specs/json-parser.allium` | Distilled from `src/json_parser.c` via `/allium:distill` |
+| `specs/serial.allium` | Distilled from `src/serial.c` via `/allium:distill` |
+| `tests/host/theft_base64.c` | theft host-native PBT: base64 properties with autoshrinking |
+| `tests/host/theft_json.c` | theft host-native PBT: JSON parser robustness + roundtrip |
+| `tests/host/theft_argv.c` | theft host-native PBT: argv quoting vs reference tokenizer |
+| `tests/host/theft_catalog.c` | theft host-native PBT: catalog validation properties |
 | `catalog/win32-commands.json` | ≥30 entries (built-ins + externals + build tools) |
 | `catalog/README.md` | How to extend the catalog |
 
@@ -713,7 +745,9 @@ Integration (extending `tests/test_serial.c`):
   - `objdump -d {feat,exec_ops,pty_exec,argv,binfmt,catalog,ready}.o | grep -E 'fld|fst[^r]|cpuid|cmpxchg|bswap|chkstk'` must be empty. If `__chkstk` appears, shrink stack frames (move large `STARTUPINFO`/`PROCESS_INFORMATION`/buffers to `static`).
   - `objdump -p mcp-w32s.exe | grep -E 'CreateJobObject|CreatePseudoConsole|IsWow64Process|GenerateConsoleCtrlEvent|QueryFullProcessImageName'` must be empty (these must NOT appear in the import table — they are runtime-loaded only).
   - `test_feat.exe` output asserts host capabilities under Wine: `is_nt=1`, `has_threads=1`. PTY tests skip if Wine version doesn't expose `CreatePseudoConsole`.
-- `vc6/mcp-w32s.dsp`: add seven new `.c` files.
+- `build.sh`: new `host-pbt` target — native `gcc -std=c99` build of `vendor/theft` (`src/theft*.c`) + `tests/host/*.c` against the C89 modules under test (`base64.c`, `json_parser.c`, `argv.c`, `catalog.c`); runs without Wine.
+- `.github/workflows/build-and-test.yml`: `host-pbt` step runs before the MinGW/Wine suite (fail fast with shrunk counterexamples).
+- `vc6/mcp-w32s.dsp`: add seven new `.c` files (theft harness is NOT added — host-side only).
 - Artifact upload: `catalog/win32-commands.json` alongside `mcp-w32s.exe`.
 
 ### Out of scope for Phase 3 (architectural reasons)
@@ -744,6 +778,9 @@ Integration (extending `tests/test_serial.c`):
 13. Total tests: 87 + ≥6 (feat) + ≥22 (exec_ops, incl. 4 capability fallbacks) + ≥4 (pty_exec) + ≥12 fixed + 1000 PBT trials (argv) + ≥6 (binfmt) + ≥8 (catalog) + ≥3 integration = **≥152 tests**.
 14. Catalog file ships with binary in CI artifact; loads without warning on startup.
 15. **Manual smoke (optional, documented):** load `mcp-w32s.exe` on a real Windows 3.1 + Win32s 1.25a system; ready message advertises `is_win32s:true`, `threads:false`, `pty:false`, `job_objects:false`; `exec` with simple `command.com /c dir` returns expected output through the polling/Terminate fallback path.
+16. **Allium lifecycle complete:** all six skills exercised as per "Required workflow" — elicit notes recorded, all specs tend-written/`allium check` clean (including the three distilled backfill specs), test files reference their propagated obligations, and a final `/allium:weed` audit reports zero spec↔code drift.
+17. **theft harness green:** `./build.sh host-pbt` builds `vendor/theft` + `tests/host/*` natively and passes ≥50k trials per property; CI runs it before the Wine suite.
+18. Every theft property has a mirrored `prop.h` equivalent running on the target binary under Wine.
 
 ## Phase 4: MCP Integration — Not Started
 - Python bridge: map MCP tool calls to serial/TCP protocol

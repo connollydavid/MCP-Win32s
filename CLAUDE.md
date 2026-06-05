@@ -12,9 +12,14 @@ MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables
 
 ```
 MCP-Win32s/
+├── .claude/
+│   └── settings.json           # Enables the allium@juxt-plugins plugin
 ├── .github/
 │   └── workflows/
 │       └── build-and-test.yml  # GitHub Actions CI (MinGW + Wine)
+├── specs/
+│   ├── file-ops.allium         # Allium 3 spec: file read/write/list/delete
+│   └── mcp-protocol.allium     # Allium 3 spec: command dispatch + responses
 ├── src/
 │   ├── base64.c                # Base64 encode/decode (integer-only)
 │   ├── base64.h                # Base64 public API
@@ -37,6 +42,10 @@ MCP-Win32s/
 ├── vc6/
 │   ├── mcp-w32s.dsw            # VC++ 6.0 workspace
 │   └── mcp-w32s.dsp            # VC++ 6.0 project (Debug + Release)
+├── vendor/
+│   └── theft/                  # Vendored PBT library with autoshrinking (host-side only)
+├── AGENTS.md                   # Condensed agent guide (constraints + layout)
+├── PLAN.md                     # Phase plans; Phase 3 is the detailed exec spec
 ├── build.bat                   # VC++ 6.0 build script
 ├── build.sh                    # MinGW cross-compile build script
 ├── .gitignore                  # Ignores *.exe, *.o, *.obj, VC6 output
@@ -49,8 +58,16 @@ MCP-Win32s/
 
 ```
 src/
-├── tcp.c/.h           # TCP socket handling (Winsock 1.1)
-└── named_pipes.c/.h   # Named pipe support (Win95+)
+├── tcp.c/.h           # TCP socket handling (Winsock 1.1) — Phase 4+
+├── named_pipes.c/.h   # Named pipe support (Win95+) — Phase 4+
+└── (Phase 3 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see PLAN.md
+specs/
+├── process-ops.allium # Phase 3: Process/ExecResult/Capabilities
+├── catalog.allium     # Phase 3: command catalog
+└── (distill backfill) # base64, json-parser, serial — see Specification Workflow
+catalog/
+└── win32-commands.json # Phase 3: machine-readable command docs + whitelist
+tests/host/            # Phase 3: theft-based host-native PBT harness
 ```
 
 ## Hard Technical Constraints
@@ -229,7 +246,13 @@ Runtime detection with graceful fallback is required.
 | `user32.dll` | User interface (`MessageBoxA`) |
 | `wsock32.dll` | Winsock 1.1 (TCP/IP sockets) |
 
-**No external C libraries.** The project produces a single standalone executable with zero DLL dependencies beyond what the OS provides.
+**No external C libraries in the shipped binary.** The project produces a single standalone executable with zero DLL dependencies beyond what the OS provides.
+
+### Vendored (test-time only, never linked into mcp-w32s.exe)
+
+| Library | Location | Purpose |
+|---------|----------|---------|
+| theft | `vendor/theft/` | Host-native property-based testing with autoshrinking (C99/POSIX — Linux test harness only) |
 
 ### Python-level (modern MCP bridge side)
 
@@ -273,18 +296,47 @@ gcc -std=c89 -Wall -Werror -pedantic -Isrc -o test_json tests/test_json.c src/js
 build.bat test
 ```
 
+## Specification & Test Workflow (Allium + theft)
+
+Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.allium`, language version 3) **before** it is implemented. The Allium plugin (`allium@juxt-plugins`, enabled via `.claude/settings.json`) provides six skills. Every phase passes through this lifecycle, and each skill has a defined job:
+
+| Stage | Skill | When | Output |
+|-------|-------|------|--------|
+| 1. Discover | `/allium:elicit` | Phase planning — turn phase goals and open questions into draft entities/rules through structured Q&A | Draft spec content |
+| 2. Specify | `/allium:tend` | ALL spec writing and editing — new specs, refinements, syntax fixes, migrations. Never hand-edit `.allium` files outside tend | Valid `specs/*.allium` (`allium check` clean) |
+| 3. Derive tests | `/allium:propagate` | Before implementation — generate the test obligations the specs imply | Obligation list: unit + property + state-machine tests |
+| 4. Implement | (normal coding) | Code to the spec; every test traces to a propagated obligation | `src/*.c` + `tests/*.c` |
+| 5. Audit | `/allium:weed` | Before marking a phase Complete — find spec↔code drift | Drift report; zero drift is the completion gate |
+| 6. Backfill | `/allium:distill` | Whenever code exists without a spec — reverse-engineer one | New `specs/*.allium` |
+
+`/allium:allium` is the language reference for any syntax or semantics question.
+
+**Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`.
+**Known gaps (distill targets, scheduled in Phase 3):** `base64`, `json_parser`, `serial` have implementations but no specs.
+
+### Property-based testing: two frameworks, two jobs
+
+| Framework | Where it runs | Role |
+|-----------|--------------|------|
+| `tests/prop.h` (homegrown, C89) | On the target binary — Wine in CI, real Win32s in Phase 5 | Properties that must hold on the shipped C89 code path; fixed seeds, no shrinking |
+| `vendor/theft` (vendored, C99/POSIX) | Host-native Linux build only (`gcc -std=c99`, no Wine) | Deep generative testing with **autoshrinking** for OS-independent modules (`base64`, `json_parser`, `argv`, `catalog`) |
+
+theft can never compile for the Win32s target (it is C99 + POSIX) — that is by design. It hammers portable pure-logic modules natively at high trial counts, and its autoshrinker reduces failing inputs to minimal counterexamples. Properties propagated from a spec are implemented in theft first (find bugs fast), then mirrored in `prop.h` at lower trial counts (prove they hold on the actual C89/i386 build).
+
+**Status:** theft is vendored but not yet wired into `build.sh`/CI — wiring it in (`tests/host/`, `./build.sh host-pbt`, CI step) is a Phase 3 deliverable. See PLAN.md.
+
 ## Implementation Phases
 
 | Phase | Focus | Status |
 |-------|-------|--------|
 | 1 | Test framework + JSON parser + CI + serial init + main exe | **Complete** |
 | 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
-| 3 | Command execution + protocol | Not started |
+| 3 | Command execution + catalog + feature uplift + theft harness + spec backfill (detailed plan in PLAN.md) | **Spec'd — in progress** |
 | 4 | MCP integration | Not started |
 | 5 | Cross-platform testing | Not started |
 | 6 | Documentation & polish | Not started |
 
-**Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically.
+**Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates above: tend-written specs before code, propagate-derived tests, weed-clean before Complete.
 
 ## Common Mistakes to Avoid
 
