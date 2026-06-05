@@ -188,12 +188,14 @@ int FileOpList(const char *path, char *out, int outSize,
     for (i = 0; path[i] != '\0' && searchLen < 260; i++) {
         searchPath[searchLen++] = path[i];
     }
+    searchPath[searchLen] = '\0';
 
     /* Append '\\' if not already present */
     if (searchLen > 0 && !str_endswith(searchPath, "\\") &&
         !str_endswith(searchPath, "*")) {
         if (searchLen < 260) {
             searchPath[searchLen++] = '\\';
+            searchPath[searchLen] = '\0';
         }
     }
 
@@ -201,10 +203,9 @@ int FileOpList(const char *path, char *out, int outSize,
     if (!str_endswith(searchPath, "*")) {
         if (searchLen < 260) {
             searchPath[searchLen++] = '*';
+            searchPath[searchLen] = '\0';
         }
     }
-
-    searchPath[searchLen] = '\0';
 
     hFind = FindFirstFileA(searchPath, &findData);
 
