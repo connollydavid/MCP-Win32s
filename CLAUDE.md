@@ -58,16 +58,20 @@ MCP-Win32s/
 
 ```
 src/
-├── tcp.c/.h           # TCP socket handling (Winsock 1.1) — Phase 4+
-├── named_pipes.c/.h   # Named pipe support (Win95+) — Phase 4+
+├── transport.c/.h     # Transport abstraction: vtable interface + backend registry (foundational, pre-Phase 3)
+├── tcp.c/.h           # TCP backend, Winsock 1.1, runtime-probed (foundational, pre-Phase 3)
+├── named_pipes.c/.h   # Named pipe backend (Win95+) — Phase 4+
 └── (Phase 3 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see PLAN.md
 specs/
+├── transport.allium   # Foundational: backend-agnostic transport lifecycle
 ├── process-ops.allium # Phase 3: Process/ExecResult/Capabilities
 ├── catalog.allium     # Phase 3: command catalog
 └── (distill backfill) # base64, json-parser, serial — see Specification Workflow
 catalog/
 └── win32-commands.json # Phase 3: machine-readable command docs + whitelist
-tests/host/            # Phase 3: theft-based host-native PBT harness
+tests/
+├── mock_transport.c/.h # In-memory transport backend for asserting response bytes
+└── host/              # Phase 3: theft-based host-native PBT harness
 ```
 
 ## Hard Technical Constraints
@@ -228,13 +232,24 @@ No C++ headers (`<iostream>`, `<vector>`, etc.) ever.
 
 ## Transport Layers
 
-| Transport | Availability | API |
+| Transport | Availability | I/O primitives |
 |-----------|-------------|-----|
-| Serial (COM ports) | All Win32 systems | `CreateFileA("COM1:", ...)` |
-| TCP (Winsock 1.1) | WfW 3.11+ with TCP/IP-32, Win95+ | `socket()`, `bind()`, `listen()`, `accept()` |
-| Named Pipes | Win95+ only, **not** Win32s | `CreateFileA("\\\\.\\pipe\\name", ...)` |
+| Serial (COM ports) | All Win32 systems | `CreateFileA("COM1:", ...)` + `ReadFile`/`WriteFile` |
+| TCP (Winsock 1.1) | WfW 3.11+ with TCP/IP-32, Win95+ | `socket`/`bind`/`listen`/`accept` + **`recv`/`send`** |
+| Named Pipes | Win95+ only, **not** Win32s | `CreateFileA("\\\\.\\pipe\\name", ...)` + `ReadFile`/`WriteFile` |
 
 Runtime detection with graceful fallback is required.
+
+### Transport abstraction (vtable, not HANDLE)
+
+A `SOCKET` is **not** a Win32 file handle on Win32s/Win9x — `ReadFile`/`WriteFile` cannot drive a socket; you must use `recv`/`send`. So the protocol core must never touch a raw `HANDLE`. All I/O goes through a backend-agnostic interface (`src/transport.{c,h}`):
+
+- A `Transport` is a struct of function pointers (`read`/`write`/`close`, optional `accept` for server backends) plus backend-private state (a `union` of `HANDLE`/`SOCKET`/`void*`).
+- Backends register in a table (`{kind, name, probe, open}`); the core selects/auto-detects via the registry. This is the single seam for **future backends** — TCP now, then UDP/HTTP-3 (QUIC), then exotic message/RDMA transports — added without changing the core.
+- Newline-JSON framing (`LineBuffer`) lives **above** the transport, so any reliable ordered byte backend works unchanged. Message-oriented backends set a flag to bypass framing.
+- Network-capable backends (TCP, future QUIC/RDMA) are **runtime-loaded** (`LoadLibraryA`/`GetProcAddress`), never statically imported — otherwise the binary fails to load on hosts lacking the DLL (e.g. `wsock32.dll` on bare Win32s). CI asserts `objdump -p mcp-w32s.exe | grep -i wsock32` is empty.
+
+This layer is **foundational work that lands before Phase 3** (exec responses flow over it). See PLAN.md "Transport Abstraction Layer".
 
 ## Dependencies
 
@@ -337,6 +352,8 @@ theft can never compile for the Win32s target (it is C99 + POSIX) — that is by
 | 6 | Documentation & polish | Not started |
 
 **Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates above: tend-written specs before code, propagate-derived tests, weed-clean before Complete.
+
+**Foundational work before Phase 3:** the transport abstraction (`src/transport.{c,h}` + TCP backend) makes network a first-class peer of serial and must land before command execution, since exec's ready message and stdout/stderr responses flow over the transport. It is not a numbered sub-phase — see PLAN.md "Transport Abstraction Layer". It follows the same Allium + theft rigor.
 
 ## Common Mistakes to Avoid
 
