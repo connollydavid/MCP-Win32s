@@ -8,7 +8,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Install MinGW-w64 and Wine
       run: |
@@ -122,13 +122,13 @@ jobs:
         echo "OK: Only i386 instructions in application code."
 
     - name: Upload main executable
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: mcp-w32s.exe
         path: mcp-w32s.exe
 
     - name: Upload test binaries
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: test-binaries
         path: |
