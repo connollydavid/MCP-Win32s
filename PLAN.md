@@ -15,15 +15,45 @@
 - `specs/mcp-protocol.allium` / `specs/file-ops.allium` — Allium specs
 - 87 tests passing, all builds clean, binary FPU/486-free
 
-## Transport Abstraction Layer — foundational (lands before Phase 3)
+## Phase 3: Network & Transport (serial + TCP/Winsock) — In Progress
 
-**Why now.** Today the protocol I/O is hard-wired to a Win32 `HANDLE`: `MainLoop`, `SendReady`, `ProcessCommand`, and `ProcessBuffer`'s handler all call `ReadFile`/`WriteFile` directly (`src/mcp-w32s.c:84,197,213`; handler typedef at `:51`). That works for serial because a COM port *is* a file handle — but a Winsock `SOCKET` is **not** a Win32 file handle on Win32s/Win9x, so `ReadFile`/`WriteFile` cannot drive it (README §449 says exactly this). Phase 3's ready message and exec stdout/stderr responses flow over the transport, so the abstraction must exist **before** exec is implemented — otherwise exec ships serial-only and gets rewritten later.
+**Goal.** Make the network a first-class peer of the serial port. Replace the `HANDLE`-hardwired protocol I/O with a transport-agnostic byte-pipe interface backed by pluggable, runtime-registered backends; refactor serial onto it; add a TCP backend over Winsock 1.1; add a mock backend that makes response bytes assertable in tests. The same seam admits future backends — UDP / HTTP-3 (QUIC), then exotic message/RDMA transports (e.g. ibverbs-over-Thunderbolt) — without touching the protocol core. Phase 3 is fully self-contained: abstraction + registry + serial refactor + TCP backend + runtime detection + mock backend + specs + tests + CI, all in scope here.
 
-**Goal.** A transport-agnostic byte-pipe interface with pluggable, runtime-registered backends. Network becomes a first-class peer of serial, and the same seam admits future backends — TCP now, then UDP / HTTP-3 (QUIC), then exotic message/RDMA transports (e.g. ibverbs-over-Thunderbolt) — without touching the protocol core. Self-contained: abstraction + serial backend (refactor of existing code) + TCP backend (Winsock 1.1) + runtime detection + mock backend for tests + specs + tests, all here.
+**Why this is its own phase, ahead of command execution.** Today the protocol I/O is hard-wired to a Win32 `HANDLE`: `MainLoop`, `SendReady`, `ProcessCommand`, and `ProcessBuffer`'s handler all call `ReadFile`/`WriteFile` directly (`src/mcp-w32s.c:84,197,213`; handler typedef at `:51`). That works for serial because a COM port *is* a file handle — but a Winsock `SOCKET` is **not** a Win32 file handle on Win32s/Win9x, so `ReadFile`/`WriteFile` cannot drive it (README §449 says exactly this). Phase 4 (command execution) emits the ready message and exec stdout/stderr over the transport, so this abstraction must exist first — otherwise exec ships serial-only and is rewritten later.
 
-### Design: vtable interface, not tagged dispatch
+### Pre-decisions (non-negotiable)
 
-A backend is a small struct of function pointers (C89 indirect calls — fine on i386; Phase 3's `feat.c` already uses this pattern). The protocol core knows only the interface.
+1. **vtable interface, not tagged dispatch.** A backend is a struct of function pointers; the core knows only the interface. This is what makes the layer agnostic and future-proof.
+2. **Network backends are runtime-probed (`LoadLibraryA`/`GetProcAddress`), never statically imported.** `wsock32.dll` is absent on bare Win32s; a static import would stop the binary loading there. Same philosophy as Phase 4's `feat.c`.
+3. **TCP server is single-client-sequential.** `listen(s, 1)` → `accept` one client → serve until disconnect → accept the next. Matches the single-threaded, one-exec-at-a-time model. Blocking sockets; no `select` loop.
+4. **Framing stays above the transport.** Newline-JSON (`LineBuffer`) lives in the core; any reliable ordered byte backend works unchanged. A message-oriented backend sets a `flags` bit to bypass `LineBuffer`.
+5. **Transport config moves to the transport module.** `TransportConfig`, `TRANSPORT_*`, and `ParseCommandLine` move from `serial.{c,h}` to `transport.{c,h}` — they are transport-level, not serial-level.
+6. **Serial is the always-available baseline + auto-detect fallback.** Explicit `/SERIAL`/`/TCP` are honored exactly; default (no flag) stays serial COM1 (preserves current behavior + tests). Auto-detect, if requested, probes TCP then falls back to serial (README chain: TCP > serial).
+7. **`htons`/`htonl` implemented by hand** (`((x&0xff)<<8)|((x>>8)&0xff)`) — avoids importing the symbols and avoids the banned `bswap` (486+) instruction. Integer-only, i386-safe.
+8. **The mock backend is the test seam.** Response-byte assertions (impossible today) become possible; unit tests never open a real port or socket.
+
+### Critical Winsock 1.1 / Win32s quirks to design around
+
+| # | Quirk | Mitigation |
+|---|-------|-----------|
+| T1 | A `SOCKET` is **not** a Win32 file handle on Win32s/Win9x | TCP backend uses `recv`/`send`, never `ReadFile`/`WriteFile`; the vtable hides the difference |
+| T2 | `wsock32.dll` absent on bare Win32s (needs TCP/IP-32 add-on on WfW 3.11) | `LoadLibraryA("wsock32.dll")` + `GetProcAddress`; probe fail ⇒ backend unavailable, fall back to serial |
+| T3 | Winsock must be initialized/negotiated | `WSAStartup(MAKEWORD(1,1), &wsaData)`; verify `wsaData.wVersion == 0x0101`; one `WSACleanup` at shutdown |
+| T4 | `SOCKET` is `unsigned int`; failure sentinel differs | Check `== INVALID_SOCKET` (not `INVALID_HANDLE_VALUE`); API errors are `SOCKET_ERROR` (-1) |
+| T5 | Socket teardown differs from handles | `closesocket()` per socket (not `CloseHandle`); pair the single `WSAStartup` with one `WSACleanup` |
+| T6 | Network byte order needed for `bind`/port | Manual `htons`/`htonl` (shift, not `bswap` — 486+ banned) |
+| T7 | `recv` returns 0 on orderly close, <0 on error | Treat 0 as peer-closed (advance accept loop); <0 → check `WSAGetLastError`, close conn |
+| T8 | `send` may move fewer bytes than requested | `TransportWriteAll` loops until all bytes sent or hard error |
+| T9 | Socket errors don't use `GetLastError` | Use `WSAGetLastError()` for socket diagnostics in `errMsg` |
+| T10 | **Winsock 1.1 only** — no `ws2_32` | Resolve from `wsock32.dll`; never link/`LoadLibrary` `ws2_32` |
+| T11 | Win32s has a low socket-handle ceiling and shared address space | `closesocket` promptly on disconnect; one listener + one conn at a time |
+| T12 | `accept` blocks the single thread | Acceptable by design (single-client-sequential); no concurrent work expected while idle |
+
+Sources to cite in code comments: README §447–453 (Win32s socket vs handle, no ws2_32), §1147–1199 (Winsock 1.1 TCP design + runtime detection), MS Docs *Winsock 1.1 reference* (`WSAStartup`, `recv`, `send`).
+
+### Design: vtable interface + backend registry
+
+A backend is a small struct of function pointers (C89 indirect calls — fine on i386; Phase 4's `feat.c` uses the same pattern). The protocol core knows only the interface.
 
 ```c
 /* transport.h */
@@ -112,7 +142,118 @@ The **mock backend is a testability win**: today `ProcessCommand` tests pass `IN
 - `README.md` — replace the "TCP is Phase 3+ / not yet implemented" notes (§1161, §1191–1194) with the implemented design; document the vtable interface and the backend-registry extension point for future UDP/QUIC/RDMA backends.
 - `specs/mcp-protocol.allium` — tend the existing `entity Transport { ready: Boolean }` and `surface SerialPort` into a backend-agnostic model (see below).
 
-### Allium lifecycle (mandatory, same as Phase 3)
+### Public APIs
+
+```c
+/* transport.h — interface, registry, config (moved here from serial.h) */
+
+#define TRANSPORT_NONE   0
+#define TRANSPORT_SERIAL 1
+#define TRANSPORT_TCP    2
+#define TRANSPORT_PIPE   3        /* reserved — Phase 5+ */
+#define TRANSPORT_MOCK   99       /* test-only */
+
+#define TRANSPORT_FLAG_MESSAGE 0x01   /* one message = one command; bypass LineBuffer */
+
+typedef struct {
+    int   transport;              /* TRANSPORT_SERIAL | TRANSPORT_TCP | ... */
+    char  port[32];               /* "COM1" ... (serial) */
+    DWORD baudRate;               /* serial */
+    int   tcpPort;                /* TCP listen port */
+    char  pipeName[260];          /* reserved */
+    int   autodetect;             /* 1 = probe TCP then fall back to serial */
+} TransportConfig;
+
+typedef struct Transport Transport;
+struct Transport {
+    const char *name;             /* "serial" | "tcp" | "mock" — surfaced in ready message */
+    int   kind;
+    int   flags;                  /* TRANSPORT_FLAG_* */
+    int   (*read)(Transport *t, void *buf, int len);        /* >0 / 0=close / <0=error */
+    int   (*write)(Transport *t, const void *buf, int len); /* >0 / <0=error */
+    void  (*close)(Transport *t);
+    Transport *(*accept)(Transport *t);                     /* NULL for point-to-point */
+    union { HANDLE handle; unsigned int sock; void *ptr; } io;
+};
+
+typedef struct {
+    int   kind;
+    const char *name;
+    int   (*probe)(void);                                              /* 1 if usable here */
+    int   (*open)(const TransportConfig *cfg, Transport *out,
+                  char *err, int errSize);
+} TransportBackend;
+
+int         ParseCommandLine(const char *cmdLine, TransportConfig *cfg);   /* moved from serial */
+int         TransportOpen(const TransportConfig *cfg, Transport *out,
+                          char *err, int errSize);  /* registry dispatch + fallback */
+int         TransportWriteAll(Transport *t, const void *buf, int len);     /* loops short writes */
+const char *TransportName(const Transport *t);
+int         TransportRegister(const TransportBackend *backend);            /* used by backends */
+
+/* serial.h — backend factory (config/parse now live in transport.h) */
+int  SerialBackendOpen(const TransportConfig *cfg, Transport *out, char *err, int errSize);
+/* existing BuildSerialDCB / BuildSerialTimeouts / OpenSerialPort / CloseSerialPort retained */
+
+/* tcp.h — Winsock 1.1 backend, runtime-probed */
+int  TcpBackendProbe(void);   /* 1 if wsock32 loads + WSAStartup(1,1) succeeds */
+int  TcpBackendOpen(const TransportConfig *cfg, Transport *out, char *err, int errSize);
+void TcpBackendCleanup(void); /* WSACleanup at process shutdown */
+unsigned short McpHtons(unsigned short x);   /* manual; no bswap */
+unsigned long  McpHtonl(unsigned long x);
+
+/* tests/mock_transport.h — in-memory backend */
+typedef struct {
+    Transport t;
+    const char *scriptIn;   /* bytes delivered by read(), then 0 (close) */
+    int  inPos, inLen;
+    char outBuf[MCP_MAX_RESPONSE];   /* bytes captured from write() */
+    int  outLen;
+    int  shortWrite;        /* if >0, write() returns at most this many bytes/call */
+} MockTransport;
+void MockTransportInit(MockTransport *m, const char *scriptIn, int scriptLen);
+```
+
+### Implementation checklist (the dangerous parts)
+
+**Serial refactor (do first — pure restructure, behavior-preserving):**
+1. Move `TransportConfig`, `TRANSPORT_*`, `ParseCommandLine` into `transport.{c,h}`. `serial.h` includes `transport.h`. Update includes in `mcp-w32s.c`, `test_serial.c`.
+2. Wrap the existing serial open into `SerialBackendOpen`: fill `Transport` with `name="serial"`, `kind=TRANSPORT_SERIAL`, `flags=0`, `accept=NULL`, `read`/`write` = thin `ReadFile`/`WriteFile` wrappers over `io.handle`, `close` = `CloseSerialPort`.
+3. Register the serial backend at startup. Confirm the existing serial behavior is byte-identical (regression test).
+
+**Core dispatch retargeting:**
+4. Change `ProcessBuffer`'s handler typedef and `ProcessCommand`/`SendReady`/`MainLoop`/new `Serve` from `HANDLE` to `Transport *`. Replace every `WriteFile(...)` with `TransportWriteAll(t, buf, len)`.
+5. Rewrite `main` to: `ParseCommandLine` → `TransportOpen` → accept loop (see below). Delete the "only serial supported" rejection.
+
+**Accept loop (transport- and lifecycle-agnostic):**
+```c
+if (!TransportOpen(&cfg, &listener, err, sizeof err)) { /* MessageBoxA(err); return 1; */ }
+for (;;) {
+    Transport *conn = listener.accept ? listener.accept(&listener) : &listener;
+    if (conn == NULL) break;                 /* accept error */
+    SendReady(conn);
+    Serve(conn);                             /* read → LineBuffer → ProcessCommand(line, conn) */
+    if (conn != &listener) conn->close(conn);
+    if (!listener.accept) break;             /* serial: single peer, done */
+}
+listener.close(&listener);
+TcpBackendCleanup();                          /* no-op unless TCP was used */
+```
+
+**TCP backend (`tcp.c`) — strict Winsock 1.1 ordering:**
+6. Probe: `LoadLibraryA("wsock32.dll")`; `GetProcAddress` for `WSAStartup,WSACleanup,socket,bind,listen,accept,recv,send,closesocket,WSAGetLastError`; store in a fnptr table. Any NULL ⇒ probe fails (return 0).
+7. Open listener: `WSAStartup(MAKEWORD(1,1),&wsa)`; verify `wsa.wVersion==0x0101`; `socket(AF_INET,SOCK_STREAM,IPPROTO_TCP)`; fill `sockaddr_in` with `sin_family=AF_INET`, `sin_port=McpHtons(cfg->tcpPort)`, `sin_addr=INADDR_ANY`; `bind`; `listen(s,1)`. On any failure: `errMsg` via `WSAGetLastError`, `closesocket`, `WSACleanup`, return 0.
+8. `accept` method: blocking `accept(listener.io.sock,...)`; on `INVALID_SOCKET` return NULL; else fill a connection `Transport` (`name="tcp"`, `read`=`recv` wrapper, `write`=`send` wrapper, `close`=`closesocket`, `accept`=NULL).
+9. `read` wrapper: `n=recv(sock,buf,len,0)`; map `0`→0 (close), `SOCKET_ERROR`→-1, else `n`. `write` wrapper: `send(...)`; `SOCKET_ERROR`→-1.
+10. Cleanup: `closesocket` both sockets; `TcpBackendCleanup` calls `WSACleanup` once. Track init so double-cleanup is safe.
+
+**`TransportWriteAll`:** loop `t->write` over the buffer; sum bytes; return total or <0 on hard error. Handles serial short writes and TCP `send` partials (T8).
+
+**`TransportOpen`:** look up backend by `cfg->transport` in the registry; if `autodetect`, try TCP `probe`+`open`, on failure fall back to the serial backend; write a clear `errMsg` if the explicitly-requested backend is unavailable.
+
+**Mock backend (`mock_transport.c`):** `read` drains `scriptIn` then returns 0; `write` appends to `outBuf` (honoring `shortWrite` to exercise `TransportWriteAll`); `accept=NULL`; `close` is idempotent.
+
+### Allium lifecycle (mandatory)
 
 1. `/allium:elicit` — settle the transport domain model (listener vs connection lifecycle, the message-vs-stream `flags` bit, fallback semantics). This also resolves the standing open question in `mcp-protocol.allium` ("Should the ready message include transport metadata?") — yes: the ready message names the active backend.
 2. `/allium:tend` — write `specs/transport.allium`; update `mcp-protocol.allium`. `allium check` clean.
@@ -160,38 +301,52 @@ The registry + vtable is the extension seam. A new backend implements `{probe, o
 - **UDP / HTTP-3 (QUIC):** QUIC gives reliable, ordered byte streams → reuse the stream path and `LineBuffer` unchanged; only the backend differs. Modern-only ⇒ runtime-probed/feature-detected, never statically linked on the Win32s path.
 - **Exotic message/RDMA (ibverbs-over-Thunderbolt class):** set `flags` message-oriented bit; one message = one command, bypassing `LineBuffer`. These are uplift backends present only on capable hosts; the Win32s baseline always retains serial.
 
-### Verification
+### Build/CI integration
+
+- `build.sh`, `build.bat`, `vc6/mcp-w32s.dsp`: add `src/transport.c` + `src/tcp.c` to the main link; add `test_transport` and `test_tcp` build lines (link `-lwsock32` for `test_tcp` only). Main does **not** statically import `wsock32` (runtime-probed) — so do **not** add `-lwsock32` to the main link.
+- `.github/workflows/build-and-test.yml`: run `test_transport` + `test_tcp` under Wine (test_tcp probes and self-skips with a printed reason if Wine lacks usable Winsock). Existing FPU/486 grep auto-applies to `transport.o`/`tcp.o`. **Import-table assertion:** `objdump -p mcp-w32s.exe | grep -i 'wsock32\|ws2_32'` must be empty.
+- Stack-frame watch: `sockaddr_in`/`WSADATA` are small, but keep them off oversized frames; if `__chkstk` appears in `tcp.o`, move buffers to `static`.
+
+### Out of scope for Phase 3 (architectural reasons)
+
+- **Named pipes backend.** Win95+ only, not Win32s; same vtable shape, deferred to Phase 5+ (cross-platform) where it adds value. The registry already reserves `TRANSPORT_PIPE`.
+- **Multi-client / `select` concurrency.** Conflicts with the single-threaded, single-exec model. Single-client-sequential is the deliberate design.
+- **UDP / HTTP-3 / RDMA backends.** Design seam is provided (registry + `flags`), but implementations are modern-host uplift work, not part of the Win32s baseline. Future phases.
+- **TLS / authentication.** No crypto libraries compile on the Win32s target; out of the project's threat model (trusted serial/LAN link).
+
+### Verification (sub-agent acceptance criteria)
 
 1. `./build.sh test` clean (strict flags); `transport.o`/`tcp.o` FPU/486-free.
-2. `objdump -p mcp-w32s.exe | grep -i wsock32` empty — binary still loads on bare Win32s; TCP is runtime-loaded.
+2. `objdump -p mcp-w32s.exe | grep -i 'wsock32\|ws2_32'` empty — binary still loads on bare Win32s; TCP is runtime-loaded.
 3. `test_transport`, `test_tcp` (or skipped with reason), refactored `test_serial` all pass under Wine.
 4. End-to-end serial path unchanged: existing behavior preserved (regression check).
 5. End-to-end TCP: `mcp-w32s.exe /TCP:8932`, connect a loopback client, send `{"cmd":"echo","id":"1","line":"hi"}\n`, receive the echo response; disconnect; server accepts a second client (sequential).
-6. `specs/transport.allium` `allium check` clean; `/allium:weed` reports zero drift.
-7. Phase 3 exec/ready code, when written, uses `Transport *` — no `HANDLE`-typed I/O in the protocol core.
+6. `specs/transport.allium` `allium check` clean; `/allium:weed` reports zero drift; all six Allium skills exercised per the lifecycle above.
+7. Phase 4 exec/ready code, when written, uses `Transport *` — no `HANDLE`-typed I/O in the protocol core.
+8. Total tests: 87 + ≥10 (transport) + ≥6 (tcp) + mock-backed `test_serial` response-byte assertions = **≥103 tests**.
 
-## Phase 3: Command Execution — In Progress
+## Phase 4: Command Execution — Spec'd (not started)
 
 **Goal:** Replace the `exec` stub with a complete implementation: spawn child processes via `CreateProcessA`, capture stdout/stderr/exit code, return them base64-encoded in the JSON response. Ship a JSON command catalog so MCP clients can discover what's safe to run when `--help` is unavailable, and load it server-side as a whitelist (with bypass flag).
 
-Phase 3 is fully self-contained — argv quoting, timeouts, stdin pass-through, 16-bit detection, catalog enforcement, and the full Allium spec are all in scope here.
+Phase 4 is fully self-contained — argv quoting, timeouts, stdin pass-through, 16-bit detection, catalog enforcement, and the full Allium spec are all in scope here.
 
 **Hooks the existing stub at** `src/mcp-w32s.c:171–174`. Reuses `Base64Encode` (`src/base64.h`) and `BuildJsonResponse` (`src/json_parser.h`).
 
 ### Required workflow (Allium lifecycle — order is mandatory)
 
-Phase 3 runs spec-first using the Allium plugin skills (see CLAUDE.md "Specification & Test Workflow"):
+Phase 4 runs spec-first using the Allium plugin skills (see CLAUDE.md "Specification & Test Workflow"):
 
 1. **`/allium:elicit`** — resolve the open question in `specs/mcp-protocol.allium` ("Should the ready message include transport metadata?") — answer: yes, the extended ready message below carries `codepage`, `version`, `features`. Confirm the exec/catalog/capability domain model before specifying.
 2. **`/allium:tend`** — write `specs/process-ops.allium` + `specs/catalog.allium` and update `specs/mcp-protocol.allium`. The spec sketches in this plan are *input*; tend owns the final form. `allium check` must pass on all specs.
 3. **`/allium:propagate`** — generate the test-obligation list from the three specs. The test tables in this plan are a floor; propagated obligations may add tests, never remove them. Each test file documents which obligation it covers.
 4. **Implement** — `src/*.c` + `tests/*.c`, coding to the specs.
-5. **`/allium:distill`** — backfill specs for the pre-existing unspecified modules: `specs/base64.allium`, `specs/json-parser.allium`, `specs/serial.allium`. This is Phases 1–2 spec debt, folded into Phase 3 (no sub-phase).
-6. **`/allium:weed`** — audit all specs against implementation. Zero drift is a hard gate for marking Phase 3 Complete.
+5. **`/allium:distill`** — backfill specs for the pre-existing unspecified modules: `specs/base64.allium`, `specs/json-parser.allium`, `specs/serial.allium`. This is Phases 1–2 spec debt, folded into Phase 4 (no sub-phase).
+6. **`/allium:weed`** — audit all specs against implementation. Zero drift is a hard gate for marking Phase 4 Complete.
 
-### theft host-side PBT harness (new in Phase 3)
+### theft host-side PBT harness (new in Phase 4)
 
-`vendor/theft` is vendored but unwired. Phase 3 wires it as a **host-native** test layer (Linux `gcc -std=c99`, no MinGW, no Wine) for OS-independent modules. Shipped sources stay C89; only `tests/host/*.c` harness files are C99. Win32-API-dependent code is out of theft's scope.
+`vendor/theft` is vendored but unwired. Phase 4 wires it as a **host-native** test layer (Linux `gcc -std=c99`, no MinGW, no Wine) for OS-independent modules. Shipped sources stay C89; only `tests/host/*.c` harness files are C99. Win32-API-dependent code is out of theft's scope.
 
 | File | Properties (autoshrinking, ≥50k trials each) |
 |------|----------------------------------------------|
@@ -303,7 +458,7 @@ int         FeatForceFallback(int flags);  /* test-only: zero out selected flags
 9. If has_is_wow64_process, call IsWow64Process(GetCurrentProcess(), &is_wow64).
 ```
 
-**Where uplifts apply** (cross-cuts the rest of Phase 3):
+**Where uplifts apply** (cross-cuts the rest of Phase 4):
 
 1. **Capture loop in `exec_ops.c`** — branch on `g_features.has_threads`:
    - **Threaded path (Win 9x / NT+):** spawn one reader thread per stdout/stderr pipe. Threads loop `ReadFile` into a shared buffer guarded by a `CRITICAL_SECTION`; main thread `WaitForSingleObject(hProc, timeoutMs)` (which works correctly outside Win32s — Q1 only affects Win32s). Threads exit naturally when their pipe EOFs after child exit. Far lower latency for chatty children.
@@ -440,7 +595,7 @@ int         FeatForceFallback(int flags);  /* test-only: zero out selected flags
 
 `exec_method` ∈ {`direct`, `shell`, `vdm-best-effort`}. `binary_type` ∈ {`pe32`, `pe32-wow64`, `ne16`, `mz`, `unknown`, `shell-builtin`}. `killed_by` ∈ {`""`, `"timeout"`, `"ctrl_break"`, `"memory_cap"`, `"cpu_cap"`}.
 
-README §1554 (current protocol doc using `output` key) is updated to `stdout_b64`/`stderr_b64` as part of Phase 3, and a new section documents `ptyExec`.
+README §1554 (current protocol doc using `output` key) is updated to `stdout_b64`/`stderr_b64` as part of Phase 4, and a new section documents `ptyExec`.
 
 ### Files to create
 
@@ -484,8 +639,8 @@ README §1554 (current protocol doc using `output` key) is updated to `stdout_b6
 | `specs/mcp-protocol.allium` | Replace `rule ExecCommand` (lines 211–221) with rule that delegates to `process-ops.ExecResult` and gates on `CatalogLookup`. Add `rule PtyExecCommand` (gated on `Capabilities.has_pty`). Remove `deferred ExecCommand.implementation` (line 244). Add `Capabilities` reference. |
 | `build.sh`, `build.bat`, `vc6/mcp-w32s.dsp` | Add seven new `.c` files (`feat`, `exec_ops`, `pty_exec`, `argv`, `binfmt`, `catalog`, `ready`). Add six test build lines + `argv_echo` helper. Copy `catalog/win32-commands.json` next to test binaries. |
 | `.github/workflows/build-and-test.yml` | Run new test binaries under Wine: `test_feat`, `test_exec_ops`, `test_pty_exec`, `test_argv`, `test_binfmt`, `test_catalog`. Add catalog file to artifact upload. **Verify uplift on Wine:** Wine reports as NT — assert `is_nt=true` and `has_threads=true` in `test_feat.exe` output, but skip `test_pty_exec` if Wine version doesn't expose `CreatePseudoConsole` (probe-and-skip pattern). |
-| `README.md` | §1554: protocol shape (`stdout_b64`/`stderr_b64`); Implementation Phases: Phase 3 → Complete; new "Command Execution: Win32s caveats" referencing Q1, Q9, Q12; new "Command Catalog" section; new "Feature Detection & Graceful Uplift" section with capability matrix; new "PTY Execution (`ptyExec`)" section. |
-| `CLAUDE.md` | Phase 3 → Complete; bump test count to ≥152; document `g_features` global and the runtime-detection convention (no `#ifdef _WIN32_WINNT`). |
+| `README.md` | §1554: protocol shape (`stdout_b64`/`stderr_b64`); Implementation Phases: Phase 4 → Complete; new "Command Execution: Win32s caveats" referencing Q1, Q9, Q12; new "Command Catalog" section; new "Feature Detection & Graceful Uplift" section with capability matrix; new "PTY Execution (`ptyExec`)" section. |
+| `CLAUDE.md` | Phase 4 → Complete; bump test count to ≥152; document `g_features` global and the runtime-detection convention (no `#ifdef _WIN32_WINNT`). |
 
 ### Public APIs
 
@@ -906,10 +1061,10 @@ Integration (extending `tests/test_serial.c`):
 - `vc6/mcp-w32s.dsp`: add seven new `.c` files (theft harness is NOT added — host-side only).
 - Artifact upload: `catalog/win32-commands.json` alongside `mcp-w32s.exe`.
 
-### Out of scope for Phase 3 (architectural reasons)
+### Out of scope for Phase 4 (architectural reasons)
 
-- **Streaming chunked output.** Current MCP-Win32s protocol is one JSON line in, one out. Streaming requires multi-frame response handling on the bridge side. Phase 4+.
-- **Async exec (job-id, poll-later).** Conflicts with single-threaded request/response. Phase 4+ if needed.
+- **Streaming chunked output.** Current MCP-Win32s protocol is one JSON line in, one out. Streaming requires multi-frame response handling on the bridge side. Phase 5+.
+- **Async exec (job-id, poll-later).** Conflicts with single-threaded request/response. Phase 5+ if needed.
 
 (Items previously listed as out-of-scope — interactive stdin/TTY, process signals, resource limits — are now **in scope** via the feature-detection uplift. They function on Windows versions that support them and gracefully degrade on Win32s.)
 
@@ -930,7 +1085,7 @@ Integration (extending `tests/test_serial.c`):
     ```
     First line parses as JSON with `status:"ready"`, `version` non-empty, `features.is_nt:true`, `features.threads:true`. (Field set varies by Wine version — must always include the documented keys.)
 11. `specs/process-ops.allium` (with `Capabilities` entity) and `specs/catalog.allium` follow `specs/file-ops.allium` lexical conventions.
-12. README §1554 updated; new "Feature Detection & Graceful Uplift" + "PTY Execution" sections; CLAUDE.md test count bumped to ≥152; `PLAN.md` Phase 3 marked Complete.
+12. README §1554 updated; new "Feature Detection & Graceful Uplift" + "PTY Execution" sections; CLAUDE.md test count bumped to ≥152; `PLAN.md` Phase 4 marked Complete.
 13. Total tests: 87 + ≥6 (feat) + ≥22 (exec_ops, incl. 4 capability fallbacks) + ≥4 (pty_exec) + ≥12 fixed + 1000 PBT trials (argv) + ≥6 (binfmt) + ≥8 (catalog) + ≥3 integration = **≥152 tests**.
 14. Catalog file ships with binary in CI artifact; loads without warning on startup.
 15. **Manual smoke (optional, documented):** load `mcp-w32s.exe` on a real Windows 3.1 + Win32s 1.25a system; ready message advertises `is_win32s:true`, `threads:false`, `pty:false`, `job_objects:false`; `exec` with simple `command.com /c dir` returns expected output through the polling/Terminate fallback path.
@@ -938,14 +1093,14 @@ Integration (extending `tests/test_serial.c`):
 17. **theft harness green:** `./build.sh host-pbt` builds `vendor/theft` + `tests/host/*` natively and passes ≥50k trials per property; CI runs it before the Wine suite.
 18. Every theft property has a mirrored `prop.h` equivalent running on the target binary under Wine.
 
-## Phase 4: MCP Integration — Not Started
+## Phase 5: MCP Integration — Not Started
 - Python bridge: map MCP tool calls to serial/TCP protocol
 - Test with Claude Code / Claude Desktop
 
-## Phase 5: Cross-Platform Testing — Not Started
+## Phase 6: Cross-Platform Testing — Not Started
 - Verify on Windows 3.1 + Win32s 1.25a
 - Verify on Windows 11
 - Test across Win9x, NT, XP, modern Windows
 
-## Phase 6: Documentation & Polish — Not Started
+## Phase 7: Documentation & Polish — Not Started
 - Final README, usage examples, troubleshooting

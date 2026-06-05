@@ -1158,8 +1158,8 @@ The serial transport works on **every Win32 platform** because:
 **Runtime Detection Strategy:**
 
 The current implementation (Phase 1) parses command-line flags and defaults to serial.
-Full runtime detection with LoadLibraryA probing will be added when TCP (Phase 3)
-and named pipe support (Phase 3+) are implemented.
+Full runtime detection with LoadLibraryA probing arrives with the TCP backend (Phase 3);
+named pipe support is a later backend (Phase 5+).
 
 ```c
 /* serial.h - Transport configuration (actual implementation) */
@@ -1191,7 +1191,7 @@ HANDLE OpenSerialPort(const char *portName, DWORD baudRate);
 TCP/IP availability will be detected at runtime by probing for wsock32.dll
 with `LoadLibraryA("wsock32.dll")` and `GetProcAddress`. Named pipe support
 will be detected via `GetVersion()` (Win95+ = version 4.0+). Fallback order:
-TCP > Pipes > Serial. This is Phase 3+ work.
+TCP > Pipes > Serial. TCP lands in Phase 3 (transport); pipes in Phase 5+.
 
 **Command Line Options:**
 
@@ -1296,7 +1296,7 @@ int HasNamedPipeSupport(void) {
 
 ---
 
-### Unified Transport Implementation (Planned - Phase 3+)
+### Unified Transport Implementation (Planned - Phase 3)
 
 **Design**: All three transports share identical I/O via ReadFile/WriteFile.
 Phase 1 implements serial only; TCP and pipe support will follow this pattern:
@@ -1646,7 +1646,7 @@ void ProcessCommand(const char *line, HANDLE hOutput)
         return;
     }
 
-    /* Phase 3 will add: exec, read, write, list, delete handlers */
+    /* read/write/list/delete handlers landed in Phase 2; exec arrives in Phase 4 */
     /* For now, acknowledge known commands */
     if (strcmp(cmd.cmd, "exec") == 0 || strcmp(cmd.cmd, "read") == 0 ||
         strcmp(cmd.cmd, "write") == 0 || strcmp(cmd.cmd, "list") == 0 ||
@@ -2553,7 +2553,19 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 - [x] Unit tests for base64 (14 tests) and file operations (10 tests)
 - [ ] Test with HyperTerminal or equivalent
 
-### Phase 3: Command Execution + Protocol
+### Phase 3: Network & Transport (serial + TCP/Winsock)
+
+Make the network a first-class peer of the serial port. See PLAN.md "Phase 3: Network & Transport" for the fully worked plan.
+
+- [ ] Transport abstraction: vtable interface (`read`/`write`/`close`/optional `accept`) + runtime backend registry (`src/transport.c/.h`)
+- [ ] Refactor serial onto the abstraction (`SerialBackendOpen`); move `TransportConfig`/`ParseCommandLine` to `transport.c`
+- [ ] TCP backend over Winsock 1.1, runtime-probed via `LoadLibraryA("wsock32.dll")` (`src/tcp.c/.h`); single-client-sequential server
+- [ ] Mock transport backend for asserting response bytes in tests (`tests/mock_transport.c/.h`)
+- [ ] `specs/transport.allium`; retarget protocol core off raw `HANDLE` onto `Transport *`
+- [ ] Tests: `test_transport` (≥10), `test_tcp` (≥6, loopback), mock-backed `test_serial`
+- [ ] CI assertion: binary does not statically import `wsock32`/`ws2_32` (still loads on bare Win32s)
+
+### Phase 4: Command Execution + Protocol
 
 - [ ] Add `exec` command handler (process execution, stdout/stderr capture)
 - [ ] Implement full JSON command/response protocol loop
@@ -2561,7 +2573,7 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 - [ ] Unit tests for command execution
 - [ ] Test executing simple commands (`dir`, `cl /?`)
 
-### Phase 4: MCP Integration
+### Phase 5: MCP Integration
 
 - [ ] Implement MCP server skeleton (Python bridge)
 - [ ] Map MCP tool calls to serial/TCP protocol
@@ -2569,7 +2581,7 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 - [ ] Create helper prompts for Claude
 - [ ] Integration tests: Claude Code reads C source, modifies, writes back, compiles, reads output
 
-### Phase 5: Cross-Platform Testing
+### Phase 6: Cross-Platform Testing
 
 - [ ] Verify VC++ 6.0 compiled binary runs on Windows 3.1 + Win32s 1.25a
 - [ ] Verify MinGW compiled binary runs on Windows 11
@@ -2578,7 +2590,7 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 - [ ] Verify TCP transport on modern Windows
 - [ ] Verify binary file integrity (compile .c files, transfer .obj)
 
-### Phase 6: Documentation & Polish
+### Phase 7: Documentation & Polish
 
 - [ ] Error handling for serial disconnects
 - [ ] Win32 shell auto-restart on crash
@@ -2797,10 +2809,11 @@ def unix_to_win32(unix_path):
 |------|-------|-------|--------|
 | 1 | Phase 1 | Test framework + JSON parser + CI | **Complete** |
 | 2 | Phase 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
-| 3 | Phase 3 | Command execution + protocol | Not started |
-| 4 | Phase 4 | MCP integration | Not started |
-| 5 | Phase 5 | Cross-platform testing | Not started |
-| 6 | Phase 6 | Documentation & polish | Not started |
+| 3 | Phase 3 | Network & transport: vtable backends, serial refactor + TCP/Winsock peer | Spec'd — in progress |
+| 4 | Phase 4 | Command execution + protocol | Spec'd |
+| 5 | Phase 5 | MCP integration | Not started |
+| 6 | Phase 6 | Cross-platform testing | Not started |
+| 7 | Phase 7 | Documentation & polish | Not started |
 
 **Note:** GitHub Actions CI was integrated into Phase 1. All subsequent phases inherit CI validation automatically.
 
@@ -2848,7 +2861,7 @@ def unix_to_win32(unix_path):
 
 ## Project Status
 
-**Current Phase:** Phase 2 complete (file operations + base64 + echo + 87 tests incl. PBT). Phase 3 next.
+**Current Phase:** Phase 2 complete (file operations + base64 + echo + 87 tests incl. PBT). Phase 3 (network & transport: serial + TCP/Winsock) is fully planned and next; command execution follows as Phase 4.
 
 This is a technical design specification for bridging MCP clients with Win32 systems across the full Windows family (Win32s 1.25a through Windows 11). The project emphasizes maximum compatibility through strict adherence to the Win32s 1.25a API subset and i386 instruction set.
 

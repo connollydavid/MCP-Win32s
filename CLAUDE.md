@@ -45,7 +45,7 @@ MCP-Win32s/
 ├── vendor/
 │   └── theft/                  # Vendored PBT library with autoshrinking (host-side only)
 ├── AGENTS.md                   # Condensed agent guide (constraints + layout)
-├── PLAN.md                     # Phase plans; Phase 3 is the detailed exec spec
+├── PLAN.md                     # Phase plans; Phase 3 = transport, Phase 4 = exec (both fully worked)
 ├── build.bat                   # VC++ 6.0 build script
 ├── build.sh                    # MinGW cross-compile build script
 ├── .gitignore                  # Ignores *.exe, *.o, *.obj, VC6 output
@@ -58,20 +58,20 @@ MCP-Win32s/
 
 ```
 src/
-├── transport.c/.h     # Transport abstraction: vtable interface + backend registry (foundational, pre-Phase 3)
-├── tcp.c/.h           # TCP backend, Winsock 1.1, runtime-probed (foundational, pre-Phase 3)
-├── named_pipes.c/.h   # Named pipe backend (Win95+) — Phase 4+
-└── (Phase 3 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see PLAN.md
+├── transport.c/.h     # Transport abstraction: vtable interface + backend registry (Phase 3)
+├── tcp.c/.h           # TCP backend, Winsock 1.1, runtime-probed (Phase 3)
+├── named_pipes.c/.h   # Named pipe backend (Win95+) — Phase 5+
+└── (Phase 4 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see PLAN.md
 specs/
-├── transport.allium   # Foundational: backend-agnostic transport lifecycle
-├── process-ops.allium # Phase 3: Process/ExecResult/Capabilities
-├── catalog.allium     # Phase 3: command catalog
+├── transport.allium   # Phase 3: backend-agnostic transport lifecycle
+├── process-ops.allium # Phase 4: Process/ExecResult/Capabilities
+├── catalog.allium     # Phase 4: command catalog
 └── (distill backfill) # base64, json-parser, serial — see Specification Workflow
 catalog/
-└── win32-commands.json # Phase 3: machine-readable command docs + whitelist
+└── win32-commands.json # Phase 4: machine-readable command docs + whitelist
 tests/
-├── mock_transport.c/.h # In-memory transport backend for asserting response bytes
-└── host/              # Phase 3: theft-based host-native PBT harness
+├── mock_transport.c/.h # Phase 3: in-memory transport backend for asserting response bytes
+└── host/              # Phase 4: theft-based host-native PBT harness
 ```
 
 ## Hard Technical Constraints
@@ -249,7 +249,7 @@ A `SOCKET` is **not** a Win32 file handle on Win32s/Win9x — `ReadFile`/`WriteF
 - Newline-JSON framing (`LineBuffer`) lives **above** the transport, so any reliable ordered byte backend works unchanged. Message-oriented backends set a flag to bypass framing.
 - Network-capable backends (TCP, future QUIC/RDMA) are **runtime-loaded** (`LoadLibraryA`/`GetProcAddress`), never statically imported — otherwise the binary fails to load on hosts lacking the DLL (e.g. `wsock32.dll` on bare Win32s). CI asserts `objdump -p mcp-w32s.exe | grep -i wsock32` is empty.
 
-This layer is **foundational work that lands before Phase 3** (exec responses flow over it). See PLAN.md "Transport Abstraction Layer".
+This layer is **Phase 3** and lands before command execution (Phase 4 exec responses flow over it). See PLAN.md "Phase 3: Network & Transport".
 
 ## Dependencies
 
@@ -327,18 +327,18 @@ Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.all
 `/allium:allium` is the language reference for any syntax or semantics question.
 
 **Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`.
-**Known gaps (distill targets, scheduled in Phase 3):** `base64`, `json_parser`, `serial` have implementations but no specs.
+**Known gaps (distill targets, scheduled in Phase 4):** `base64`, `json_parser`, `serial` have implementations but no specs.
 
 ### Property-based testing: two frameworks, two jobs
 
 | Framework | Where it runs | Role |
 |-----------|--------------|------|
-| `tests/prop.h` (homegrown, C89) | On the target binary — Wine in CI, real Win32s in Phase 5 | Properties that must hold on the shipped C89 code path; fixed seeds, no shrinking |
+| `tests/prop.h` (homegrown, C89) | On the target binary — Wine in CI, real Win32s in Phase 6 | Properties that must hold on the shipped C89 code path; fixed seeds, no shrinking |
 | `vendor/theft` (vendored, C99/POSIX) | Host-native Linux build only (`gcc -std=c99`, no Wine) | Deep generative testing with **autoshrinking** for OS-independent modules (`base64`, `json_parser`, `argv`, `catalog`) |
 
 theft can never compile for the Win32s target (it is C99 + POSIX) — that is by design. It hammers portable pure-logic modules natively at high trial counts, and its autoshrinker reduces failing inputs to minimal counterexamples. Properties propagated from a spec are implemented in theft first (find bugs fast), then mirrored in `prop.h` at lower trial counts (prove they hold on the actual C89/i386 build).
 
-**Status:** theft is vendored but not yet wired into `build.sh`/CI — wiring it in (`tests/host/`, `./build.sh host-pbt`, CI step) is a Phase 3 deliverable. See PLAN.md.
+**Status:** theft is vendored but not yet wired into `build.sh`/CI — wiring it in (`tests/host/`, `./build.sh host-pbt`, CI step) is a Phase 4 deliverable. See PLAN.md.
 
 ## Implementation Phases
 
@@ -346,14 +346,15 @@ theft can never compile for the Win32s target (it is C99 + POSIX) — that is by
 |-------|-------|--------|
 | 1 | Test framework + JSON parser + CI + serial init + main exe | **Complete** |
 | 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
-| 3 | Command execution + catalog + feature uplift + theft harness + spec backfill (detailed plan in PLAN.md) | **Spec'd — in progress** |
-| 4 | MCP integration | Not started |
-| 5 | Cross-platform testing | Not started |
-| 6 | Documentation & polish | Not started |
+| 3 | Network & transport: vtable backends, serial refactor + TCP/Winsock peer (fully worked plan in PLAN.md) | **Spec'd — in progress** |
+| 4 | Command execution + catalog + feature uplift + theft harness + spec backfill | **Spec'd** |
+| 5 | MCP integration | Not started |
+| 6 | Cross-platform testing | Not started |
+| 7 | Documentation & polish | Not started |
 
 **Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates above: tend-written specs before code, propagate-derived tests, weed-clean before Complete.
 
-**Foundational work before Phase 3:** the transport abstraction (`src/transport.{c,h}` + TCP backend) makes network a first-class peer of serial and must land before command execution, since exec's ready message and stdout/stderr responses flow over the transport. It is not a numbered sub-phase — see PLAN.md "Transport Abstraction Layer". It follows the same Allium + theft rigor.
+**Why transport precedes command execution:** the protocol I/O is currently hard-wired to a Win32 `HANDLE` (`ReadFile`/`WriteFile`), but a Winsock `SOCKET` is not a file handle on Win32s/Win9x (needs `recv`/`send`). Phase 4's ready message and exec stdout/stderr flow over the transport, so the vtable abstraction (Phase 3) must land first or exec ships serial-only and gets rewritten. See PLAN.md "Phase 3: Network & Transport".
 
 ## Common Mistakes to Avoid
 
