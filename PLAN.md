@@ -131,14 +131,14 @@ The **mock backend is a testability win**: today `ProcessCommand` tests pass `IN
 
 ### Files
 
-**Create:** `src/transport.{c,h}` (interface + registry + `TransportOpen`/`TransportWriteAll`), `src/tcp.{c,h}` (TCP backend + Winsock fnptr table), `tests/mock_transport.{c,h}`, `tests/test_transport.c` (≥10), `tests/test_tcp.c` (≥6, loopback under Wine; skip if `wsock32` probe fails), `specs/transport.allium`.
+**Create:** `src/transport.{c,h}` (interface + registry + `TransportOpen`/`TransportWriteAll`), `src/tcp.{c,h}` (TCP backend + Winsock fnptr table), `tests/mock_transport.{c,h}`, `tests/test_transport.c` (≥10), `tests/test_tcp.c` (≥6, in-process loopback; proven natively on the Windows host against real Winsock), `specs/transport.allium`.
 
 **Modify:**
 - `src/serial.{c,h}` — keep `BuildSerialDCB`/`BuildSerialTimeouts`/`OpenSerialPort`; add `SerialBackendOpen` producing a serial `Transport`. **Move** `TransportConfig`, `TRANSPORT_*`, and `ParseCommandLine` out to `transport.{c,h}` (they are transport-level, not serial-level); `serial.h` includes `transport.h`.
 - `src/mcp-w32s.c` — `MainLoop`/`SendReady`/`Serve`/`ProcessCommand`/`ProcessBuffer` handler take `Transport *` instead of `HANDLE`; writes go through `TransportWriteAll`. `main` calls `TransportOpen`, runs the accept loop, drops the "only serial supported" rejection.
 - `tests/test_serial.c` — update handler signature to `Transport *`; switch the `ProcessCommand` stub tests to the mock backend and assert real response bytes; fix `ParseCommandLine` include path.
 - `build.sh`, `build.bat`, `vc6/mcp-w32s.dsp` — add `transport.c`, `tcp.c` to the link; add `test_transport`, `test_tcp` build lines (link `-lwsock32` for the tcp test only). Link main with `-lwsock32` **only if** static-link is chosen; default is runtime-probe, so main does **not** statically import wsock32 (CI assertion below).
-- `.github/workflows/build-and-test.yml` — run `test_transport`, `test_tcp` under Wine. **Import-table assertion:** `objdump -p mcp-w32s.exe | grep -i wsock32` must be empty (TCP is runtime-loaded, so the binary still loads on bare Win32s). FPU/486 grep auto-applies to `transport.o`/`tcp.o`.
+- `.github/workflows/build-and-test.yml` — run `test_transport`, `test_tcp` (CI is Ubuntu+Wine; local dev runs the PEs natively on the Windows host via WSL2 interop — Wine is a convenience, not the source of truth). **Import-table assertion:** `objdump -p mcp-w32s.exe | grep -i wsock32` must be empty (TCP is runtime-loaded, so the binary still loads on bare Win32s). FPU/486 grep auto-applies to `transport.o`/`tcp.o`.
 - `README.md` — replace the "TCP is Phase 3+ / not yet implemented" notes (§1161, §1191–1194) with the implemented design; document the vtable interface and the backend-registry extension point for future UDP/QUIC/RDMA backends.
 - `specs/mcp-protocol.allium` — tend the existing `entity Transport { ready: Boolean }` and `surface SerialPort` into a backend-agnostic model (see below).
 
@@ -291,7 +291,7 @@ invariant ClosedIsTerminal  { ... }
 
 `tests/test_transport.c` (≥10): registry lookup by kind; `TransportOpen` selects serial by default; explicit unknown kind errors; `TransportWriteAll` loops on short writes (mock returns partial); mock read delivers scripted bytes then 0 (close); `accept == NULL` ⇒ one-shot loop exits; message-oriented flag routes around `LineBuffer`; serial backend `accept` is NULL; name surfaced correctly; double-close is safe.
 
-`tests/test_tcp.c` (≥6, skip if `wsock32` probe fails under Wine): probe returns availability honestly; open listener binds a port; `accept` + `recv` round-trips a line over loopback (client = a second socket in the test); `send` delivers a response; orderly close returns 0 from `read`; `htons` matches a known value (e.g. `htons(8932)` byte pattern).
+`tests/test_tcp.c` (≥6, run natively on Windows against real Winsock — not skipped locally; self-skips with a printed reason only where Winsock is genuinely absent, e.g. CI/Wine): probe returns availability honestly; open listener binds a port; `accept` + `recv` round-trips a line over loopback (client = a second socket in the test); `send` delivers a response; orderly close returns 0 from `read`; `htons` matches a known value (e.g. `htons(8932)` byte pattern).
 
 Integration (extend `tests/test_serial.c`): full command → mock transport → assert exact response JSON bytes (now possible).
 
@@ -301,10 +301,15 @@ The registry + vtable is the extension seam. A new backend implements `{probe, o
 - **UDP / HTTP-3 (QUIC):** QUIC gives reliable, ordered byte streams → reuse the stream path and `LineBuffer` unchanged; only the backend differs. Modern-only ⇒ runtime-probed/feature-detected, never statically linked on the Win32s path.
 - **Exotic message/RDMA (ibverbs-over-Thunderbolt class):** set `flags` message-oriented bit; one message = one command, bypassing `LineBuffer`. These are uplift backends present only on capable hosts; the Win32s baseline always retains serial.
 
+### Test execution environment (WSL2 + Windows host)
+
+The dev host is **WSL2 on Windows**, so MinGW-built PEs run **natively on the Windows host via WSL interop** (`./test_tcp.exe` executes through real `kernel32`/`wsock32`, no Wine). This is the source of truth for local verification — **Wine is a convenience/fallback, not a requirement.** Consequence: `test_tcp` and the end-to-end TCP path are **proven against real Winsock locally and must not be skipped**; the `wsock32`-probe self-skip exists only for environments that genuinely lack Winsock (e.g. CI's Ubuntu+Wine if its Winsock is unusable). `build.sh test` should detect WSL2-with-interop and run the PEs natively, falling back to Wine only when no Windows host is reachable.
+
 ### Build/CI integration
 
 - `build.sh`, `build.bat`, `vc6/mcp-w32s.dsp`: add `src/transport.c` + `src/tcp.c` to the main link; add `test_transport` and `test_tcp` build lines (link `-lwsock32` for `test_tcp` only). Main does **not** statically import `wsock32` (runtime-probed) — so do **not** add `-lwsock32` to the main link.
-- `.github/workflows/build-and-test.yml`: run `test_transport` + `test_tcp` under Wine (test_tcp probes and self-skips with a printed reason if Wine lacks usable Winsock). Existing FPU/486 grep auto-applies to `transport.o`/`tcp.o`. **Import-table assertion:** `objdump -p mcp-w32s.exe | grep -i 'wsock32\|ws2_32'` must be empty.
+- `build.sh test`: prefer **native Windows execution** of the test PEs on WSL2 (run `tests/*.exe` directly via interop); use Wine only as a fallback. `host-pbt` (Phase 4) stays native Linux.
+- `.github/workflows/build-and-test.yml` (Ubuntu — no Windows host): runs `test_transport` + `test_tcp` under Wine; `test_tcp` self-skips with a printed reason only if Wine's Winsock is unusable. Existing FPU/486 grep auto-applies to `transport.o`/`tcp.o`. **Import-table assertion:** `objdump -p mcp-w32s.exe | grep -i 'wsock32\|ws2_32'` must be empty.
 - Stack-frame watch: `sockaddr_in`/`WSADATA` are small, but keep them off oversized frames; if `__chkstk` appears in `tcp.o`, move buffers to `static`.
 
 ### Out of scope for Phase 3 (architectural reasons)
@@ -318,9 +323,9 @@ The registry + vtable is the extension seam. A new backend implements `{probe, o
 
 1. `./build.sh test` clean (strict flags); `transport.o`/`tcp.o` FPU/486-free.
 2. `objdump -p mcp-w32s.exe | grep -i 'wsock32\|ws2_32'` empty — binary still loads on bare Win32s; TCP is runtime-loaded.
-3. `test_transport`, `test_tcp` (or skipped with reason), refactored `test_serial` all pass under Wine.
+3. `test_transport`, `test_tcp`, and refactored `test_serial` all pass **run natively on the Windows host (WSL2 interop)**; `test_tcp` is proven against real Winsock (not skipped). Wine is a fallback only.
 4. End-to-end serial path unchanged: existing behavior preserved (regression check).
-5. End-to-end TCP: `mcp-w32s.exe /TCP:8932`, connect a loopback client, send `{"cmd":"echo","id":"1","line":"hi"}\n`, receive the echo response; disconnect; server accepts a second client (sequential).
+5. End-to-end TCP, run natively on the Windows host: start `mcp-w32s.exe /TCP:8932` as a Windows process; a Windows-side client (e.g. `powershell.exe` `System.Net.Sockets.TcpClient`, so both ends share Windows loopback) sends `{"cmd":"echo","id":"1","line":"hi"}\n` and receives the echo response; disconnect; the server then accepts a second client (sequential). The in-process loopback in `test_tcp.exe` is the primary automated proof.
 6. `specs/transport.allium` `allium check` clean; `/allium:weed` reports zero drift; all six Allium skills exercised per the lifecycle above.
 7. Phase 4 exec/ready code, when written, uses `Transport *` — no `HANDLE`-typed I/O in the protocol core.
 8. Total tests: 87 + ≥10 (transport) + ≥6 (tcp) + mock-backed `test_serial` response-byte assertions = **≥103 tests**.
