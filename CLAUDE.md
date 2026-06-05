@@ -163,12 +163,14 @@ i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Isrc -DTEST_BUILD \
 
 ### Running Tests
 
-```bash
-# On Windows
-tests\test_json.exe
-tests\test_serial.exe
+**Test-execution environment:** the dev host is **WSL2 on a Windows host**, so MinGW-built PEs run **natively on Windows via WSL interop** (`./tests/test_json.exe` executes through real `kernel32`/`wsock32`). This is the source of truth for local verification — **Wine is a convenience/fallback, not a requirement.** Network tests (`test_tcp`) and the TCP end-to-end path are therefore **proven against real Winsock locally and must not be skipped**; the `wsock32`-probe self-skip exists only for environments that genuinely lack Winsock (CI's Ubuntu+Wine). CI itself runs on Ubuntu and uses Wine.
 
-# On Linux CI (via Wine)
+```bash
+# On the WSL2+Windows dev host (native — no Wine, real Winsock)
+tests/test_json.exe
+tests/test_serial.exe
+
+# On Linux CI / when no Windows host is reachable (via Wine, convenience fallback)
 wine tests/test_json.exe
 wine tests/test_serial.exe
 ```
@@ -333,7 +335,7 @@ Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.all
 
 | Framework | Where it runs | Role |
 |-----------|--------------|------|
-| `tests/prop.h` (homegrown, C89) | On the target binary — Wine in CI, real Win32s in Phase 6 | Properties that must hold on the shipped C89 code path; fixed seeds, no shrinking |
+| `tests/prop.h` (homegrown, C89) | On the target PE — **native Windows via WSL2 interop locally**, Wine in CI, real Win32s in Phase 6 | Properties that must hold on the shipped C89 code path; fixed seeds, no shrinking |
 | `vendor/theft` (vendored, C99/POSIX) | Host-native Linux build only (`gcc -std=c99`, no Wine) | Deep generative testing with **autoshrinking** for OS-independent modules (`base64`, `json_parser`, `argv`, `catalog`) |
 
 theft can never compile for the Win32s target (it is C99 + POSIX) — that is by design. It hammers portable pure-logic modules natively at high trial counts, and its autoshrinker reduces failing inputs to minimal counterexamples. Properties propagated from a spec are implemented in theft first (find bugs fast), then mirrored in `prop.h` at lower trial counts (prove they hold on the actual C89/i386 build).
