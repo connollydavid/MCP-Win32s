@@ -16,7 +16,7 @@
 
 /* Property: encode then decode returns original bytes */
 PROP_TEST(base64_roundtrip) {
-    unsigned char orig[256];
+    unsigned char orig[256] = {0};
     char encoded[1024];
     unsigned char decoded[256];
     int len;
@@ -50,7 +50,7 @@ PROP_TEST(base64_roundtrip) {
 
 /* Property: encoded output contains only valid base64 chars */
 PROP_TEST(base64_output_is_valid_alphabet) {
-    unsigned char orig[64];
+    unsigned char orig[64] = {0};
     char encoded[256];
     int len;
     int enc_len;
@@ -80,7 +80,7 @@ PROP_TEST(base64_output_is_valid_alphabet) {
 
 /* Property: encoded length is ceil(n/3)*4 */
 PROP_TEST(base64_output_length) {
-    unsigned char orig[100];
+    unsigned char orig[100] = {0};
     char encoded[512];
     int len;
     int enc_len;
