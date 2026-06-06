@@ -61,6 +61,44 @@ unsigned long McpHtonl(unsigned long x)
            ((x & 0xFF000000UL) >> 24);
 }
 
+/*
+ * McpInetAddr - Parse a dotted-quad ("a.b.c.d") into a network-byte-order
+ * address, like inet_addr, but by hand so we need not import it from wsock32.
+ * An empty or malformed string yields 0 (INADDR_ANY = bind all interfaces),
+ * which is the project default.
+ */
+unsigned long McpInetAddr(const char *s)
+{
+    unsigned long octet;
+    unsigned long acc;   /* host-order address being assembled */
+    int parts;
+
+    if (s == NULL || s[0] == '\0') {
+        return 0;
+    }
+
+    acc = 0;
+    octet = 0;
+    parts = 0;
+    while (*s != '\0' && *s != ' ' && *s != '\t') {
+        if (*s >= '0' && *s <= '9') {
+            octet = octet * 10 + (unsigned long)(*s - '0');
+        } else if (*s == '.') {
+            acc = (acc << 8) | (octet & 0xFF);
+            octet = 0;
+            parts++;
+        }
+        s++;
+    }
+    acc = (acc << 8) | (octet & 0xFF);
+    parts++;
+
+    if (parts != 4) {
+        return 0;   /* malformed -> INADDR_ANY */
+    }
+    return McpHtonl(acc);
+}
+
 int TcpBackendProbe(void)
 {
     HMODULE h;
@@ -201,7 +239,7 @@ int TcpBackendOpen(const TransportConfig *cfg, Transport *out,
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = McpHtons((unsigned short)cfg->tcpPort);
-    addr.sin_addr.s_addr = 0;   /* INADDR_ANY (0, byte-order-agnostic) */
+    addr.sin_addr.s_addr = McpInetAddr(cfg->bindAddr);  /* "" => INADDR_ANY */
 
     if (g_ws.bind(s, (const struct sockaddr *)&addr, sizeof(addr)) ==
         SOCKET_ERROR) {

@@ -219,7 +219,10 @@ int main(void)
     cmdLine = GetCommandLineA();
     if (!ParseCommandLine(cmdLine, &config)) {
         MessageBoxA(NULL, "Invalid command line arguments.\n\n"
-                    "Usage: mcp-w32s.exe [/SERIAL:COMx] [/TCP:port]",
+                    "Usage: mcp-w32s.exe [/SERIAL:COMx | /TCP:port | /AUTO[:port]]\n"
+                    "                    [/BIND:addr]\n\n"
+                    "  /AUTO   try TCP, fall back to serial\n"
+                    "  /BIND   restrict TCP to addr (default: all interfaces)",
                     "MCP-Win32s", MB_OK | MB_ICONERROR);
         return 1;
     }
