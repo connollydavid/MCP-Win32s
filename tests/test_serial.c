@@ -212,9 +212,11 @@ TEST_CASE(dcb_null_safe) {
 TEST_CASE(timeouts_values) {
     COMMTIMEOUTS t;
     BuildSerialTimeouts(&t);
+    /* Interval-only: ReadFile blocks until a burst, idle never ends the
+     * session. Total multiplier/constant MUST be 0 (see BuildSerialTimeouts). */
     TEST_ASSERT_INT_EQUAL(50, (int)t.ReadIntervalTimeout, "interval");
-    TEST_ASSERT_INT_EQUAL(10, (int)t.ReadTotalTimeoutMultiplier, "multiplier");
-    TEST_ASSERT_INT_EQUAL(50, (int)t.ReadTotalTimeoutConstant, "constant");
+    TEST_ASSERT_INT_EQUAL(0, (int)t.ReadTotalTimeoutMultiplier, "no total multiplier");
+    TEST_ASSERT_INT_EQUAL(0, (int)t.ReadTotalTimeoutConstant, "no total constant");
     TEST_ASSERT_INT_EQUAL(0, (int)t.WriteTotalTimeoutMultiplier, "write mult");
     TEST_ASSERT_INT_EQUAL(0, (int)t.WriteTotalTimeoutConstant, "write const");
 }

@@ -51,6 +51,7 @@ entity Transport {
         listening -> closed
         connected -> listening
         connected -> closed
+        connected -> error
         terminal: closed, error
     }
 }
@@ -135,10 +136,23 @@ rule TcpReacceptsAfterClose {
     ensures: t.status = listening
 }
 
+-- An orderly peer-close (-> closed on disconnect) belongs to backends that
+-- actually signal a disconnect. The mock backend models this for tests.
+-- serial has NO orderly close (see SerialHasNoOrderlyClose) and tcp relistens
+-- instead of closing, so neither takes this path.
 rule ConnectionCloses {
     when: PeerDisconnected(t)
-    requires: t.status = connected and t.kind != tcp
+    requires: t.status = connected and t.kind = mock
     ensures: t.status = closed
+}
+
+-- A comms failure on a live connection drops it to error. For serial this
+-- (or an explicit shutdown) is the ONLY exit from connected: an idle line
+-- stays connected, with no orderly peer-disconnect.
+rule ConnectionErrored {
+    when: TransportError(t)
+    requires: t.status = connected
+    ensures: t.status = error
 }
 
 rule TransportShutdown {
@@ -180,3 +194,10 @@ invariant StreamBackendsNotMessageOriented {
     for t in Transports:
         t.kind in {serial, tcp} implies not t.message_oriented
 }
+
+@invariant SerialHasNoOrderlyClose
+    -- A serial line has no orderly peer-disconnect: silence never ends a
+    -- session. A connected serial transport stays connected until a comms
+    -- error (connected -> error) or an explicit shutdown (connected ->
+    -- closed); it never reaches closed via a peer disconnect. (tcp relistens
+    -- on disconnect; the mock backend models an orderly close for tests.)
