@@ -2,8 +2,10 @@
  * mcp-w32s.c - MCP Win32s shell: main executable
  *
  * Model Context Protocol server for Win32 systems.
- * Reads newline-delimited JSON commands from a transport (serial/TCP/pipe),
- * dispatches them, and writes JSON responses back.
+ * Reads newline-delimited JSON commands from a transport (serial/TCP/...),
+ * dispatches them, and writes JSON responses back. All protocol I/O goes
+ * through the backend-agnostic Transport vtable (transport.h) - the core
+ * never touches a raw HANDLE or SOCKET.
  *
  * Runs unmodified on Windows 3.1 + Win32s 1.25a through Windows 11.
  *
@@ -15,13 +17,15 @@
 #include <string.h>
 #include "common.h"
 #include "json_parser.h"
+#include "transport.h"
 #include "serial.h"
+#include "tcp.h"
 #include "base64.h"
 #include "file_ops.h"
 
 /* Protocol constants */
-#define READY_MESSAGE   "MCP_WIN32S_READY\n"
 #define CMD_BUF_SIZE    8192
+#define READ_CHUNK      256
 
 /*
  * LineBuffer - Accumulates characters and splits on newline boundaries.
@@ -35,21 +39,14 @@ typedef struct {
  * ProcessBuffer - Feed a chunk of bytes into the line buffer.
  *
  * For each complete line (terminated by '\n'), calls the handler function
- * with the line content (null-terminated, newline stripped).
- * Partial lines are accumulated until the next call.
- *
- * Parameters:
- *   buf      - the line buffer state
- *   input    - new bytes to process
- *   inputLen - number of bytes in input
- *   handler  - function called for each complete line
- *   hOutput  - handle passed through to handler (for writing responses)
+ * with the line content (null-terminated, newline stripped) and the
+ * transport to write responses to. Partial lines are accumulated.
  *
  * Returns: number of complete lines processed.
  */
 int ProcessBuffer(LineBuffer *buf, const char *input, int inputLen,
-                  void (*handler)(const char *line, HANDLE hOutput),
-                  HANDLE hOutput)
+                  void (*handler)(const char *line, Transport *t),
+                  Transport *t)
 {
     int i;
     int lines;
@@ -59,7 +56,7 @@ int ProcessBuffer(LineBuffer *buf, const char *input, int inputLen,
         if (input[i] == '\n') {
             buf->data[buf->pos] = '\0';
             if (handler != NULL) {
-                handler(buf->data, hOutput);
+                handler(buf->data, t);
             }
             buf->pos = 0;
             lines++;
@@ -74,19 +71,14 @@ int ProcessBuffer(LineBuffer *buf, const char *input, int inputLen,
 /*
  * ProcessCommand - Parse a JSON command line and write a JSON response.
  *
- * Currently a stub that acknowledges commands. Full command dispatch
- * (exec, read, write, list, delete) will be implemented in Phase 3.
- *
- * Parameters:
- *   line    - null-terminated JSON command string
- *   hOutput - handle to write response to (serial port, pipe, etc.)
+ * Writes responses through the Transport vtable. A NULL transport skips
+ * the write (used by tests that only exercise parse/dispatch).
  */
-void ProcessCommand(const char *line, HANDLE hOutput)
+void ProcessCommand(const char *line, Transport *t)
 {
     JsonCommand cmd;
     char response[MCP_MAX_RESPONSE];
     int responseLen;
-    DWORD bytesWritten;
     static unsigned char raw[MCP_MAX_DATA];
     static char b64[MCP_MAX_DATA];
     static char fileList[MCP_MAX_DATA];
@@ -102,9 +94,8 @@ void ProcessCommand(const char *line, HANDLE hOutput)
         responseLen = BuildJsonResponse("", "error", "error",
                                         "invalid JSON", response,
                                         sizeof(response));
-        if (responseLen > 0 && hOutput != INVALID_HANDLE_VALUE) {
-            WriteFile(hOutput, response, (DWORD)responseLen,
-                      &bytesWritten, NULL);
+        if (responseLen > 0 && t != NULL) {
+            TransportWriteAll(t, response, responseLen);
         }
         return;
     }
@@ -178,83 +169,90 @@ void ProcessCommand(const char *line, HANDLE hOutput)
                                         response, sizeof(response));
     }
 
-    if (responseLen > 0 && hOutput != INVALID_HANDLE_VALUE) {
-        WriteFile(hOutput, response, (DWORD)responseLen,
-                  &bytesWritten, NULL);
+    if (responseLen > 0 && t != NULL) {
+        TransportWriteAll(t, response, responseLen);
     }
 }
 
 #ifndef TEST_BUILD
 /*
- * MainLoop - Read from transport and dispatch commands.
- *
- * Reads one byte at a time, feeds into the line buffer,
- * and dispatches complete lines to ProcessCommand.
- *
- * Parameters:
- *   hTransport - handle to read from and write to
+ * SendReady - Write the per-connection ready message naming the backend.
  */
-static void MainLoop(HANDLE hTransport)
+static void SendReady(Transport *t)
 {
-    LineBuffer buf;
-    char ch;
-    DWORD bytesRead;
-
-    memset(&buf, 0, sizeof(buf));
-
-    while (ReadFile(hTransport, &ch, 1, &bytesRead, NULL) && bytesRead > 0) {
-        ProcessBuffer(&buf, &ch, 1, ProcessCommand, hTransport);
-    }
+    char msg[96];
+    msg[0] = '\0';
+    lstrcatA(msg, "{\"status\":\"ready\",\"transport\":\"");
+    lstrcatA(msg, TransportName(t));
+    lstrcatA(msg, "\"}\n");
+    TransportWriteAll(t, msg, lstrlenA(msg));
 }
 
 /*
- * SendReady - Write the ready message to the transport.
+ * Serve - Read from a connection and dispatch commands until it closes.
  */
-static void SendReady(HANDLE hTransport)
+static void Serve(Transport *t)
 {
-    DWORD bytesWritten;
-    int len;
+    LineBuffer buf;
+    char chunk[READ_CHUNK];
+    int n;
 
-    len = 0;
-    while (READY_MESSAGE[len] != '\0') {
-        len++;
+    memset(&buf, 0, sizeof(buf));
+
+    for (;;) {
+        n = t->read(t, chunk, (int)sizeof(chunk));
+        if (n <= 0) {
+            break;
+        }
+        ProcessBuffer(&buf, chunk, n, ProcessCommand, t);
     }
-    WriteFile(hTransport, READY_MESSAGE, (DWORD)len, &bytesWritten, NULL);
 }
 
 int main(void)
 {
     TransportConfig config;
-    HANDLE hTransport;
+    Transport listener;
+    Transport *conn;
+    char err[160];
     const char *cmdLine;
 
     cmdLine = GetCommandLineA();
     if (!ParseCommandLine(cmdLine, &config)) {
         MessageBoxA(NULL, "Invalid command line arguments.\n\n"
-                    "Usage: mcp-w32s.exe [/SERIAL:COMx] [/TCP:port] "
-                    "[/PIPE:\\\\.\\pipe\\name]",
+                    "Usage: mcp-w32s.exe [/SERIAL:COMx] [/TCP:port]",
                     "MCP-Win32s", MB_OK | MB_ICONERROR);
         return 1;
     }
 
-    /* Currently only serial transport is implemented */
-    if (config.transport == TRANSPORT_SERIAL) {
-        hTransport = OpenSerialPort(config.port, config.baudRate);
-        if (hTransport == INVALID_HANDLE_VALUE) {
-            MessageBoxA(NULL, "Failed to open serial port.",
-                        "MCP-Win32s", MB_OK | MB_ICONERROR);
-            return 1;
+    SerialBackendRegister();
+    TcpBackendRegister();
+
+    if (!TransportOpen(&config, &listener, err, sizeof(err))) {
+        MessageBoxA(NULL, err, "MCP-Win32s", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    /* Accept loop. Serial is point-to-point (no accept): one peer, done.
+     * TCP is a listener: serve one client, then accept the next. */
+    for (;;) {
+        conn = listener.accept ? listener.accept(&listener) : &listener;
+        if (conn == NULL) {
+            break;
         }
-    } else {
-        MessageBoxA(NULL, "Only serial transport is currently supported.\n"
-                    "Use /SERIAL:COMx or run with no arguments for COM1.",
-                    "MCP-Win32s", MB_OK | MB_ICONERROR);
-        return 1;
+        SendReady(conn);
+        Serve(conn);
+        if (conn != &listener && conn->close != NULL) {
+            conn->close(conn);
+        }
+        if (listener.accept == NULL) {
+            break;
+        }
     }
 
-    SendReady(hTransport);
-    MainLoop(hTransport);
-    CloseSerialPort(hTransport);
+    if (listener.close != NULL) {
+        listener.close(&listener);
+    }
+    TcpBackendCleanup();
 
     return 0;
 }
