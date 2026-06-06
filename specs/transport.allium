@@ -127,8 +127,10 @@ rule TcpAccepts {
     ensures: t.status = connected
 }
 
--- Single-client-sequential: a tcp client disconnect returns the server
--- to listening to accept the next client; any other backend closes.
+-- Single-client-sequential: when a tcp client goes away the server returns to
+-- listening to accept the next client. PeerDisconnected covers any detected
+-- loss of the peer - an orderly disconnect or a connection fault noticed while
+-- serving - not only a clean close.
 
 rule TcpReacceptsAfterClose {
     when: PeerDisconnected(t)
@@ -146,12 +148,14 @@ rule ConnectionCloses {
     ensures: t.status = closed
 }
 
--- A comms failure on a live connection drops it to error. For serial this
--- (or an explicit shutdown) is the ONLY exit from connected: an idle line
--- stays connected, with no orderly peer-disconnect.
+-- A comms failure on a live serial connection drops it to error. For serial
+-- this (or an explicit shutdown) is the ONLY exit from connected: an idle line
+-- stays connected, with no orderly peer-disconnect. tcp does not terminate on
+-- a connection fault - it relistens (see TcpReacceptsAfterClose) - and mock
+-- closes, so a connected -> error exit is serial-only.
 rule ConnectionErrored {
     when: TransportError(t)
-    requires: t.status = connected
+    requires: t.status = connected and t.kind = serial
     ensures: t.status = error
 }
 
