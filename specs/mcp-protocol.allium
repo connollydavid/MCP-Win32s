@@ -84,15 +84,15 @@ rule ReadCommand {
     requires: cmd.cmd = read
     ensures: fileops/FileReadResult.created(
         file: fileops/File(path: cmd.path),
-        data: cmd.data,
         request_id: cmd.id
     )
 }
 
 rule ReadSuccess {
     when: result: fileops/FileReadResult.status becomes ok
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.file,
+        command: cmd,
         id: result.request_id,
         status: ok,
         key: "data",
@@ -102,8 +102,9 @@ rule ReadSuccess {
 
 rule ReadError {
     when: result: fileops/FileReadResult.status becomes error
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.file,
+        command: cmd,
         id: result.request_id,
         status: error,
         key: "error",
@@ -116,15 +117,15 @@ rule WriteCommand {
     requires: cmd.cmd = write
     ensures: fileops/FileWriteResult.created(
         file: fileops/File(path: cmd.path),
-        data: cmd.data,
         request_id: cmd.id
     )
 }
 
 rule WriteSuccess {
     when: result: fileops/FileWriteResult.status becomes ok
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.file,
+        command: cmd,
         id: result.request_id,
         status: ok,
         key: "message",
@@ -134,8 +135,9 @@ rule WriteSuccess {
 
 rule WriteError {
     when: result: fileops/FileWriteResult.status becomes error
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.file,
+        command: cmd,
         id: result.request_id,
         status: error,
         key: "error",
@@ -154,8 +156,9 @@ rule ListCommand {
 
 rule ListSuccess {
     when: result: fileops/FileListResult.status becomes ok
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.directory,
+        command: cmd,
         id: result.request_id,
         status: ok,
         key: "files",
@@ -165,8 +168,9 @@ rule ListSuccess {
 
 rule ListError {
     when: result: fileops/FileListResult.status becomes error
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.directory,
+        command: cmd,
         id: result.request_id,
         status: error,
         key: "error",
@@ -185,8 +189,9 @@ rule DeleteCommand {
 
 rule DeleteSuccess {
     when: result: fileops/FileDeleteResult.status becomes ok
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.file,
+        command: cmd,
         id: result.request_id,
         status: ok,
         key: "message",
@@ -196,8 +201,9 @@ rule DeleteSuccess {
 
 rule DeleteError {
     when: result: fileops/FileDeleteResult.status becomes error
+    let cmd = Command{id: result.request_id}
     ensures: Response.created(
-        command: result.file,
+        command: cmd,
         id: result.request_id,
         status: error,
         key: "error",
@@ -226,6 +232,12 @@ invariant ResponseHasContent {
     for resp in Responses:
         resp.status = ok implies resp.value.size >= 0 and resp.key.size >= 0
 }
+
+-- Pre-parse reject (recorded; the Command lifecycle begins at successful
+-- parse): a line that fails JSON parsing never creates a Command. The
+-- server replies directly at the boundary with
+-- {"id":"","status":"error","error":"invalid JSON"} and continues
+-- serving. Empty lines are ignored without a response.
 
 -- Backend-agnostic boundary: commands may be sent once the active
 -- transport (serial, tcp or any future backend) reaches connected.

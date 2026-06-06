@@ -214,6 +214,27 @@ TEST_CASE(list_contains_file) {
     cleanup("test_list.txt");
 }
 
+/*
+ * Obligation: file-ops.allium rule FileListNotFound — an empty directory
+ * path is an error ("directory not found"), never a listing of the
+ * server's current working directory (weed 2026-06-06, finding #1).
+ */
+TEST_CASE(list_empty_path_errors) {
+    char err[128];
+    char listing[256];
+    int ok;
+
+    listing[0] = '\0';
+    err[0] = '\0';
+
+    ok = FileOpList("", listing, sizeof(listing), err, sizeof(err));
+    TEST_ASSERT_INT_EQUAL(0, ok, "list empty path returns 0");
+    TEST_ASSERT_STR_EQUAL("directory not found", err,
+                          "empty path reports directory not found");
+    TEST_ASSERT_INT_EQUAL(0, (int)listing[0],
+                          "no listing produced for empty path");
+}
+
 TEST_CASE(list_nonexistent_dir) {
     char path[260];
     char err[128];
@@ -354,6 +375,7 @@ int main(void)
     RUN_TEST(delete_existing);
     RUN_TEST(delete_nonexistent);
     RUN_TEST(list_contains_file);
+    RUN_TEST(list_empty_path_errors);
     RUN_TEST(list_nonexistent_dir);
     RUN_TEST(overwrite_file);
     RUN_TEST(read_file_too_large);

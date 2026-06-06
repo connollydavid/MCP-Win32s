@@ -183,6 +183,16 @@ int FileOpList(const char *path, char *out, int outSize,
         return 0;
     }
 
+    /*
+     * An empty path is an error, not the current directory: building the
+     * search path from "" would yield "*" and silently list the server's
+     * CWD (spec: file-ops.allium rule FileListNotFound).
+     */
+    if (path[0] == '\0') {
+        err_set(errMsg, errSize, "directory not found");
+        return 0;
+    }
+
     /* Build search path: path + "\\*" */
     searchLen = 0;
     for (i = 0; path[i] != '\0' && searchLen < 260; i++) {
