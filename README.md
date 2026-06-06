@@ -1291,7 +1291,7 @@ int HasNamedPipeSupport(void) {
 
 ---
 
-### Unified Transport Implementation (Planned - Phase 3)
+### Unified Transport Implementation (Implemented - Phase 3)
 
 **Design**: All three transports share identical I/O via ReadFile/WriteFile.
 Phase 1 implements serial only; TCP and pipe support will follow this pattern:
@@ -2766,7 +2766,7 @@ def unix_to_win32(unix_path):
 |------|-------|-------|--------|
 | 1 | Phase 1 | Test framework + JSON parser + CI | **Complete** |
 | 2 | Phase 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
-| 3 | Phase 3 | Network & transport: vtable backends, serial refactor + TCP/Winsock peer | Spec'd — in progress |
+| 3 | Phase 3 | Network & transport: vtable backends, serial refactor + TCP/Winsock peer, /AUTO + /BIND, SO_KEEPALIVE | **Complete** |
 | 4 | Phase 4 | Command execution + protocol | Spec'd |
 | 5 | Phase 5 | MCP integration | Not started |
 | 6 | Phase 6 | Cross-platform testing | Not started |
@@ -2818,7 +2818,7 @@ def unix_to_win32(unix_path):
 
 ## Project Status
 
-**Current Phase:** Phase 2 complete (file operations + base64 + echo + 87 tests incl. PBT). Phase 3 (network & transport: serial + TCP/Winsock) is fully planned and next; command execution follows as Phase 4.
+**Current Phase:** Phase 3 complete (transport vtable, serial refactored onto it, TCP/Winsock peer runtime-loaded, /AUTO fallback + /BIND scope, SO_KEEPALIVE, 115 tests incl. PBT). Command execution follows as Phase 4.
 
 This is a technical design specification for bridging MCP clients with Win32 systems across the full Windows family (Win32s 1.25a through Windows 11). The project emphasizes maximum compatibility through strict adherence to the Win32s 1.25a API subset and i386 instruction set.
 
