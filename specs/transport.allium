@@ -199,9 +199,11 @@ invariant StreamBackendsNotMessageOriented {
         t.kind in {serial, tcp} implies not t.message_oriented
 }
 
-@invariant SerialHasNoOrderlyClose
-    -- A serial line has no orderly peer-disconnect: silence never ends a
-    -- session. A connected serial transport stays connected until a comms
-    -- error (connected -> error) or an explicit shutdown (connected ->
-    -- closed); it never reaches closed via a peer disconnect. (tcp relistens
-    -- on disconnect; the mock backend models an orderly close for tests.)
+-- SerialHasNoOrderlyClose (prose; transition provenance is not expressible
+-- as a state invariant — the property is enforced by the kind guards on
+-- ConnectionCloses and ConnectionErrored):
+-- A serial line has no orderly peer-disconnect: silence never ends a
+-- session. A connected serial transport stays connected until a comms
+-- error (connected -> error) or an explicit shutdown (connected ->
+-- closed); it never reaches closed via a peer disconnect. (tcp relistens
+-- on disconnect; the mock backend models an orderly close for tests.)
