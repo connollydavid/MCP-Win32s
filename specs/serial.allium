@@ -1,0 +1,114 @@
+-- allium: 3
+-- serial.allium
+
+-- Scope: The serial backend's line discipline and session semantics -
+--        distilled from src/serial.c (Phases 1-2 spec debt, backfilled
+--        in Phase 4)
+-- Includes: port configuration decisions, idle/read semantics, how a
+--           serial session ends
+-- Excludes:
+--   - Backend selection / registry / lifecycle states
+--     (transport.allium owns Transport and TransportBackend; serial is
+--     its always-available baseline with NO orderly close - see
+--     transport.allium's SerialHasNoOrderlyClose note)
+--   - Newline-JSON framing (lives above the transport)
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- A configured COM port carrying one session. Configuration is fixed
+-- by design, not negotiable per peer: 8 data bits, no parity, one stop
+-- bit, binary mode, no software or hardware flow control, with DTR and
+-- RTS asserted so simple null-modem peers see a live terminal.
+entity SerialSession {
+    port_name: String
+    baud_rate: Integer
+    status: open | failed | errored | closed
+
+    transitions status {
+        open -> errored
+        open -> closed
+        terminal: failed, errored, closed
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule PortOpens {
+    when: PortOpenRequested(port_name, baud_rate, usable)
+    requires: usable = true
+    ensures: SerialSession.created(
+        port_name: port_name,
+        baud_rate: baud_rate,
+        status: open
+    )
+}
+
+-- Opening fails as one outcome whether the port is absent, busy, or
+-- refuses configuration: a port that cannot take the fixed line
+-- discipline is unusable, never half-configured.
+rule PortOpenFails {
+    when: PortOpenRequested(port_name, baud_rate, usable)
+    requires: usable = false
+    ensures: SerialSession.created(
+        port_name: port_name,
+        baud_rate: baud_rate,
+        status: failed
+    )
+}
+
+-- The defining serial decision (distilled from the interval-only
+-- timeout configuration): an IDLE LINE IS A LIVE SESSION. A read on an
+-- idle port waits indefinitely for the first byte, then delivers each
+-- burst after a short lull; it never reports "nothing" in a way the
+-- session layer could mistake for a peer close. Only a real comms
+-- error ends the session from the line side.
+rule CommsErrorEndsSession {
+    when: CommsError(s)
+    requires: s.status = open
+    ensures: s.status = errored
+}
+
+rule OperatorClosesSession {
+    when: SessionCloseRequested(s)
+    requires: s.status = open
+    ensures: s.status = closed
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant SessionsNameTheirPort {
+    for s in SerialSessions:
+        s.status = open implies s.port_name.size > 0
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The operator boundary: startup selects port and baud; shutdown
+-- closes the session.
+surface SerialOperator {
+    facing s: SerialSession
+
+    provides:
+        PortOpenRequested(port_name, baud_rate, usable)
+        SessionCloseRequested(s)
+            when s.status = open
+}
+
+-- The line itself: the only event a serial peer can produce is a comms
+-- fault (there is no orderly disconnect on a serial line).
+surface SerialLine {
+    facing s: SerialSession
+
+    provides:
+        CommsError(s)
+            when s.status = open
+}

@@ -1,0 +1,93 @@
+-- allium: 3
+-- json-parser.allium
+
+-- Scope: The wire-line codec for the command protocol - distilled from
+--        src/json_parser.c (Phases 1-2 spec debt, backfilled in
+--        Phase 4, which added the exec field grammar)
+-- Includes: command-line parsing (one JSON object per line), the field
+--           grammar, response building
+-- Excludes:
+--   - What commands MEAN (mcp-protocol.allium owns dispatch)
+--   - The catalog file's own JSON (catalog.allium / catalog.c scanner)
+--   - Multi-key exec responses (assembled by the dispatcher; this
+--     module builds the one-key envelope and the escaping primitive)
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- One received line offered to the parser. Parsing is total: any
+-- input yields parsed or rejected, never a crash or over-read
+-- (PBT-verified: fuzz property, theft + ASan).
+entity CommandLine {
+    status: parsed | rejected
+
+    transitions status {
+        terminal: parsed, rejected
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- A line parses when it is a single JSON object of known-grammar
+-- key/value pairs:
+--   strings:  cmd, id, path, line, data, cwd, stdin_b64
+--   integers: timeout_ms, max_output, mem_cap_bytes, cpu_time_ms,
+--             cols, rows (sign allowed, no fraction)
+--   booleans: shell, unsafe
+--   array:    argv (strings only; elements beyond the receiver's
+--             capacity are dropped silently - the dispatcher polices
+--             meaning, the parser polices shape)
+-- Unknown keys are ignored, whatever their value kind (forward
+-- compatibility); JSON string escapes are decoded; missing fields are
+-- absent (zero) rather than an error; null leaves a field absent.
+rule LineParses {
+    when: LineReceived(line, well_formed)
+    requires: well_formed = true
+    ensures: line.status = parsed
+}
+
+-- Rejection covers, equivalently: no opening brace, an unterminated
+-- object/string/array, a bare-word value, a fractional number, or a
+-- non-string argv element. The server answers a rejected line with the
+-- pre-parse error response and keeps serving (mcp-protocol.allium's
+-- pre-parse note).
+rule LineRejected {
+    when: LineReceived(line, well_formed)
+    requires: well_formed = false
+    ensures: line.status = rejected
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The response-building obligation the dispatcher relies on.
+contract ResponseEnvelope {
+    build_response: (id: String, status: String, key: String, value: String) -> String
+
+    @invariant EnvelopeShape
+        -- Produces exactly one newline-terminated JSON object:
+        -- {"id":<id>,"status":<status>,<key>:<escaped value>}. The
+        -- value is JSON-escaped (quotes, backslashes, control chars);
+        -- null inputs are treated as empty strings; a too-small
+        -- output buffer yields no partial line.
+
+    @invariant EscapeRoundtrip
+        -- unescape(escape(s)) = s for every string (PBT-verified).
+}
+
+-- The transport boundary: complete newline-delimited lines arrive from
+-- the framing layer above the active transport.
+surface FramingLayer {
+    facing l: CommandLine
+
+    contracts:
+        fulfils ResponseEnvelope
+
+    provides:
+        LineReceived(l, well_formed)
+}
