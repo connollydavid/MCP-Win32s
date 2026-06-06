@@ -1,0 +1,182 @@
+-- allium: 3
+-- transport.allium
+
+-- Scope: Backend-agnostic transport layer for MCP-Win32s
+-- Includes: backend registry + runtime probe, backend selection with
+--           fallback, connection lifecycle (single-client-sequential),
+--           per-connection ready message
+-- Excludes:
+--   - Command dispatch and responses (mcp-protocol.allium)
+--   - Wire framing (newline-JSON lives above the transport; a
+--     message_oriented backend bypasses it)
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- serial: point-to-point COM port (all Win32, always available)
+-- tcp:    Winsock 1.1 listener that accepts clients (runtime-probed)
+-- mock:   in-memory backend for tests
+enum TransportKind { serial | tcp | mock }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- A registered backend in the transport registry. `available` is the
+-- result of a runtime probe (e.g. wsock32 present for tcp). serial is
+-- always available; it is the baseline and the autodetect fallback.
+entity TransportBackend {
+    kind: TransportKind
+    name: String
+    available: Boolean
+}
+
+-- A live transport. serial/mock open straight to connected
+-- (point-to-point, no accept). tcp opens to listening, then accepts a
+-- client to reach connected, and returns to listening when the client
+-- disconnects (single-client-sequential).
+entity Transport {
+    name: String
+    kind: TransportKind
+    message_oriented: Boolean
+    status: opening | listening | connected | closed | error
+
+    transitions status {
+        opening   -> connected
+        opening   -> listening
+        opening   -> error
+        listening -> connected
+        listening -> closed
+        connected -> listening
+        connected -> closed
+        terminal: closed, error
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Selection: an explicit or default request for a backend.
+
+rule TransportSelected {
+    when: TransportRequested(requested, autodetect)
+    let backend = TransportBackend{kind: requested}
+    requires: exists backend and backend.available
+    ensures: Transport.created(
+        kind: requested,
+        name: backend.name,
+        message_oriented: false,
+        status: opening
+    )
+}
+
+rule TransportFallsBackToSerial {
+    when: TransportRequested(requested, autodetect)
+    let backend = TransportBackend{kind: requested}
+    requires: autodetect = true and (not exists backend or not backend.available)
+    let serial_backend = TransportBackend{kind: serial}
+    ensures: Transport.created(
+        kind: serial,
+        name: serial_backend.name,
+        message_oriented: false,
+        status: opening
+    )
+}
+
+rule TransportRequestUnavailable {
+    when: TransportRequested(requested, autodetect)
+    let backend = TransportBackend{kind: requested}
+    requires: autodetect = false and (not exists backend or not backend.available)
+    ensures: TransportUnavailable(requested: requested)
+}
+
+-- Probe: a runtime check records whether a backend is usable here.
+
+rule BackendProbed {
+    when: BackendProbeCompleted(backend, result)
+    ensures: backend.available = result
+}
+
+-- Lifecycle: opening resolves per backend kind.
+
+rule PointToPointOpens {
+    when: t: Transport.status becomes opening
+    requires: t.kind in {serial, mock}
+    ensures: t.status = connected
+}
+
+rule TcpListens {
+    when: t: Transport.status becomes opening
+    requires: t.kind = tcp
+    ensures: t.status = listening
+}
+
+rule TransportOpenFails {
+    when: TransportOpenFailed(t)
+    requires: t.status = opening
+    ensures: t.status = error
+}
+
+rule TcpAccepts {
+    when: TcpClientAccepted(t)
+    requires: t.status = listening
+    ensures: t.status = connected
+}
+
+-- Single-client-sequential: a tcp client disconnect returns the server
+-- to listening to accept the next client; any other backend closes.
+
+rule TcpReacceptsAfterClose {
+    when: PeerDisconnected(t)
+    requires: t.status = connected and t.kind = tcp
+    ensures: t.status = listening
+}
+
+rule ConnectionCloses {
+    when: PeerDisconnected(t)
+    requires: t.status = connected and t.kind != tcp
+    ensures: t.status = closed
+}
+
+rule TransportShutdown {
+    when: TransportShutdownRequested(t)
+    requires: t.status in {listening, connected}
+    ensures: t.status = closed
+}
+
+-- The ready message is emitted once per connection and names the
+-- active backend, so the bridge can surface transport metadata.
+
+rule ReadyOnConnect {
+    when: t: Transport.status transitions_to connected
+    ensures: ReadyMessageSent(transport: t, backend: t.name)
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ConnectionHasName {
+    for t in Transports:
+        t.status = connected implies t.name.size > 0
+}
+
+invariant SerialNeverListens {
+    for t in Transports:
+        t.kind = serial implies t.status != listening
+}
+
+invariant SerialAlwaysAvailable {
+    for b in TransportBackends:
+        b.kind = serial implies b.available
+}
+
+-- The baseline backends are byte-streams framed by newline-JSON above
+-- the transport. Only future message-oriented backends bypass framing.
+invariant StreamBackendsNotMessageOriented {
+    for t in Transports:
+        t.kind in {serial, tcp} implies not t.message_oriented
+}
