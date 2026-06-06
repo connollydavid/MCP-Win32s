@@ -15,7 +15,7 @@
 - `specs/mcp-protocol.allium` / `specs/file-ops.allium` — Allium specs
 - 87 tests passing, all builds clean, binary FPU/486-free
 
-## Phase 3: Network & Transport (serial + TCP/Winsock) — In Progress
+## Phase 3: Network & Transport (serial + TCP/Winsock) — **Complete**
 
 **Goal.** Make the network a first-class peer of the serial port. Replace the `HANDLE`-hardwired protocol I/O with a transport-agnostic byte-pipe interface backed by pluggable, runtime-registered backends; refactor serial onto it; add a TCP backend over Winsock 1.1; add a mock backend that makes response bytes assertable in tests. The same seam admits future backends — UDP / HTTP-3 (QUIC), then exotic message/RDMA transports (e.g. ibverbs-over-Thunderbolt) — without touching the protocol core. Phase 3 is fully self-contained: abstraction + registry + serial refactor + TCP backend + runtime detection + mock backend + specs + tests + CI, all in scope here.
 
