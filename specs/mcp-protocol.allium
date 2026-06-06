@@ -5,11 +5,12 @@
 -- Includes: command dispatch, response correlation, transport contract
 -- Excludes:
 --   - Authentication (not applicable)
---   - TCP transport (Phase 3)
---   - Named pipes (Phase 3+)
--- Dependencies: file-ops.allium
+--   - Transport backends + lifecycle (transport.allium)
+--   - Named pipes backend (Phase 5+)
+-- Dependencies: file-ops.allium, transport.allium
 
 use "./file-ops.allium" as fileops
+use "./transport.allium" as transport
 
 entity Command {
     cmd: String
@@ -38,12 +39,8 @@ entity Response {
     }
 }
 
-entity Transport {
-    ready: Boolean
-}
-
 given {
-    transport: Transport
+    transport: transport/Transport
 }
 
 rule CommandCreated {
@@ -230,17 +227,17 @@ invariant ResponseHasContent {
         resp.status = ok implies resp.value.size >= 0 and resp.key.size >= 0
 }
 
-surface SerialPort {
-    facing transport: Transport
+-- Backend-agnostic boundary: commands may be sent once the active
+-- transport (serial, tcp or any future backend) reaches connected.
+surface TransportConnection {
+    facing transport: transport/Transport
 
     exposes:
-        transport.ready
+        transport.status
 
     provides:
         CommandSent(cmd: Command)
-            when transport.ready = true
+            when transport.status = connected
 }
 
-deferred ExecCommand.implementation    -- see: Phase 3 (command execution)
-
-open question "Should the ready message include transport metadata (baud rate, code page)?"
+deferred ExecCommand.implementation    -- see: process-ops.allium (Phase 4)

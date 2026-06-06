@@ -12,9 +12,11 @@
 #include <stdio.h>
 #include <string.h>
 #include "test_framework.h"
+#include "transport.h"
 #include "serial.h"
 #include "json_parser.h"
 #include "common.h"
+#include "mock_transport.h"
 
 /* ========================================================
  * Forward declarations for functions in mcp-w32s.c
@@ -29,10 +31,10 @@ typedef struct {
 } LineBuffer;
 
 extern int ProcessBuffer(LineBuffer *buf, const char *input, int inputLen,
-                         void (*handler)(const char *line, HANDLE hOutput),
-                         HANDLE hOutput);
+                         void (*handler)(const char *line, Transport *t),
+                         Transport *t);
 
-extern void ProcessCommand(const char *line, HANDLE hOutput);
+extern void ProcessCommand(const char *line, Transport *t);
 
 /* ========================================================
  * Test helpers
@@ -45,9 +47,9 @@ extern void ProcessCommand(const char *line, HANDLE hOutput);
 static char g_captured_lines[MAX_CAPTURED_LINES][MAX_LINE_LEN];
 static int g_captured_count = 0;
 
-static void capture_handler(const char *line, HANDLE hOutput)
+static void capture_handler(const char *line, Transport *t)
 {
-    (void)hOutput;
+    (void)t;
     if (g_captured_count < MAX_CAPTURED_LINES) {
         int i;
         for (i = 0; line[i] != '\0' && i < MAX_LINE_LEN - 1; i++) {
@@ -233,7 +235,7 @@ TEST_CASE(buffer_single_line) {
     reset_capture();
 
     lines = ProcessBuffer(&buf, "hello\n", 6, capture_handler,
-                          INVALID_HANDLE_VALUE);
+                          NULL);
     TEST_ASSERT_INT_EQUAL(1, lines, "one line processed");
     TEST_ASSERT_INT_EQUAL(1, g_captured_count, "one line captured");
     TEST_ASSERT_STR_EQUAL("hello", g_captured_lines[0], "line content");
@@ -246,7 +248,7 @@ TEST_CASE(buffer_two_lines) {
     reset_capture();
 
     lines = ProcessBuffer(&buf, "one\ntwo\n", 8, capture_handler,
-                          INVALID_HANDLE_VALUE);
+                          NULL);
     TEST_ASSERT_INT_EQUAL(2, lines, "two lines processed");
     TEST_ASSERT_INT_EQUAL(2, g_captured_count, "two lines captured");
     TEST_ASSERT_STR_EQUAL("one", g_captured_lines[0], "first line");
@@ -261,13 +263,13 @@ TEST_CASE(buffer_partial_line) {
 
     /* First chunk: partial line */
     lines = ProcessBuffer(&buf, "hel", 3, capture_handler,
-                          INVALID_HANDLE_VALUE);
+                          NULL);
     TEST_ASSERT_INT_EQUAL(0, lines, "no complete line yet");
     TEST_ASSERT_INT_EQUAL(0, g_captured_count, "nothing captured");
 
     /* Second chunk: rest of line + newline */
     lines = ProcessBuffer(&buf, "lo\n", 3, capture_handler,
-                          INVALID_HANDLE_VALUE);
+                          NULL);
     TEST_ASSERT_INT_EQUAL(1, lines, "one line completed");
     TEST_ASSERT_INT_EQUAL(1, g_captured_count, "one line captured");
     TEST_ASSERT_STR_EQUAL("hello", g_captured_lines[0], "reassembled line");
@@ -280,7 +282,7 @@ TEST_CASE(buffer_empty_line) {
     reset_capture();
 
     lines = ProcessBuffer(&buf, "\n", 1, capture_handler,
-                          INVALID_HANDLE_VALUE);
+                          NULL);
     TEST_ASSERT_INT_EQUAL(1, lines, "one line (empty)");
     TEST_ASSERT_INT_EQUAL(1, g_captured_count, "captured empty line");
     TEST_ASSERT_STR_EQUAL("", g_captured_lines[0], "empty content");
@@ -293,7 +295,7 @@ TEST_CASE(buffer_no_input) {
     reset_capture();
 
     lines = ProcessBuffer(&buf, "", 0, capture_handler,
-                          INVALID_HANDLE_VALUE);
+                          NULL);
     TEST_ASSERT_INT_EQUAL(0, lines, "no lines from empty input");
     TEST_ASSERT_INT_EQUAL(0, g_captured_count, "nothing captured");
 }
@@ -304,7 +306,7 @@ TEST_CASE(buffer_null_handler) {
     memset(&buf, 0, sizeof(buf));
 
     /* Should not crash with NULL handler */
-    lines = ProcessBuffer(&buf, "test\n", 5, NULL, INVALID_HANDLE_VALUE);
+    lines = ProcessBuffer(&buf, "test\n", 5, NULL, NULL);
     TEST_ASSERT_INT_EQUAL(1, lines, "line counted even with NULL handler");
 }
 
@@ -317,7 +319,7 @@ TEST_CASE(buffer_json_command) {
 
     json = "{\"cmd\":\"exec\",\"id\":\"1\",\"line\":\"dir\"}\n";
     lines = ProcessBuffer(&buf, json, (int)strlen(json), capture_handler,
-                          INVALID_HANDLE_VALUE);
+                          NULL);
     TEST_ASSERT_INT_EQUAL(1, lines, "one JSON line");
     TEST_ASSERT_STR_EQUAL(
         "{\"cmd\":\"exec\",\"id\":\"1\",\"line\":\"dir\"}",
@@ -325,47 +327,71 @@ TEST_CASE(buffer_json_command) {
 }
 
 /* ========================================================
- * ProcessCommand tests (stub dispatch)
+ * ProcessCommand tests (dispatch + response bytes)
  *
- * ProcessCommand writes responses to a HANDLE. In tests we pass
- * INVALID_HANDLE_VALUE so WriteFile is skipped, and we verify
- * the JSON parsing and dispatch logic indirectly through the
- * response builder. For direct string-in/string-out testing,
- * we test the components (ParseJsonCommand + BuildJsonResponse)
- * that ProcessCommand calls.
+ * With the mock transport backend we can assert the EXACT response
+ * bytes ProcessCommand writes - something the old HANDLE-based tests
+ * could not do. The mock captures every byte written via the vtable.
  * ======================================================== */
 
-TEST_CASE(dispatch_known_commands) {
-    /* Verify ProcessCommand doesn't crash on valid commands */
-    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"1\",\"line\":\"dir\"}",
-                   INVALID_HANDLE_VALUE);
-    ProcessCommand("{\"cmd\":\"read\",\"id\":\"2\",\"path\":\"C:\\\\test\"}",
-                   INVALID_HANDLE_VALUE);
-    ProcessCommand("{\"cmd\":\"write\",\"id\":\"3\",\"path\":\"C:\\\\f\","
-                   "\"data\":\"AA==\"}", INVALID_HANDLE_VALUE);
-    ProcessCommand("{\"cmd\":\"list\",\"id\":\"4\",\"path\":\"C:\\\\\"}",
-                   INVALID_HANDLE_VALUE);
-    ProcessCommand("{\"cmd\":\"delete\",\"id\":\"5\",\"path\":\"C:\\\\old\"}",
-                   INVALID_HANDLE_VALUE);
-    TEST_ASSERT(1, "all known commands handled without crash");
+/* Helper: run one command through ProcessCommand into a fresh mock and
+ * NUL-terminate the captured output for string assertions. */
+static void run_command(const char *line, MockTransport *m, char *out, int outSize)
+{
+    int n;
+    MockTransportInit(m, NULL, 0);
+    ProcessCommand(line, &m->t);
+    n = m->outLen;
+    if (n > outSize - 1) {
+        n = outSize - 1;
+    }
+    memcpy(out, m->out, (size_t)n);
+    out[n] = '\0';
 }
 
-TEST_CASE(dispatch_unknown_command) {
-    /* Should not crash on unknown command */
-    ProcessCommand("{\"cmd\":\"reboot\",\"id\":\"99\"}", INVALID_HANDLE_VALUE);
-    TEST_ASSERT(1, "unknown command handled without crash");
+TEST_CASE(dispatch_echo_response) {
+    MockTransport m;
+    char out[512];
+    run_command("{\"cmd\":\"echo\",\"id\":\"1\",\"line\":\"hello\"}", &m,
+                out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"id\":\"1\"") != NULL, "id echoed");
+    TEST_ASSERT(strstr(out, "\"status\":\"ok\"") != NULL, "status ok");
+    TEST_ASSERT(strstr(out, "hello") != NULL, "payload echoed");
+    TEST_ASSERT(m.outLen > 0, "bytes were written via the transport");
+}
+
+TEST_CASE(dispatch_unknown_response) {
+    MockTransport m;
+    char out[512];
+    run_command("{\"cmd\":\"reboot\",\"id\":\"99\"}", &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"error\"") != NULL, "error status");
+    TEST_ASSERT(strstr(out, "unknown command") != NULL, "unknown reason");
 }
 
 TEST_CASE(dispatch_malformed_json) {
-    /* Should not crash on invalid JSON */
-    ProcessCommand("{bad json", INVALID_HANDLE_VALUE);
-    TEST_ASSERT(1, "malformed JSON handled without crash");
+    MockTransport m;
+    char out[512];
+    run_command("{bad json", &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "invalid JSON") != NULL, "invalid JSON reported");
+}
+
+TEST_CASE(dispatch_known_commands) {
+    /* All known commands handled without crash, via the transport. */
+    MockTransport m;
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"1\",\"line\":\"dir\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"read\",\"id\":\"2\",\"path\":\"C:\\\\test\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"write\",\"id\":\"3\",\"path\":\"C:\\\\f\","
+                   "\"data\":\"AA==\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"list\",\"id\":\"4\",\"path\":\"C:\\\\\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"delete\",\"id\":\"5\",\"path\":\"C:\\\\old\"}", &m.t);
+    TEST_ASSERT(1, "all known commands handled without crash");
 }
 
 TEST_CASE(dispatch_empty_line) {
-    /* Should not crash on empty input */
-    ProcessCommand("", INVALID_HANDLE_VALUE);
-    ProcessCommand(NULL, INVALID_HANDLE_VALUE);
+    /* Should not crash on empty input; NULL transport also tolerated. */
+    ProcessCommand("", NULL);
+    ProcessCommand(NULL, NULL);
     TEST_ASSERT(1, "empty/null input handled without crash");
 }
 
@@ -410,10 +436,11 @@ int main(void)
     RUN_TEST(buffer_null_handler);
     RUN_TEST(buffer_json_command);
 
-    printf("\nProcessCommand (dispatch):\n");
-    RUN_TEST(dispatch_known_commands);
-    RUN_TEST(dispatch_unknown_command);
+    printf("\nProcessCommand (dispatch + response bytes):\n");
+    RUN_TEST(dispatch_echo_response);
+    RUN_TEST(dispatch_unknown_response);
     RUN_TEST(dispatch_malformed_json);
+    RUN_TEST(dispatch_known_commands);
     RUN_TEST(dispatch_empty_line);
 
     print_test_summary();
