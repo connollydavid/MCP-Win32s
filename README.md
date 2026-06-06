@@ -69,29 +69,29 @@ Thanks to Win32's forward compatibility, the same console shell works everywhere
 ### Installation
 
 1. **On Windows machine**: Compile the Win32 shell
-   ```batch
-   REM CRITICAL: Win32s compatibility requires proper base address!
-   cd C:\PROJECTS\MCP32S
-   
-   REM Visual C++ 6.0 (retro target - creates universal binary)
-   REM /BASE:0x10000 - Win32s requires low base (not default 0x400000)
-   REM /FIXED:NO - Win32s needs relocation info
-   cl /W3 /O2 /TC /G3 /Isrc /FIXED:NO /BASE:0x10000 ^
-      src\mcp-w32s.c src\serial.c src\json_parser.c ^
-      kernel32.lib user32.lib wsock32.lib
-   REM This binary runs on Win3.1+Win32s 1.25a → Win11!
 
-   REM Visual Studio 2022 (modern development)
-   cl /W4 /O2 /TC /std:c11 /arch:IA32 /Isrc /FIXED:NO /BASE:0x10000 ^
-      src\mcp-w32s.c src\serial.c src\json_parser.c ^
-      kernel32.lib user32.lib wsock32.lib
+   The build is defined by `CMakeLists.txt` + `CMakePresets.json` + the
+   toolchain files in `toolchains/`. The Win32s-critical flags
+   (`/BASE:0x10000`, `/FIXED:NO`, `/G3` or `-march=i386`, C89, no floating
+   point) live in those toolchain files, not on the command line.
 
-   REM MinGW-w64 (GitHub Actions CI)
-   i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Wl,--dynamicbase ^
-     -Wl,--image-base,0x10000 -Isrc ^
-     -o mcp-w32s.exe src/mcp-w32s.c src/serial.c src/json_parser.c ^
-     -lkernel32 -luser32 -lwsock32
+   ```bash
+   # MinGW-w64 cross-compile (the build exercised on the dev host and in CI)
+   cmake --preset mingw
+   cmake --build --preset mingw
+   # This binary runs on Win3.1+Win32s 1.25a → Win11!
    ```
+
+   ```batch
+   REM Visual C++ 6.0 WITHOUT the IDE (on a Windows host with the VC6 tools
+   REM on PATH after VCVARS32.BAT) — uses CMake's "NMake Makefiles" generator
+   cmake --preset vc6
+   cmake --build --preset vc6
+   ```
+
+   `build.sh` and `build.bat` still exist but are now thin wrappers around the
+   above (`build.sh` → mingw preset, `build.bat` → vc6 preset). Out-of-source
+   build output lands in `build/` (git-ignored).
 
 2. **On modern machine**: Install MCP bridge
    ```bash
@@ -273,34 +273,25 @@ We get a **single codebase** that compiles everywhere and **runs everywhere** (W
 
 ### Compiler Settings for Win32s 1.25a Compatibility
 
-**Critical Compiler Flags:**
+**Critical Compiler Flags** (these now live in the CMake toolchain files —
+`toolchains/vc6-nmake.cmake` and `toolchains/mingw-w64-i386.cmake` — and are
+applied automatically by the `vc6` and `mingw` presets; they are shown here for
+rationale):
 
-```batch
-REM Visual C++ 6.0 (and earlier)
-cl /W3 /O2 /TC mcp-w32s.c kernel32.lib user32.lib wsock32.lib
-
-REM Visual C++ 5.0 and later - MUST OVERRIDE BASE ADDRESS
-REM Default 0x400000 is NOT available in Win32s!
+```
+REM Visual C++ 6.0 — set in toolchains/vc6-nmake.cmake
+REM Default base 0x400000 is NOT available in Win32s!
 REM /G3 - Target i386 (no 486+ instructions)
 REM /FIXED:NO - Win32s needs relocation info
 REM /BASE:0x10000 - Win32s-compatible base address
-cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 mcp-w32s.c ^
-   kernel32.lib user32.lib wsock32.lib
+cl /W3 /O2 /TC /G3 /FIXED:NO /BASE:0x10000 ... kernel32.lib user32.lib wsock32.lib
 
-REM MinGW-w64 - must also specify base address AND i386 target
-REM -march=i386 - Only 386 instructions (no CPUID, CMPXCHG, etc.)
-REM -mtune=i386 - Optimize for 386
-i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 ^
-  -Wall -Wdouble-promotion -Wfloat-equal ^
-  -Wl,--dynamicbase -Wl,--image-base,0x10000 ^
-  -o mcp-w32s.exe mcp-w32s.c ^
-  -lkernel32 -luser32 -lwsock32
-
-REM Visual Studio 2022 - modern compiler, retro target
-REM /arch:IA32 - Pure x86, no SSE/SSE2
-REM Note: VS2022 minimum is actually i686, but we avoid 686+ features
-cl /W4 /O2 /TC /std:c11 /arch:IA32 /FIXED:NO /BASE:0x10000 ^
-   mcp-w32s.c kernel32.lib user32.lib wsock32.lib
+# MinGW-w64 — set in toolchains/mingw-w64-i386.cmake
+# -march=i386 - Only 386 instructions (no CPUID, CMPXCHG, etc.)
+# -mtune=i386 - Optimize for 386
+i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
+  -Wall -Wdouble-promotion -Wfloat-equal \
+  -Wl,--dynamicbase -Wl,--image-base,0x10000 ...
 ```
 
 **CPU Target: i386 (80386)**
@@ -523,14 +514,12 @@ int percent = (value * 100) / total;  /* Percentage calculation */
 int permille = (value * 1000) / total;  /* Parts per thousand */
 ```
 
-**Compiler Enforcement:**
-```batch
-REM Visual C++ - Warn on any FP usage
-cl /W4 /WX /TC /FIXED:NO /BASE:0x10000 mcp-w32s.c
-
-REM MinGW - Error on FP usage
-i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Werror -Wdouble-promotion ^
-  -Wfloat-equal -o mcp-w32s.exe mcp-w32s.c
+**Compiler Enforcement** (the MinGW toolchain at `toolchains/mingw-w64-i386.cmake`
+sets `-Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal`, turning any
+floating-point usage into a build error):
+```
+# MinGW - Error on FP usage
+i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Werror -Wdouble-promotion -Wfloat-equal ...
 ```
 
 **Verification:**
@@ -1060,20 +1049,26 @@ objdump -d mcp-w32s.exe | grep -E 'fld|fst|fadd|fmul'
 ### Build System
 
 **Requirements:**
-- Must compile with Visual C++ 6.0 (manual build.bat)
-- Must compile with MinGW on GitHub Actions (automated CI)
-- No complex build systems (CMake, MSBuild) - simple batch/shell scripts
+- Must compile with Visual C++ 6.0 (via the `vc6` CMake preset)
+- Must compile with MinGW on GitHub Actions (via the `mingw` CMake preset)
+- CMake is the single source of truth: `CMakeLists.txt` + `CMakePresets.json` +
+  `toolchains/`. The VC6 toolchain uses CMake's "NMake Makefiles" generator
+  (CMake removed its "Visual Studio 6" project generator in 3.6), so no IDE is
+  needed.
 
 **Example:**
-```batch
-REM build.bat - Works on VC++ 6.0 (1998) and VS 2022
-cl /W3 /O2 /Femcp-w32s.exe mcp-w32s.c kernel32.lib user32.lib wsock32.lib
+```bash
+# MinGW cross-compile on Linux / GitHub Actions
+cmake --preset mingw
+cmake --build --preset mingw
+
+# Visual C++ 6.0, no IDE (NMake Makefiles generator, VC6 tools on PATH)
+cmake --preset vc6
+cmake --build --preset vc6
 ```
 
-```bash
-# build.sh - MinGW cross-compile on Linux/GitHub Actions
-i686-w64-mingw32-gcc -O2 -o mcp-w32s.exe mcp-w32s.c -lkernel32 -luser32 -lwsock32
-```
+`build.sh` and `build.bat` remain as thin wrappers (`build.sh` → mingw preset,
+`build.bat` → vc6 preset). Build output is out-of-source in `build/`.
 
 ### Testing Requirements
 
@@ -1696,31 +1691,22 @@ int main(void)
 - **ABSOLUTELY NO FLOATING POINT** (integer arithmetic only)
 - **i386 CPU target only** (no 486+ instructions)
 
-```batch
-REM Visual C++ 6.0 (Windows 98/ME/XP)
-REM /G3 - Target i386 (no 486+ instructions like CPUID, CMPXCHG)
-cd C:\PROJECTS\MCP32S
-cl /W3 /O2 /TC /G3 mcp-w32s.c kernel32.lib user32.lib wsock32.lib
+```bash
+# MinGW-w64 (cross-compile from Linux for GitHub Actions)
+cmake --preset mingw
+cmake --build --preset mingw
 
-REM Visual Studio 2022 (modern Windows)
-REM /arch:IA32 - No SSE/SSE2 (pure x86)
-cl /W4 /O2 /TC /std:c11 /arch:IA32 mcp-w32s.c ^
-   kernel32.lib user32.lib wsock32.lib
-
-REM MinGW-w64 (cross-compile from Linux for GitHub Actions)
-REM -march=i386 - Only 386 instructions
-REM -mtune=i386 - Optimize for 386
-i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 ^
-  -Wall -Wdouble-promotion -Wfloat-equal ^
-  -o mcp-w32s.exe mcp-w32s.c ^
-  -lkernel32 -luser32 -lwsock32
-
-REM Alternative: Borland C++ 5.5 (retro)
-REM -3 flag targets 386
-bcc32 -O2 -w -3 mcp-w32s.c
+# Visual C++ 6.0, no IDE (VC6 tools on PATH via VCVARS32.BAT)
+cmake --preset vc6
+cmake --build --preset vc6
 ```
 
-**Critical Flags:**
+The presets pull their Win32s-critical flags from the toolchain files:
+`toolchains/mingw-w64-i386.cmake` (`-std=c89 -march=i386 -mtune=i386 -Wall
+-Wdouble-promotion -Wfloat-equal`, image base `0x10000`) and
+`toolchains/vc6-nmake.cmake` (`/TC /G3 /FIXED:NO /BASE:0x10000`).
+
+**Critical Flags** (set in the toolchain files):
 - `/TC` or `-std=c89`: Force C89 compilation
 - `/G3` or `-march=i386`: Target 386 CPU (no 486+)
 - No `/D_UNICODE`: ANSI only for Win32s
@@ -2054,36 +2040,17 @@ int main(void) {
 
 ### Build and Run Tests
 
-```batch
-REM Build tests with VC++ 6.0
-cd tests
-cl /W3 /O2 /TC /G3 /I..\src test_json.c ..\src\json_parser.c kernel32.lib
-cl /W3 /O2 /TC /G3 /I..\src /DTEST_BUILD ^
-   test_serial.c ..\src\mcp-w32s.c ..\src\serial.c ..\src\json_parser.c ^
-   kernel32.lib user32.lib wsock32.lib
-
-REM Run tests
-test_json.exe
-test_serial.exe
-
-REM Exit with error if any test failed
-if %ERRORLEVEL% NEQ 0 exit /b 1
-```
-
 ```bash
-# Build and run tests with MinGW (GitHub Actions)
-i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src \
-  -o tests/test_json.exe tests/test_json.c src/json_parser.c -lkernel32
-
-i686-w64-mingw32-gcc -O2 -std=c89 -Wall -I../src -DTEST_BUILD \
-  -o tests/test_serial.exe tests/test_serial.c \
-  src/mcp-w32s.c src/serial.c src/json_parser.c \
-  -lkernel32 -luser32 -lwsock32
-
-# Run with Wine (on Linux CI)
-wine tests/test_json.exe
-wine tests/test_serial.exe
+# Build and run the test binaries via the mingw preset
+cmake --preset mingw
+cmake --build --preset mingw
+ctest --preset mingw          # runs the 7 test binaries
 ```
+
+`ctest --preset mingw` runs the test PEs natively via WSL interop on the dev
+host (real `kernel32`/`wsock32`), and under Wine in CI. `build.sh test` is a
+thin wrapper that does the same. The VC6 toolchain builds the same test
+binaries via `cmake --preset vc6 && cmake --build --preset vc6`.
 
 ### GitHub Actions CI with Tests
 
@@ -2097,41 +2064,34 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
-    - name: Install MinGW-w64 and Wine
+    - name: Install MinGW-w64, Wine, CMake and Ninja
       run: |
         sudo dpkg --add-architecture i386
         sudo apt-get update
-        sudo apt-get install -y mingw-w64 wine wine32
+        sudo apt-get install -y mingw-w64 wine wine32 cmake ninja-build
 
-    - name: Build main executable (C89 strict, i386 target)
+    # CMakeLists.txt is the single source of truth; the "mingw" preset carries
+    # the strict C89/i386/Win32s flags (toolchains/mingw-w64-i386.cmake).
+    - name: Configure, build, test
       run: |
-        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
-          -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
-          -Wl,--dynamicbase -Wl,--image-base,0x10000 \
-          -Isrc -o mcp-w32s.exe \
-          src/mcp-w32s.c src/serial.c src/json_parser.c \
-          -lkernel32 -luser32 -lwsock32
+        cmake --preset mingw
+        cmake --build --preset mingw
+        ctest --preset mingw          # all 7 suites; Wine on the runner
 
-    - name: Build and run tests
+    - name: Verify no static Winsock import (TCP is runtime-loaded)
       run: |
-        # JSON parser tests
-        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 ... \
-          -Isrc -o tests/test_json.exe \
-          tests/test_json.c src/json_parser.c -lkernel32
-        wine tests/test_json.exe
-        # Serial + main loop tests
-        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 ... \
-          -Isrc -DTEST_BUILD -o tests/test_serial.exe \
-          tests/test_serial.c src/mcp-w32s.c src/serial.c \
-          src/json_parser.c -lkernel32 -luser32 -lwsock32
-        wine tests/test_serial.exe
+        ! i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe \
+            | grep -i 'wsock32\|ws2_32'
 
     - name: Verify no FPU/486+ instructions in application code
       run: |
-        # Compile to .o, disassemble, grep for forbidden instructions
-        # (see actual workflow for full details)
+        # Disassemble the app objects CMake built, grep for forbidden insns.
+        i686-w64-mingw32-objdump -d build/mingw/CMakeFiles/mcp-w32s.dir/src/*.obj \
+          > app_disasm.txt
+        ! grep -E 'fld|fst[^r]|fadd|fmul|fdiv|fsqrt' app_disasm.txt
+        ! grep -iE 'cpuid|cmpxchg|bswap|xadd|rdtsc' app_disasm.txt
 ```
 
 ### Test Organization
@@ -2149,11 +2109,13 @@ MCP-Win32s/
 │   ├── test_framework.h     # Minimal C89 test framework (header-only)
 │   ├── test_json.c          # 31 JSON parser unit tests
 │   └── test_serial.c        # 28 serial + main loop tests
-├── vc6/
-│   ├── mcp-w32s.dsw         # VC++ 6.0 workspace
-│   └── mcp-w32s.dsp         # VC++ 6.0 project (Debug + Release)
-├── build.bat                # VC++ 6.0 build script
-├── build.sh                 # MinGW cross-compile build script
+├── toolchains/
+│   ├── mingw-w64-i386.cmake # MinGW cross-compile toolchain (flags + image base)
+│   └── vc6-nmake.cmake      # VC++ 6.0 toolchain (NMake Makefiles generator)
+├── CMakeLists.txt           # Single source of truth for the build
+├── CMakePresets.json        # mingw + vc6 presets
+├── build.bat                # Thin wrapper → vc6 preset
+├── build.sh                 # Thin wrapper → mingw preset
 └── README.md
 ```
 
@@ -2190,19 +2152,17 @@ MCP-Win32s/
 ### Running Tests on Real Windows
 
 ```batch
-REM On Windows 3.1 + Win32s 1.25a (PRIMARY TARGET)
-cd C:\PROJECTS\MCP32S\tests
+REM Build with the VC6 toolchain (VC6 tools on PATH via VCVARS32.BAT),
+REM or cross-compile elsewhere with the mingw preset and copy the .exe over.
+cmake --preset vc6
+cmake --build --preset vc6
 
-REM Build with VC++ (must be on Win3.1 or use cross-compile)
-cl /W3 /O2 /TC /I..\src /FIXED:NO /BASE:0x10000 ^
-   test_json.c ..\src\json_parser.c kernel32.lib
-
-REM Run test suite
-test_json.exe
+REM Run a test binary (output lands in build\)
+build\test_json.exe
 echo Test result: %ERRORLEVEL%
 
-REM On Windows 95/98/ME/2000/XP/7/10/11 - same binary!
-REM Just copy the .exe compiled above
+REM On Windows 3.1+Win32s 1.25a through Win 11 - same binary!
+REM Just copy the .exe built above
 test_json.exe
 ```
 
@@ -2234,23 +2194,20 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Install MinGW
+    - name: Install MinGW, CMake and Ninja
       run: |
         sudo apt-get update
-        sudo apt-get install -y mingw-w64
+        sudo apt-get install -y mingw-w64 cmake ninja-build
     
     - name: Build Win32 Shell (C89 strict, i386 target)
       run: |
-        i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
-          -Wall -Werror -pedantic \
-          -Wdouble-promotion -Wfloat-equal \
-          -o mcp-w32s.exe src/mcp-w32s.c \
-          -lkernel32 -luser32 -lwsock32
+        cmake --preset mingw
+        cmake --build --preset mingw
     
     - name: Verify i386-only instructions (no 486+)
       run: |
-        # Binary must NOT contain 486+ instructions
-        i686-w64-mingw32-objdump -d mcp-w32s.exe > disasm.txt
+        # Application objects only (CRT startup legitimately has FPU/atomics).
+        i686-w64-mingw32-objdump -d build/mingw/CMakeFiles/mcp-w32s.dir/src/*.obj > disasm.txt
         
         # Check for forbidden 486+ instructions
         if grep -iE 'cpuid|cmpxchg|bswap|xadd' disasm.txt; then
@@ -2278,8 +2235,8 @@ jobs:
     - name: Verify no Unicode APIs
       run: |
         # Check that binary uses only ANSI functions
-        i686-w64-mingw32-objdump -p mcp-w32s.exe | grep -v "CreateFileW"
-        i686-w64-mingw32-objdump -p mcp-w32s.exe | grep -v "MessageBoxW"
+        i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe | grep -v "CreateFileW"
+        i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe | grep -v "MessageBoxW"
     
     - name: Upload artifact
       uses: actions/upload-artifact@v3
@@ -2537,11 +2494,11 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 - [x] Shared types header (`src/common.h`, JsonCommand struct)
 - [x] Serial port initialization + transport config (`src/serial.c` + `src/serial.h`)
 - [x] Main executable with protocol loop and command dispatch stub (`src/mcp-w32s.c`)
-- [x] VC++ 6.0 workspace and project (`vc6/mcp-w32s.dsw` + `vc6/mcp-w32s.dsp`)
+- [x] CMake build (`CMakeLists.txt` + `CMakePresets.json` + `toolchains/`); VC6 via the `vc6` preset (NMake Makefiles generator, no IDE)
 - [x] 31 JSON parser unit tests (`tests/test_json.c`)
 - [x] 28 serial + main loop unit tests (`tests/test_serial.c`)
-- [x] MinGW cross-compile build script (`build.sh`)
-- [x] VC++ 6.0 build script (`build.bat`)
+- [x] MinGW cross-compile wrapper (`build.sh` → mingw preset)
+- [x] VC++ 6.0 wrapper (`build.bat` → vc6 preset)
 - [x] GitHub Actions CI: C89/i386 compilation, Wine test execution, FPU instruction verification, 486+ instruction verification
 - [x] All 59 tests pass under Wine on Linux CI
 

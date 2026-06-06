@@ -37,12 +37,18 @@ tests/
 
 ## Building
 
+CMake is the single source of truth (`CMakeLists.txt` + `CMakePresets.json`);
+strict flags live in `toolchains/`. `build.sh`/`build.bat` are thin wrappers.
+
 ### MinGW (Linux / CI — primary workflow)
 
 ```bash
-./build.sh           # Build all
-./build.sh test      # Build + run tests via Wine
+cmake --preset mingw && cmake --build --preset mingw   # or: ./build.sh
+ctest --preset mingw                                   # or: ./build.sh test
 ```
+
+Tests run natively via WSL interop on the dev host, under Wine in CI
+(auto-selected by `toolchains/mingw-w64-i386.cmake`).
 
 ### Quick iteration (native GCC, JSON tests only)
 
@@ -53,11 +59,12 @@ gcc -std=c89 -Wall -Werror -pedantic -Isrc \
 
 Serial tests need MinGW cross-compile (they link Win32 APIs).
 
-### VC++ 6.0 (retro)
+### VC++ 6.0 (retro, no IDE — NMake generator)
+
+On a Windows host with the VC6 tools on `PATH` (after `VCVARS32.BAT`):
 
 ```bash
-build.bat           # Build all
-build.bat test      # Build + run tests
+cmake --preset vc6 && cmake --build --preset vc6       # or: build.bat
 ```
 
 ## Testing
@@ -70,7 +77,7 @@ build.bat test      # Build + run tests
 ## Adding New Code
 
 - New source files go in `src/`, tests in `tests/`.
-- Any new `.c` file must be added to `build.sh`, `build.bat`, and CI workflow.
+- Any new `.c` file is added **once** to `CMakeLists.txt` (the `CORE_SOURCES` list or a test target) — every toolchain and CI pick it up automatically.
 - Follow naming: globals `g_`, functions camelCase, constants UPPER_SNAKE_CASE.
 - Use `lstrlen`/`lstrcpy`/`lstrcat` for Win32 string ops; `strcmp`/`strcpy` for ANSI C.
 - Every `malloc` gets a matching `free` — no RAII.
