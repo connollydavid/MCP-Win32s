@@ -91,6 +91,18 @@ rule WhitelistDisabledByOperator {
 -- argv via the documented quoting rules (argv preferred over the
 -- legacy line), with builtins embedding the era shell and shell-flag
 -- externals wrapped in it - NOT the request's raw line field.
+--
+-- SECURITY INVARIANT (ShellTailNeutralised, enforced by the dispatcher;
+-- adversarial review of PR #10, 2026-06-06): on ANY shell route -
+-- builtin auto-route OR an external shell request - the user-supplied
+-- argument tail is cmd-metacharacter-escaped (& | < > ^ ( ) %)
+-- identically before the trusted "<shell> /c" prefix is prepended. The
+-- two routes MUST apply the same neutralisation: an earlier build
+-- escaped only the external route, letting "argv:[dir, x&calc]" run the
+-- uncatalogued "calc" past an enforced catalog. The catalog's own shell
+-- string is trusted; only the tail derived from request input is
+-- escaped. This closes the gate so no metacharacter in a positional or
+-- flag value can separate a second, uncatalogued command.
 
 -- Per-request unsafe bypasses the whitelist for this exec only; the
 -- response reports it via unsafe_used (a response field, never

@@ -302,66 +302,80 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
         }
     }
 
-    /* 6. Build the command line: argv preferred (pre-decision 1). */
-    if (cmd->argv_count > 0) {
+    /* 6. Build the command line: argv preferred (pre-decision 1).
+     *
+     * A shell route (builtin auto-route OR an external shell request)
+     * hands its command tail to cmd.exe/command.com, so every
+     * cmd metacharacter (& | < > ^ ( ) %) in a USER-supplied token must
+     * be caret-escaped (Q15) or it becomes a command separator - a
+     * catalog-gate bypass (e.g. argv ["dir","x&calc"] running calc).
+     * The shell prefix itself ("command.com /c dir") comes from the
+     * catalog and is trusted; only the user argument tail is escaped.
+     * Direct (non-shell) spawns pass argv straight to CreateProcessA
+     * and need only ArgvJoin quoting. */
+    {
+        /* The catalog's builtin shell string ("<shell> /c <name>") is
+         * used as the trusted prefix only for the argv form, where the
+         * builtin name is argv[0] and the escaped user tail is
+         * argv[1:]. A legacy line-only request carries the name inside
+         * cmd.line, so it uses the generic era shell prefix over the
+         * whole escaped line - never the catalog string (which would
+         * double the command name). */
+        int useBuiltinPrefix;
         int skip;
-        skip = 0;
+        int jl;
+
+        useBuiltinPrefix = (entry != NULL && CatalogEntryIsBuiltin(entry)
+                            && cmd->argv_count > 0);
+        skip = useBuiltinPrefix ? 1 : 0;
         joined[0] = '\0';
-        if (entry != NULL && CatalogEntryIsBuiltin(entry)) {
-            /* Era-correct shell wrap from the catalog (Q9); args
-             * follow the entry's own shell string. */
-            const char *shellBase;
-            shellBase = g_features.is_win32s
-                ? CatalogEntryShellWin32s(entry)
-                : CatalogEntryShellModern(entry);
-            lstrcpynA(joined, shellBase, (int)sizeof(joined));
-            skip = 1;
-        }
-        if (cmd->argv_count > skip) {
-            int jl;
-            char rest[32768];
+
+        if (cmd->argv_count > 0) {
             for (i = skip; i < cmd->argv_count; i++) {
                 argvPtrs[i - skip] = cmd->argv[i];
             }
             jl = ArgvJoin(argvPtrs, cmd->argv_count - skip,
-                          rest, (int)sizeof(rest));
+                          joined, (int)sizeof(joined));
             if (jl < 0) {
                 send_exec_error(cmd->id, "invalid argv", t);
                 return;
             }
-            if (joined[0] != '\0') {
-                lstrcatA(joined, " ");
-            }
-            if (lstrlenA(joined) + jl >= (int)sizeof(joined)) {
+        } else {
+            lstrcpynA(joined, cmd->line, (int)sizeof(joined));
+        }
+
+        if (viaShell) {
+            /* Caret-escape the user tail (Q15), then prepend the
+             * trusted shell prefix. */
+            static char escapedTail[32768];
+            const char *prefix;
+
+            if (ArgvCmdEscape(joined, escapedTail,
+                              (int)sizeof(escapedTail)) < 0) {
                 send_exec_error(cmd->id, "command line too long", t);
                 return;
             }
-            lstrcatA(joined, rest);
+            if (useBuiltinPrefix) {
+                prefix = g_features.is_win32s
+                    ? CatalogEntryShellWin32s(entry)
+                    : CatalogEntryShellModern(entry);
+            } else {
+                prefix = g_features.is_win32s
+                    ? "command.com /c" : "cmd.exe /c";
+            }
+            lstrcpynA(cmdLine, prefix, (int)sizeof(cmdLine));
+            if (escapedTail[0] != '\0') {
+                if (lstrlenA(cmdLine) + 1 + lstrlenA(escapedTail) >=
+                    (int)sizeof(cmdLine)) {
+                    send_exec_error(cmd->id, "command line too long", t);
+                    return;
+                }
+                lstrcatA(cmdLine, " ");
+                lstrcatA(cmdLine, escapedTail);
+            }
+        } else {
+            lstrcpynA(cmdLine, joined, (int)sizeof(cmdLine));
         }
-    } else {
-        lstrcpynA(joined, cmd->line, (int)sizeof(joined));
-    }
-
-    /* Uncatalogued/external shell request: wrap in the era shell with
-     * cmd metachar escaping (Q15). Builtin routing already embeds the
-     * shell string from the catalog. */
-    if (viaShell && !(entry != NULL && CatalogEntryIsBuiltin(entry))) {
-        static char escapedLine[32768];
-        if (ArgvCmdEscape(joined, escapedLine, (int)sizeof(escapedLine)) < 0) {
-            send_exec_error(cmd->id, "command line too long", t);
-            return;
-        }
-        lstrcpynA(cmdLine, g_features.is_win32s
-                  ? "command.com /c " : "cmd.exe /c ",
-                  (int)sizeof(cmdLine));
-        if (lstrlenA(cmdLine) + lstrlenA(escapedLine) >=
-            (int)sizeof(cmdLine)) {
-            send_exec_error(cmd->id, "command line too long", t);
-            return;
-        }
-        lstrcatA(cmdLine, escapedLine);
-    } else {
-        lstrcpynA(cmdLine, joined, (int)sizeof(cmdLine));
     }
 
     /* 7. Length caps (Q7): 8192 via shell, 32766 direct. */

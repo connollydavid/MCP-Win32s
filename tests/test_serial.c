@@ -561,6 +561,57 @@ TEST_CASE(exec_builtin_autoroutes_via_shell) {
     CatalogFree(cat);
 }
 
+TEST_CASE(exec_builtin_positional_metachar_neutralised) {
+    /* Catalog-gate bypass regression (adversarial review of PR #10):
+     * a cmd metacharacter in a positional arg of a catalogued builtin
+     * must be caret-escaped, never reach the shell as a separator.
+     * "echo" is a catalogued builtin; "x&ver" is an allowed positional
+     * with NO space, so ArgvJoin emits it bare. Unescaped, the shell
+     * runs `echo x` then `ver` (the uncatalogued ver banner, which
+     * contains "Windows"). Escaped, it prints the literal "x&ver" -
+     * which contains no banner. We decode stdout_b64 and assert the
+     * banner is absent: that proves the second command did not run.
+     * Obligation: catalog.allium ShellTailNeutralised. */
+    MockTransport m;
+    Catalog *cat;
+    const char *b64Start;
+    static unsigned char decoded[8192];
+    int dn;
+    cat = load_test_catalog();
+    TEST_ASSERT(cat != NULL, "test catalog loads");
+    ExecConfigure(cat, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"sec1\","
+                   "\"argv\":[\"echo\",\"x&ver\"]}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL,
+                "escaped builtin still runs");
+
+    /* Decode the stdout_b64 field and check for the ver banner. */
+    b64Start = strstr(m.out, "\"stdout_b64\":\"");
+    TEST_ASSERT(b64Start != NULL, "response carries stdout_b64");
+    if (b64Start != NULL) {
+        char b64[8192];
+        const char *p;
+        int n;
+        b64Start += lstrlenA("\"stdout_b64\":\"");
+        n = 0;
+        for (p = b64Start; *p != '\0' && *p != '"' && n < 8191; p++) {
+            b64[n++] = *p;
+        }
+        b64[n] = '\0';
+        dn = Base64Decode(b64, decoded, (int)sizeof(decoded) - 1);
+        if (dn < 0) {
+            dn = 0;
+        }
+        decoded[dn] = '\0';
+        TEST_ASSERT(strstr((char *)decoded, "Windows") == NULL &&
+                    strstr((char *)decoded, "Microsoft") == NULL,
+                    "the chained 'ver' did NOT run (metachar escaped)");
+    }
+    ExecConfigure(NULL, 0);
+    CatalogFree(cat);
+}
+
 TEST_CASE(exec_busy_carries_detail_then_reaps) {
     /* still_active orphan blocks exec AND ptyExec with informative
      * busy; once the orphan exits the next request proceeds
@@ -721,6 +772,7 @@ int main(void)
     RUN_TEST(exec_catalog_miss_rejected);
     RUN_TEST(exec_unsafe_bypasses_catalog);
     RUN_TEST(exec_builtin_autoroutes_via_shell);
+    RUN_TEST(exec_builtin_positional_metachar_neutralised);
     RUN_TEST(exec_busy_carries_detail_then_reaps);
     RUN_TEST(exec_stdin_too_large_rejected);
     RUN_TEST(exec_invalid_stdin_b64_rejected);
