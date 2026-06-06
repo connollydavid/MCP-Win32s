@@ -6,18 +6,36 @@
 -- Excludes:
 --   - Authentication (not applicable)
 --   - Transport backends + lifecycle (transport.allium)
+--   - Catalog whitelist gating (catalog.allium consumes the exec gate
+--     emission and admits requests into process-ops)
+--   - Spawn, capture, timeouts (process-ops.allium)
 --   - Named pipes backend (Phase 5+)
--- Dependencies: file-ops.allium, transport.allium
+-- Dependencies: file-ops.allium, transport.allium, process-ops.allium
 
 use "./file-ops.allium" as fileops
 use "./transport.allium" as transport
+use "./process-ops.allium" as procops
 
+-- Exec-only fields (argv, cwd, shell, unsafe, timeout_ms, stdin_size,
+-- max_output) are parsed for every command but only consumed by the
+-- exec/ptyExec path; stdin_size is the decoded byte count of stdin_b64.
 entity Command {
     cmd: String
     id: String
     path: String
     line: String
     data: String
+    argv: List<String>
+    cwd: String
+    shell: Boolean
+    unsafe: Boolean
+    timeout_ms: Integer
+    stdin_size: Integer
+    max_output: Integer
+    mem_cap_bytes: Integer
+    cpu_time_ms: Integer
+    cols: Integer
+    rows: Integer
     status: pending | processed | error
 
     transitions status {
@@ -50,13 +68,13 @@ rule CommandCreated {
 
 rule CommandDispatch {
     when: cmd: Command.status becomes pending
-    requires: cmd.cmd in {echo, read, write, list, delete, exec}
+    requires: cmd.cmd in {echo, read, write, list, delete, exec, `ptyExec`}
     ensures: cmd.status = processed
 }
 
 rule CommandUnknown {
     when: cmd: Command.status becomes pending
-    requires: cmd.cmd not in {echo, read, write, list, delete, exec}
+    requires: cmd.cmd not in {echo, read, write, list, delete, exec, `ptyExec`}
     ensures: cmd.status = error
     ensures: Response.created(
         command: cmd,
@@ -211,15 +229,95 @@ rule DeleteError {
     )
 }
 
+-- exec and ptyExec are gated by the catalog before anything spawns:
+-- the gate emission is consumed by catalog.allium, which either admits
+-- the request into process-ops or emits ExecRejected.
+
 rule ExecCommand {
     when: cmd: Command.status becomes processed
     requires: cmd.cmd = exec
+    ensures: ExecGateRequested(cmd: cmd, pty: false)
+}
+
+rule PtyExecCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = `ptyExec`
+    ensures: ExecGateRequested(cmd: cmd, pty: true)
+}
+
+-- Any rejection on the exec path (busy, stdin too large, pty absent,
+-- catalog miss, argument not allowed, spawn failure) arrives here.
+-- ExecRejected is emitted by rules in catalog.allium and
+-- process-ops.allium, not by a surface (per-module analyse flags it as
+-- unprovided because it cannot see cross-module emissions).
+-- The busy rejection's optional detail (blocking child's command line
+-- and elapsed ms) rides in the error response body.
+rule ExecRejectedResponse {
+    when: ExecRejected(request_id, reason, detail?)
+    let cmd = Command{id: request_id}
     ensures: Response.created(
         command: cmd,
-        id: cmd.id,
+        id: request_id,
+        status: error,
+        key: "error",
+        value: reason
+    )
+}
+
+-- The full exec response envelope (exit_code, stdout_b64, stderr_b64,
+-- truncation flags, duration_ms, exec_method, binary_type, killed_by,
+-- unsafe_used) is modelled by process-ops/ExecResult; Response captures
+-- the key/value abstraction over it. Recorded abstraction (weed
+-- 2026-06-06): the wire emits ONE multi-key JSON object per response -
+-- the Process fields (exec_method, binary_type, killed_by) flatten to
+-- top-level keys - while this spec's Response entity names one
+-- representative key per rule. The concrete envelope shape is pinned
+-- by the integration tests and the wire-contract smoke client.
+rule ExecSuccess {
+    when: result: procops/ExecResult.status becomes ok
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
         status: ok,
-        key: "message",
-        value: "command received"
+        key: "stdout_b64",
+        value: result.stdout_b64
+    )
+}
+
+rule ExecError {
+    when: result: procops/ExecResult.status becomes error
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule PtyExecSuccess {
+    when: result: procops/PtyExecResult.status becomes ok
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: ok,
+        key: "output_b64",
+        value: result.output_b64
+    )
+}
+
+rule PtyExecError {
+    when: result: procops/PtyExecResult.status becomes error
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
     )
 }
 
@@ -251,5 +349,3 @@ surface TransportConnection {
         CommandSent(cmd: Command)
             when transport.status = connected
 }
-
-deferred ExecCommand.implementation    -- see: process-ops.allium (Phase 4)

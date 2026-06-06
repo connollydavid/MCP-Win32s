@@ -101,7 +101,11 @@ int Base64Decode(const char *in, unsigned char *out, int out_size)
     int in_len;
     int i;
     int out_pos;
-    int buf;
+    /* Accumulator is unsigned: the rolling (buf << 6) would overflow a
+     * signed int after enough high-value sextets - undefined behaviour
+     * in C89 (found by the theft/UBSan host harness, Phase 4). Only the
+     * low bits are ever extracted, so unsigned wraparound is correct. */
+    unsigned int buf;
     int buf_bits;
 
     if (in == NULL || out == NULL || out_size < 1) {
@@ -146,7 +150,7 @@ int Base64Decode(const char *in, unsigned char *out, int out_size)
             return -1;
         }
 
-        buf = (buf << 6) | val;
+        buf = (buf << 6) | (unsigned int)val;
         buf_bits += 6;
 
         /* Extract bytes when we have 8+ bits */
@@ -162,9 +166,9 @@ int Base64Decode(const char *in, unsigned char *out, int out_size)
     /* Discard remaining bits (should be 0 for valid input) */
     if (buf_bits >= 6) {
         /* Last group had padding that left non-zero bits — invalid */
-        int remaining_val;
-        remaining_val = buf & ((1 << buf_bits) - 1);
-        if (remaining_val != 0) {
+        unsigned int remaining_val;
+        remaining_val = buf & (((unsigned int)1 << buf_bits) - 1u);
+        if (remaining_val != 0u) {
             return -1;
         }
     }

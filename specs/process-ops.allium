@@ -1,0 +1,459 @@
+-- allium: 3
+-- process-ops.allium
+
+-- Scope: Child-process execution for MCP-Win32s (Phase 4)
+-- Includes: capability-aware spawn, capture, timeout, the still_active
+--           orphan domain (shared busy across exec and ptyExec),
+--           job-object limit kills, PTY execution results
+-- Excludes:
+--   - Command dispatch and JSON envelope (mcp-protocol.allium)
+--   - Catalog whitelist gating (catalog.allium)
+--   - Wire framing (wire-contract.allium)
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- Classification of the child binary (Q16): manual MZ/NE/PE read on
+-- Win32s, GetBinaryTypeA/IsWow64Process uplift elsewhere.
+enum BinaryType { pe32 | pe32_wow64 | ne16 | mz | shell_builtin | unknown }
+
+-- How a child left the running state when it did not exit on its own.
+-- none: exited normally, or deliberately left running (still_active).
+enum KilledBy { none | timeout | ctrl_break | memory_cap | cpu_cap }
+
+-- How the command line was launched. vdm_best_effort marks 16-bit
+-- children in the shared VDM (Q12).
+enum ExecMethod { direct | shell | vdm_best_effort }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- Host capabilities, probed once at startup via GetProcAddress and
+-- immutable for the session (ambient context, like the transport in
+-- mcp-protocol.allium). Rules guard on capabilities.has_*.
+entity Capabilities {
+    is_win32s: Boolean
+    is_win9x: Boolean
+    is_nt: Boolean
+    is_wow64: Boolean
+    has_threads: Boolean
+    has_job_objects: Boolean
+    has_ctrl_events: Boolean
+    has_pty: Boolean
+    has_get_binary_type: Boolean
+}
+
+-- An exec or ptyExec request that has passed the catalog gate
+-- (catalog.allium creates these; pty = true originates from
+-- mcp-protocol's PtyExecCommand and flows through the gate - the
+-- analyser cannot track that cross-module parameter flow). Acceptance applies the config
+-- sentinels; rejection produces an ExecRejected emission carrying the
+-- reason for the error response.
+entity ExecRequest {
+    request_id: String
+    cmd_line: String
+    cwd: String
+    shell: Boolean
+    pty: Boolean
+    unsafe_used: Boolean
+    routed_via_shell: Boolean
+    timeout_ms: Integer
+    stdin_size: Integer
+    max_output: Integer
+    status: accepted | rejected
+
+    transitions status {
+        terminal: accepted, rejected
+    }
+
+    -- Sentinels resolved at acceptance: timeout_ms 0/omitted means
+    -- "server default"; values above the ceiling clamp. max_output
+    -- 0/omitted means the cap; larger values clamp silently (the
+    -- truncation flags already report).
+    effective_timeout_ms: Integer when status = accepted
+    effective_output_cap: Integer when status = accepted
+}
+
+-- A spawned child. A Process exists only once CreateProcessA has
+-- succeeded; spawn failure rejects the request without creating one.
+-- still_active (Win32-recognizable: GetExitCodeProcess's STILL_ACTIVE
+-- sentinel) is a timed-out 16-bit child deliberately NOT terminated
+-- (Q12, shared VDM); the server retains its handle and re-polls on
+-- every subsequent request, so it may later be observed exited.
+-- timed_out strictly means killed on timeout.
+entity Process {
+    request: ExecRequest
+    cmd_line: String
+    cwd: String
+    binary_type: BinaryType
+    exec_method: ExecMethod
+    killed_by: KilledBy
+    started_at: Timestamp
+    status: running | exited | timed_out | still_active
+
+    transitions status {
+        running      -> exited
+        running      -> timed_out
+        running      -> still_active
+        still_active -> exited
+        terminal: exited, timed_out
+    }
+}
+
+-- The exec response payload. Output fields are filled from the capture
+-- buffers by the host runtime; the spec models their presence and the
+-- ok/error split. On the wire the process's exec_method, binary_type
+-- and killed_by flatten into this envelope as top-level keys (see
+-- mcp-protocol.allium's recorded abstraction note).
+entity ExecResult {
+    process: Process
+    request_id: String
+    exit_code: Integer
+    stdout_b64: String
+    stderr_b64: String
+    stdout_truncated: Boolean
+    stderr_truncated: Boolean
+    duration_ms: Integer
+    unsafe_used: Boolean
+    status: ok | error
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+-- The ptyExec response payload: one merged ANSI stream (a pseudo
+-- console does not separate stdout from stderr).
+entity PtyExecResult {
+    process: Process
+    request_id: String
+    exit_code: Integer
+    output_b64: String
+    output_kind: ansi | text
+    output_truncated: Boolean
+    duration_ms: Integer
+    unsafe_used: Boolean
+    status: ok | error
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+------------------------------------------------------------
+-- Given
+------------------------------------------------------------
+
+given {
+    capabilities: Capabilities
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- One pipe buffer: a full stdin write can never block the
+    -- single-threaded server. Larger stdin is an error, not a clamp.
+    stdin_max: Integer = 4096
+
+    -- Inside the MCP TypeScript SDK's 60s DEFAULT_REQUEST_TIMEOUT_MSEC,
+    -- with margin to deliver the in-band timed-out response.
+    default_timeout_ms: Integer = 55000
+
+    -- Hard ceiling; requests above it clamp. Execution is never
+    -- unbounded.
+    max_timeout_ms: Integer = 600000
+
+    -- Per-stream output cap. Two base64-encoded capped streams plus
+    -- envelope fit the 256 KB response limit.
+    output_cap: Integer = 65536
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Admission: one busy domain (a still_active child blocks both exec
+-- and ptyExec), then per-request validation, then acceptance.
+
+-- The busy error carries the blocking child's command line and elapsed
+-- time so the client can see what is blocking (implicit reap with
+-- informative busy: the host re-polls the retained handle on every
+-- request; OrphanExitObserved below models the poll finding it exited).
+rule ExecRequestBusy {
+    when: request: ExecRequest.created
+    let blocker = Process{status: still_active}
+    requires: exists blocker
+    ensures: request.status = rejected
+    ensures: ExecRejected(
+        request_id: request.request_id,
+        reason: "busy",
+        detail: {
+            blocking_cmd_line: blocker.cmd_line,
+            elapsed_ms: now - blocker.started_at
+        }
+    )
+}
+
+rule ExecStdinTooLarge {
+    when: request: ExecRequest.created
+    requires: not exists Process{status: still_active}
+    requires: request.stdin_size > config.stdin_max
+    ensures: request.status = rejected
+    ensures: ExecRejected(request_id: request.request_id, reason: "stdin too large")
+}
+
+rule PtyUnavailable {
+    when: request: ExecRequest.created
+    requires: not exists Process{status: still_active}
+    requires: request.stdin_size <= config.stdin_max
+    requires: request.pty = true and capabilities.has_pty = false
+    ensures: request.status = rejected
+    ensures: ExecRejected(
+        request_id: request.request_id,
+        reason: "pty not available on this Windows"
+    )
+}
+
+rule ExecRequestAccepted {
+    when: request: ExecRequest.created
+    requires: not exists Process{status: still_active}
+    requires: request.stdin_size <= config.stdin_max
+    requires: request.pty = false or capabilities.has_pty = true
+    ensures: request.status = accepted
+    ensures: request.effective_timeout_ms =
+        if request.timeout_ms <= 0: config.default_timeout_ms
+        else if request.timeout_ms > config.max_timeout_ms: config.max_timeout_ms
+        else: request.timeout_ms
+    ensures: request.effective_output_cap =
+        if request.max_output <= 0 or request.max_output > config.output_cap: config.output_cap
+        else: request.max_output
+    ensures: SpawnRequested(request: request)
+}
+
+-- Spawn: the host runtime resolves and classifies the binary, then
+-- attempts CreateProcessA. Failure rejects without creating a Process.
+
+rule ProcessSpawned {
+    when: SpawnSucceeded(request, binary_type, exec_method)
+    requires: request.status = accepted
+    ensures: Process.created(
+        request: request,
+        cmd_line: request.cmd_line,
+        cwd: request.cwd,
+        binary_type: binary_type,
+        exec_method: exec_method,
+        killed_by: none,
+        started_at: now,
+        status: running
+    )
+}
+
+-- The error response carries the Win32 error code in the reason text
+-- ("spawn failed: <code>"); the spec models the stable prefix. An
+-- empty command line is rejected with the same stable prefix
+-- ("spawn failed: empty command line") WITHOUT a spawn attempt -
+-- recorded intentional (weed 2026-06-06): the reason vocabulary stays
+-- one entry shorter at the cost of a pedantic misnomer.
+rule ProcessSpawnFailed {
+    when: SpawnFailed(request, error_code)
+    requires: request.status = accepted
+    ensures: ExecRejected(request_id: request.request_id, reason: "spawn failed")
+}
+
+-- Completion: normal exit, timeout kill, deliberate non-kill (Q12),
+-- and job-object limit kills.
+
+rule ProcessExits {
+    when: ProcessExited(p, exit_code)
+    requires: p.status = running
+    ensures: p.status = exited
+    ensures:
+        if p.request.pty:
+            PtyExecResult.created(
+                process: p,
+                request_id: p.request.request_id,
+                exit_code: exit_code,
+                output_kind: ansi,
+                unsafe_used: p.request.unsafe_used,
+                status: ok
+            )
+        else:
+            ExecResult.created(
+                process: p,
+                request_id: p.request.request_id,
+                exit_code: exit_code,
+                unsafe_used: p.request.unsafe_used,
+                status: ok
+            )
+}
+
+-- kill_method reports how the host actually terminated the child:
+-- ctrl_break when GenerateConsoleCtrlEvent worked within its grace
+-- window (capability-gated), timeout for direct TerminateProcess.
+rule ProcessTimeoutKilled {
+    when: ProcessTimedOut(p, kill_method)
+    requires: p.status = running
+    requires: p.binary_type not in {ne16, mz}
+    ensures: p.status = timed_out
+    ensures: p.killed_by = kill_method
+    ensures:
+        if p.request.pty:
+            PtyExecResult.created(
+                process: p,
+                request_id: p.request.request_id,
+                output_kind: ansi,
+                unsafe_used: p.request.unsafe_used,
+                status: error,
+                error_reason: "timed out"
+            )
+        else:
+            ExecResult.created(
+                process: p,
+                request_id: p.request.request_id,
+                unsafe_used: p.request.unsafe_used,
+                status: error,
+                error_reason: "timed out"
+            )
+}
+
+-- Q12: a 16-bit child runs in the shared VDM; TerminateProcess could
+-- kill unrelated siblings. The child is left running (still_active),
+-- the request still gets its in-band timed-out error, and subsequent
+-- requests are busy until the orphan is observed exited.
+rule VdmTimeoutNotKilled {
+    when: ProcessTimedOut(p, _)
+    requires: p.status = running
+    requires: p.binary_type in {ne16, mz}
+    ensures: p.status = still_active
+    ensures: ExecResult.created(
+        process: p,
+        request_id: p.request.request_id,
+        unsafe_used: p.request.unsafe_used,
+        status: error,
+        error_reason: "timed out"
+    )
+}
+
+-- Implicit reap: the host re-polls the retained handle on every
+-- exec/ptyExec request; this trigger records the poll finding the
+-- orphan exited, which unblocks the busy domain.
+rule OrphanReaped {
+    when: OrphanExitObserved(p)
+    requires: p.status = still_active
+    ensures: p.status = exited
+}
+
+-- Job-object limit kills (NT 4.0+). Windows semantics bound what is
+-- attributable (weed 2026-06-06): the CPU-time limit TERMINATES the
+-- child (quota exit), so cpu_cap is reliably detected; the memory
+-- limit only FAILS further allocations - such a child dies on its own
+-- and is attributed memory_cap only via the documented quota exit
+-- code, otherwise it reports as a normal nonzero exit with killed_by
+-- none. The result is still a completed exec whose killed_by names
+-- the limit when attributable.
+rule JobLimitKills {
+    when: JobLimitKilled(p, limit, exit_code)
+    requires: p.status = running
+    requires: capabilities.has_job_objects = true
+    ensures: p.status = exited
+    ensures: p.killed_by = limit
+    ensures: ExecResult.created(
+        process: p,
+        request_id: p.request.request_id,
+        exit_code: exit_code,
+        unsafe_used: p.request.unsafe_used,
+        status: ok
+    )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- timed_out strictly means killed; still_active strictly means not.
+invariant TimedOutMeansKilled {
+    for p in Processes:
+        p.status = timed_out implies p.killed_by != none
+}
+
+invariant StillActiveNeverKilled {
+    for p in Processes:
+        p.status = still_active implies p.killed_by = none
+}
+
+invariant OnlyVdmChildrenGoStillActive {
+    for p in Processes:
+        p.status = still_active implies p.binary_type in {ne16, mz}
+}
+
+-- Decision 3: catalogued shell built-ins route via the era-correct
+-- shell regardless of the request's shell flag, and exec_method
+-- reports it.
+invariant ShellRoutingReported {
+    for p in Processes:
+        p.request.routed_via_shell implies p.exec_method = shell
+}
+
+invariant CtrlBreakRequiresCapability {
+    for p in Processes:
+        p.killed_by = ctrl_break implies capabilities.has_ctrl_events
+}
+
+invariant JobKillRequiresCapability {
+    for p in Processes:
+        p.killed_by in {memory_cap, cpu_cap} implies capabilities.has_job_objects
+}
+
+invariant PtyResultRequiresCapability {
+    for r in PtyExecResults:
+        r.status = ok implies capabilities.has_pty
+}
+
+-- The Win32s baseline has none of the uplift capabilities; every
+-- capability-gated path must have a Win32s-correct fallback.
+invariant Win32sIsBaseline {
+    for c in Capabilities:
+        c.is_win32s implies not (c.has_threads or c.has_job_objects or c.has_ctrl_events or c.has_pty)
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The host-runtime boundary around spawn: binary classification and
+-- CreateProcessA outcome for an accepted request.
+surface SpawnBoundary {
+    facing r: ExecRequest
+
+    provides:
+        SpawnSucceeded(r, binary_type, exec_method)
+            when r.status = accepted
+        SpawnFailed(r, error_code)
+            when r.status = accepted
+}
+
+-- The host-runtime boundary around a live child: exit, timeout and
+-- job-limit events from the capture loop, plus the re-poll of a
+-- retained still_active handle.
+surface ProcessRuntime {
+    facing p: Process
+
+    provides:
+        ProcessExited(p, exit_code)
+            when p.status = running
+        ProcessTimedOut(p, kill_method)
+            when p.status = running
+        JobLimitKilled(p, limit, exit_code)
+            when p.status = running and capabilities.has_job_objects
+        OrphanExitObserved(p)
+            when p.status = still_active
+}

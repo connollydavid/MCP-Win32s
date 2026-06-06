@@ -334,6 +334,154 @@ TEST_CASE(build_response_null_value) {
 }
 
 /* ========================================================
+ * Parsing - Phase 4 exec fields
+ * Obligation: entity-fields.Command (mcp-protocol.allium) - argv
+ * array, cwd, shell/unsafe booleans, timeout_ms/max_output ints,
+ * stdin_b64. See tests/OBLIGATIONS-PHASE4.md.
+ * ======================================================== */
+
+TEST_CASE(parse_exec_argv_array) {
+    static JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand(
+        "{\"cmd\":\"exec\",\"id\":\"e1\",\"argv\":[\"cl\",\"/c\",\"a b.c\"]}",
+        &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_INT_EQUAL(3, cmd.argv_count, "argv count");
+    TEST_ASSERT_STR_EQUAL("cl", cmd.argv[0], "argv[0]");
+    TEST_ASSERT_STR_EQUAL("/c", cmd.argv[1], "argv[1]");
+    TEST_ASSERT_STR_EQUAL("a b.c", cmd.argv[2], "argv[2] with space");
+}
+
+TEST_CASE(parse_exec_argv_escapes) {
+    static JsonCommand cmd;
+    int result;
+    /* argv element with escaped quote and backslash: he said "hi" + C:\ */
+    result = ParseJsonCommand(
+        "{\"cmd\":\"exec\",\"id\":\"e2\",\"argv\":[\"say \\\"hi\\\"\",\"C:\\\\\"]}",
+        &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_INT_EQUAL(2, cmd.argv_count, "argv count");
+    TEST_ASSERT_STR_EQUAL("say \"hi\"", cmd.argv[0], "embedded quotes");
+    TEST_ASSERT_STR_EQUAL("C:\\", cmd.argv[1], "trailing backslash");
+}
+
+TEST_CASE(parse_exec_numbers_and_bools) {
+    static JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand(
+        "{\"cmd\":\"exec\",\"id\":\"e3\",\"timeout_ms\":30000,"
+        "\"max_output\":4096,\"shell\":true,\"unsafe\":false,"
+        "\"mem_cap_bytes\":8388608,\"cpu_time_ms\":1000,"
+        "\"cols\":80,\"rows\":25}",
+        &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_INT_EQUAL(30000, cmd.timeout_ms, "timeout_ms");
+    TEST_ASSERT_INT_EQUAL(4096, cmd.max_output, "max_output");
+    TEST_ASSERT_INT_EQUAL(1, cmd.shell_flag, "shell true");
+    TEST_ASSERT_INT_EQUAL(0, cmd.unsafe_flag, "unsafe false");
+    TEST_ASSERT_INT_EQUAL(8388608, cmd.mem_cap_bytes, "mem_cap_bytes");
+    TEST_ASSERT_INT_EQUAL(1000, cmd.cpu_time_ms, "cpu_time_ms");
+    TEST_ASSERT_INT_EQUAL(80, cmd.cols, "cols");
+    TEST_ASSERT_INT_EQUAL(25, cmd.rows, "rows");
+}
+
+TEST_CASE(parse_exec_cwd_and_stdin) {
+    static JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand(
+        "{\"cmd\":\"exec\",\"id\":\"e4\",\"cwd\":\"C:\\\\PROJECTS\","
+        "\"stdin_b64\":\"Zm9vCg==\"}",
+        &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_STR_EQUAL("C:\\PROJECTS", cmd.cwd, "cwd");
+    TEST_ASSERT_STR_EQUAL("Zm9vCg==", cmd.stdin_b64, "stdin_b64");
+}
+
+TEST_CASE(parse_exec_defaults_zeroed) {
+    static JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand("{\"cmd\":\"exec\",\"id\":\"e5\"}", &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_INT_EQUAL(0, cmd.argv_count, "argv absent");
+    TEST_ASSERT_INT_EQUAL(0, cmd.timeout_ms, "timeout_ms 0 = server default");
+    TEST_ASSERT_INT_EQUAL(0, cmd.shell_flag, "shell defaults false");
+    TEST_ASSERT_INT_EQUAL(0, cmd.unsafe_flag, "unsafe defaults false");
+    TEST_ASSERT_INT_EQUAL(0, cmd.max_output, "max_output 0 = cap");
+}
+
+TEST_CASE(parse_exec_negative_number) {
+    static JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand(
+        "{\"cmd\":\"exec\",\"id\":\"e6\",\"timeout_ms\":-5}", &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_INT_EQUAL(-5, cmd.timeout_ms, "negative parsed");
+}
+
+TEST_CASE(parse_exec_unknown_array_ignored) {
+    static JsonCommand cmd;
+    int result;
+    /* Arrays under unknown keys are scanned and dropped */
+    result = ParseJsonCommand(
+        "{\"cmd\":\"exec\",\"id\":\"e7\",\"future\":[\"x\",\"y\"],"
+        "\"argv\":[\"dir\"]}",
+        &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_INT_EQUAL(1, cmd.argv_count, "only argv stored");
+    TEST_ASSERT_STR_EQUAL("dir", cmd.argv[0], "argv[0]");
+}
+
+TEST_CASE(parse_exec_unknown_array_scalars_ignored) {
+    /* Obligation: json-parser.allium rule LineParses - unknown keys
+     * are ignored whatever their scalar value kind, including arrays
+     * of numbers/booleans/null (weed 2026-06-06 pinning test). argv
+     * itself stays strings-only. */
+    static JsonCommand cmd;
+    TEST_ASSERT_INT_EQUAL(1,
+        ParseJsonCommand("{\"cmd\":\"exec\",\"id\":\"u1\","
+                         "\"future\":[1,2,-3]}", &cmd),
+        "unknown numeric array tolerated");
+    TEST_ASSERT_STR_EQUAL("u1", cmd.id, "fields still parsed");
+    TEST_ASSERT_INT_EQUAL(1,
+        ParseJsonCommand("{\"future\":[true,false,null,\"x\",7]}", &cmd),
+        "unknown mixed-scalar array tolerated");
+    /* argv remains strings-only */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"argv\":[1,2]}", &cmd),
+        "non-string argv element still rejected");
+    /* nested containers stay rejected (single-level wire) */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"future\":[[1]]}", &cmd),
+        "nested array rejected");
+}
+
+TEST_CASE(parse_exec_malformed_values) {
+    static JsonCommand cmd;
+    /* Fractional number: rejected (no FP in the protocol) */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"timeout_ms\":1.5}", &cmd),
+        "fraction rejected");
+    /* Bare word value: rejected */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"shell\":maybe}", &cmd),
+        "bare word rejected");
+    /* Unterminated array: rejected */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"argv\":[\"a\"", &cmd),
+        "unterminated array rejected");
+    /* Non-string array element: rejected */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"argv\":[1,2]}", &cmd),
+        "non-string element rejected");
+    /* null tolerated, leaves field zeroed */
+    TEST_ASSERT_INT_EQUAL(1,
+        ParseJsonCommand("{\"cmd\":\"exec\",\"cwd\":null}", &cmd),
+        "null value tolerated");
+    TEST_ASSERT_STR_EQUAL("", cmd.cwd, "null leaves cwd empty");
+}
+
+/* ========================================================
  * Main - Run all tests
  * ======================================================== */
 
@@ -367,6 +515,17 @@ int main(void)
     RUN_TEST(parse_unknown_keys_ignored);
     RUN_TEST(parse_value_truncation);
     RUN_TEST(parse_just_whitespace);
+
+    printf("\nParsing - Phase 4 exec fields:\n");
+    RUN_TEST(parse_exec_argv_array);
+    RUN_TEST(parse_exec_argv_escapes);
+    RUN_TEST(parse_exec_numbers_and_bools);
+    RUN_TEST(parse_exec_cwd_and_stdin);
+    RUN_TEST(parse_exec_defaults_zeroed);
+    RUN_TEST(parse_exec_negative_number);
+    RUN_TEST(parse_exec_unknown_array_ignored);
+    RUN_TEST(parse_exec_unknown_array_scalars_ignored);
+    RUN_TEST(parse_exec_malformed_values);
 
     printf("\nResponse Building:\n");
     RUN_TEST(build_ok_response);

@@ -1,0 +1,44 @@
+#!/bin/sh
+# make_fixtures - regenerate the binfmt classification fixtures.
+#
+# Produces two tiny (<256 byte) executables whose ONLY purpose is to
+# carry valid DOS/NE headers for tests/test_binfmt.c. They are not
+# runnable programs.
+#
+#   tiny_mz.exe : 'MZ' DOS header; e_lfanew (offset 0x3C) = 0 -> the
+#                 classifier sees MZ with an invalid e_lfanew and
+#                 reports BIN_MZ.
+#   tiny_ne.exe : 'MZ' DOS header; e_lfanew = 0x40 pointing at an 'NE'
+#                 signature -> BIN_NE16.
+#
+# Bytes are emitted with printf so this is portable to any POSIX shell.
+# Re-run from this directory after editing.
+
+set -e
+dir=$(dirname "$0")
+
+# --- tiny_mz.exe : 64-byte DOS header, e_lfanew = 0 (invalid) ---------
+# Offsets 0-1 'MZ'; 0x3C-0x3F e_lfanew = 00 00 00 00; rest zero-filled.
+{
+  printf 'MZ'
+  # pad to offset 0x3C (60 bytes total so far -> 58 more after the 2)
+  i=2
+  while [ "$i" -lt 60 ]; do printf '\0'; i=$((i+1)); done
+  # e_lfanew = 0
+  printf '\0\0\0\0'
+} > "$dir/tiny_mz.exe"
+
+# --- tiny_ne.exe : DOS header with e_lfanew = 0x40 -> 'NE' at 0x40 -----
+{
+  printf 'MZ'
+  i=2
+  while [ "$i" -lt 60 ]; do printf '\0'; i=$((i+1)); done
+  # e_lfanew = 0x40 (little-endian)
+  printf '\100\0\0\0'
+  # at offset 0x40: 'NE' signature, then a few zero bytes
+  printf 'NE'
+  printf '\0\0\0\0\0\0'
+} > "$dir/tiny_ne.exe"
+
+echo "wrote $dir/tiny_mz.exe ($(wc -c < "$dir/tiny_mz.exe") bytes)"
+echo "wrote $dir/tiny_ne.exe ($(wc -c < "$dir/tiny_ne.exe") bytes)"

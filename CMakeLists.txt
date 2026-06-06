@@ -50,7 +50,14 @@ set(CORE_SOURCES
   src/file_ops.c
   src/serial.c
   src/transport.c
-  src/tcp.c)
+  src/tcp.c
+  src/feat.c
+  src/ready.c
+  src/argv.c
+  src/binfmt.c
+  src/catalog.c
+  src/exec_ops.c
+  src/pty_exec.c)
 
 # --- main executable -------------------------------------------------------
 # The TCP backend is runtime-loaded (LoadLibraryA), so we deliberately do NOT
@@ -77,8 +84,7 @@ target_link_libraries(test_tcp PRIVATE kernel32 wsock32)
 # ProcessBuffer/ProcessCommand.
 add_executable(test_serial
   tests/test_serial.c tests/mock_transport.c
-  src/mcp-w32s.c src/transport.c src/serial.c
-  src/json_parser.c src/base64.c src/file_ops.c)
+  src/mcp-w32s.c ${CORE_SOURCES})
 target_compile_definitions(test_serial PRIVATE TEST_BUILD)
 target_link_libraries(test_serial PRIVATE kernel32 user32)
 
@@ -91,9 +97,57 @@ target_link_libraries(test_file_ops PRIVATE kernel32)
 add_executable(test_pbt_base64 tests/test_pbt_base64.c src/base64.c)
 target_link_libraries(test_pbt_base64 PRIVATE kernel32)
 
+# --- Phase 4 test targets ---------------------------------------------------
+add_executable(test_feat tests/test_feat.c src/feat.c)
+target_link_libraries(test_feat PRIVATE kernel32)
+
+add_executable(test_argv tests/test_argv.c src/argv.c src/base64.c)
+target_link_libraries(test_argv PRIVATE kernel32)
+
+# argv_echo: helper child for test_argv's spawn-based PBT roundtrip.
+add_executable(argv_echo tests/argv_echo.c src/base64.c)
+target_link_libraries(argv_echo PRIVATE kernel32)
+add_dependencies(test_argv argv_echo)
+
+add_executable(test_binfmt tests/test_binfmt.c src/binfmt.c src/feat.c)
+target_link_libraries(test_binfmt PRIVATE kernel32)
+
+add_executable(test_catalog tests/test_catalog.c src/catalog.c)
+target_link_libraries(test_catalog PRIVATE kernel32)
+
+add_executable(test_exec_ops
+  tests/test_exec_ops.c src/exec_ops.c src/feat.c src/binfmt.c)
+target_link_libraries(test_exec_ops PRIVATE kernel32)
+
+add_executable(test_pty_exec tests/test_pty_exec.c src/pty_exec.c src/feat.c)
+target_link_libraries(test_pty_exec PRIVATE kernel32)
+
+# wire_client: the 4.0b wire-contract smoke client. A test tool, so a
+# static wsock32 link is fine here (the SERVER stays runtime-loaded).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/smoke/wire_client.c)
+  add_executable(wire_client tests/smoke/wire_client.c)
+  target_link_libraries(wire_client PRIVATE kernel32 wsock32)
+endif()
+
+# binfmt fixtures + the command catalog travel next to the test binaries.
+add_custom_command(TARGET test_binfmt POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          ${CMAKE_SOURCE_DIR}/tests/fixtures
+          $<TARGET_FILE_DIR:test_binfmt>/fixtures)
+add_custom_command(TARGET test_catalog POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          ${CMAKE_SOURCE_DIR}/catalog
+          $<TARGET_FILE_DIR:test_catalog>/catalog)
+# (test_serial's exec-integration tests also read it from this copy.)
+
 # CMAKE_CROSSCOMPILING_EMULATOR (set by the toolchain: empty for native
 # WSL-interop execution, "wine" otherwise) is applied to each test command.
 foreach(t test_json test_transport test_tcp test_serial
-          test_base64 test_file_ops test_pbt_base64)
+          test_base64 test_file_ops test_pbt_base64
+          test_feat test_argv test_binfmt test_catalog
+          test_exec_ops test_pty_exec)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# The smoke run (server over /TCP + wire_client) needs process orchestration;
+# it lives as a CI step and in build.sh smoke, not as a ctest entry.
