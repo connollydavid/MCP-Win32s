@@ -24,6 +24,14 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# CMake's GNU Release default is -O3; pin -O2 to match the project's historic
+# builds and keep codegen predictable on the 16 MB Win32s budget. Must be set
+# after project() (which populates the *_RELEASE flags) and only for GCC/Clang;
+# MSVC/VC6 keeps its own /O2-class Release defaults.
+if(NOT MSVC)
+  set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
+endif()
+
 # Win32s load requirements: the PE must carry relocations (/FIXED:NO) and be
 # based at 0x10000 (the default 0x400000 region is occupied by Win32s).
 # Applied to every executable we emit.
