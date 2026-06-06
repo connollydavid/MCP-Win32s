@@ -1,0 +1,317 @@
+-- allium: 3
+-- mcp-bridge.allium
+
+-- Scope: MCP bridge core (Phase 5, work-item 5.0) - the Rust bridge's
+--        MCP-server skeleton fronting the Win32s device over stdio.
+-- Includes: the MCP session lifecycle + lenient version negotiation
+--           (target 2025-11-25); capability gating of the advertised
+--           tool set from the device's features; and the generic
+--           tool-call -> device round-trip -> result mapping, incl. the
+--           isError (recoverable) vs protocol-error (unknown/malformed)
+--           translation.
+-- Excludes:
+--   - The device wire protocol + ready handshake (wire-contract.allium,
+--     consumed here as the device side)
+--   - The concrete capability tools: file-ops (5.1), build (5.2),
+--     memory (5.3), encoding (5.4) - 5.0 is the generic contract only
+--   - Streamable HTTP, OAuth, resources/prompts/sampling (later phases)
+-- Dependencies: wire-contract.allium
+
+use "./wire-contract.allium" as wire
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- How far the device permits memory access (the Capabilities tier from
+-- its ready message; the concrete peek/poke tools arrive in 5.3).
+enum MemTier { none | process | arena | shared_vm }
+
+-- The device's active text encoding for its own (path) surfaces.
+enum EncodingMode { codepage | utf8_native }
+
+-- A tool call's failure register. A RECOVERABLE failure (catalog miss,
+-- busy, timeout, bad argument, a capability absent at call time) becomes
+-- an isError tool result the model can fix or retry; a PROTOCOL failure
+-- (unknown/unadvertised tool, malformed arguments) is a JSON-RPC error
+-- and never reaches the device.
+enum FailureKind { recoverable | protocol }
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- The MCP revision the bridge implements; negotiation offers this
+    -- when the client's requested version differs.
+    bridge_protocol_version: String = "2025-11-25"
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- One MCP client<->bridge session over stdio. It cannot reach ready
+-- until the device link is ready (the features that gate the tool set
+-- come from the device's ready message), and it negotiates a protocol
+-- version leniently at initialize.
+entity McpSession {
+    device: wire/WireSession
+    client_version: String
+    status: initializing | ready | closed | failed
+
+    transitions status {
+        initializing -> ready
+        initializing -> failed
+        ready        -> closed
+        terminal: closed, failed
+    }
+
+    negotiated_version: String when status = ready | closed
+}
+
+-- The capabilities the bridge learned from the device's ready message
+-- (the features object). The concrete tools (5.1-5.4) declare a required
+-- capability; the bridge advertises a tool iff that capability holds.
+entity DeviceCapabilities {
+    session: McpSession
+    has_pty: Boolean
+    mem: MemTier
+    encoding: EncodingMode
+}
+
+-- A tool the bridge may expose. Concrete tools are introduced in
+-- 5.1-5.4; 5.0 fixes the advertisement contract: a tool that names a
+-- required capability is advertised only when the device provides it,
+-- via the capability_satisfied black box (which knows how each named
+-- capability - "pty", "mem", "utf8" - maps onto DeviceCapabilities).
+entity Tool {
+    session: McpSession
+    name: String
+    required_capability: String?
+    advertised: Boolean
+}
+
+-- One tools/call from the client. An unadvertised/unknown tool or
+-- malformed arguments are rejected before the device is touched
+-- (protocol error); an advertised, well-formed call is dispatched and
+-- its device reply is mapped to a result.
+entity ToolCall {
+    session: McpSession
+    tool: Tool
+    status: dispatched | ok | error | rejected
+
+    transitions status {
+        dispatched -> ok
+        dispatched -> error
+        terminal: ok, error, rejected
+    }
+
+    failure_kind: FailureKind when status = error | rejected
+}
+
+-- The MCP result for a tool call. Always carries a human-readable text
+-- block; `is_error` is MCP's isError flag (false = success, with a
+-- structuredContent mirror when has_structured; true = a tool-execution
+-- error whose text is the actionable message). Protocol-rejected calls
+-- produce a JSON-RPC error, not a ToolResult (see ToolCallRejected).
+entity ToolResult {
+    call: ToolCall
+    is_error: Boolean
+    text: String
+    has_structured: Boolean
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Lifecycle: the client initializes only once the device link is ready,
+-- then the bridge negotiates leniently - echo the client's version if it
+-- matches the bridge's, otherwise offer the bridge's.
+
+rule SessionInitialized {
+    when: InitializeRequested(device, client_version)
+    requires: device.status = ready
+    ensures: McpSession.created(
+        device: device,
+        client_version: client_version,
+        status: initializing
+    )
+}
+
+rule VersionNegotiated {
+    when: session: McpSession.status becomes initializing
+    ensures: session.status = ready
+    ensures: session.negotiated_version =
+        if session.client_version = config.bridge_protocol_version:
+            session.client_version
+        else:
+            config.bridge_protocol_version
+}
+
+-- A failed initialize (device not ready, or an unsupported client
+-- version the client won't accept) ends the session before serving.
+rule SessionInitFailed {
+    when: InitializeFailed(session)
+    requires: session.status = initializing
+    ensures: session.status = failed
+}
+
+rule SessionClosed {
+    when: ClientDisconnected(session)
+    requires: session.status = ready
+    ensures: session.status = closed
+}
+
+-- Capability gating: on ready, the bridge resolves the device features
+-- it will gate the tool set against. capability values are read from the
+-- device's ready message (a wire/WireSession) via black boxes, since
+-- wire-contract abstracts the features payload.
+rule CapabilitiesResolved {
+    when: session: McpSession.status becomes ready
+    ensures: DeviceCapabilities.created(
+        session: session,
+        has_pty: device_has_pty(session.device),
+        mem: device_mem_tier(session.device),
+        encoding: device_encoding(session.device)
+    )
+}
+
+-- A tool is advertised iff it names no required capability, or the named
+-- capability is satisfied by the device.
+rule ToolAdvertised {
+    when: tool: Tool.created
+    let caps = DeviceCapabilities{session: tool.session}
+    requires: exists caps
+    ensures: tool.advertised =
+        if tool.required_capability = null:
+            true
+        else:
+            capability_satisfied(tool.required_capability, caps)
+}
+
+-- Dispatch: an advertised tool with well-formed arguments goes to the
+-- device. args_valid is the schema check (2020-12 inputSchema).
+rule ToolCallDispatched {
+    when: ToolCalled(session, tool, args_valid)
+    requires: tool.advertised and args_valid
+    ensures: ToolCall.created(
+        session: session,
+        tool: tool,
+        status: dispatched
+    )
+}
+
+-- An unadvertised/unknown tool or malformed arguments are a PROTOCOL
+-- error: rejected before the device is touched, surfaced as a JSON-RPC
+-- error rather than an isError tool result.
+rule ToolCallRejected {
+    when: ToolCalled(session, tool, args_valid)
+    requires: not tool.advertised or not args_valid
+    ensures: ToolCall.created(
+        session: session,
+        tool: tool,
+        status: rejected,
+        failure_kind: protocol
+    )
+    ensures: ProtocolError(session: session, tool_name: tool.name)
+}
+
+-- Device reply mapping: ok -> ok result (text + structuredContent);
+-- a recoverable device failure -> isError tool result.
+
+rule ToolCallSucceeded {
+    when: DeviceReplyOk(call, summary)
+    requires: call.status = dispatched
+    ensures: call.status = ok
+    ensures: ToolResult.created(
+        call: call,
+        is_error: false,
+        text: summary,
+        has_structured: true
+    )
+}
+
+rule ToolCallRecoverableError {
+    when: DeviceReplyError(call, reason)
+    requires: call.status = dispatched
+    ensures: call.status = error
+    ensures: call.failure_kind = recoverable
+    ensures: ToolResult.created(
+        call: call,
+        is_error: true,
+        text: reason,
+        has_structured: false
+    )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- A reached, served session carries a negotiated version.
+invariant ReadySessionHasVersion {
+    for s in McpSessions:
+        s.status = ready implies s.negotiated_version.size > 0
+}
+
+-- The isError/protocol split: a dispatched call that fails is always a
+-- recoverable (isError) outcome; a protocol failure never dispatches.
+invariant DispatchedErrorsAreRecoverable {
+    for c in ToolCalls:
+        c.status = error implies c.failure_kind = recoverable
+}
+
+invariant ProtocolFailuresNeverDispatch {
+    for c in ToolCalls:
+        c.failure_kind = protocol implies c.status = rejected
+}
+
+-- Capability gating holds: an advertised, capability-requiring tool's
+-- capability is satisfied by the device.
+invariant AdvertisedToolsAreCapable {
+    for t in Tools:
+        t.advertised and t.required_capability != null
+            implies capability_satisfied(t.required_capability,
+                                         DeviceCapabilities{session: t.session})
+}
+
+-- A success result carries a structuredContent mirror; an error result
+-- does not (its text is the actionable message).
+invariant SuccessResultsAreStructured {
+    for r in ToolResults:
+        r.has_structured implies not r.is_error
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The MCP client boundary: the client initializes the session and calls
+-- tools over stdio JSON-RPC.
+surface McpClient {
+    facing s: McpSession
+
+    provides:
+        InitializeRequested(device, client_version)
+        InitializeFailed(s)
+            when s.status = initializing
+        ClientDisconnected(s)
+            when s.status = ready
+        ToolCalled(s, tool, args_valid)
+            when s.status = ready
+}
+
+-- The device boundary: the device's wire reply to a dispatched call
+-- (consumed from wire-contract). ok carries a human summary; error
+-- carries the recoverable reason string.
+surface DeviceRuntime {
+    facing c: ToolCall
+
+    provides:
+        DeviceReplyOk(c, summary)
+            when c.status = dispatched
+        DeviceReplyError(c, reason)
+            when c.status = dispatched
+}
