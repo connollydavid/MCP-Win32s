@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "mingw",
+      "displayName": "MinGW-w64 i386 (Win32s target)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/mingw",
+      "toolchainFile": "${sourceDir}/toolchains/mingw-w64-i386.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "vc6",
+      "displayName": "Visual C++ 6.0 via NMake (no IDE)",
+      "generator": "NMake Makefiles",
+      "binaryDir": "${sourceDir}/build/vc6",
+      "toolchainFile": "${sourceDir}/toolchains/vc6-nmake.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "mingw", "configurePreset": "mingw" },
+    { "name": "vc6", "configurePreset": "vc6" }
+  ],
+  "testPresets": [
+    {
+      "name": "mingw",
+      "configurePreset": "mingw",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "vc6",
+      "configurePreset": "vc6",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

@@ -39,16 +39,18 @@ MCP-Win32s/
 │   ├── test_json.c             # 31 JSON parser unit tests
 │   ├── test_pbt_base64.c       # 4 property-based tests (4000 random trials)
 │   └── test_serial.c           # 28 serial + main loop tests
-├── vc6/
-│   ├── mcp-w32s.dsw            # VC++ 6.0 workspace
-│   └── mcp-w32s.dsp            # VC++ 6.0 project (Debug + Release)
+├── toolchains/
+│   ├── mingw-w64-i386.cmake   # Cross-compile toolchain (dev host + CI)
+│   └── vc6-nmake.cmake        # VC6 cl/nmake toolchain (no IDE; NMake generator)
 ├── vendor/
 │   └── theft/                  # Vendored PBT library with autoshrinking (host-side only)
 ├── AGENTS.md                   # Condensed agent guide (constraints + layout)
 ├── PLAN.md                     # Phase plans; Phase 3 = transport, Phase 4 = exec (both fully worked)
-├── build.bat                   # VC++ 6.0 build script
-├── build.sh                    # MinGW cross-compile build script
-├── .gitignore                  # Ignores *.exe, *.o, *.obj, VC6 output
+├── CMakeLists.txt              # Build single source of truth (targets + tests)
+├── CMakePresets.json           # "mingw" and "vc6" configure/build/test presets
+├── build.bat                   # Thin wrapper -> cmake vc6 preset
+├── build.sh                    # Thin wrapper -> cmake mingw preset
+├── .gitignore                  # Ignores *.exe, *.o, *.obj, build/
 ├── README.md                   # Technical specification (~3000 lines)
 ├── LICENSE                     # Unlicense (public domain)
 └── CLAUDE.md                   # This file
@@ -120,59 +122,49 @@ These constraints are non-negotiable. Violating any of them breaks compatibility
 
 ## Build Commands
 
-### Visual C++ 6.0 (reference retro build)
+**CMake is the single source of truth.** `CMakeLists.txt` defines the
+executable and every test target once; `CMakePresets.json` selects a toolchain.
+The strict i386/C89/Win32s flags live in the toolchain files under
+`toolchains/` (see Hard Technical Constraints), not in hand-written commands —
+this is what stops the build definitions from drifting apart.
 
-```batch
-cl /W3 /O2 /TC /G3 /Isrc /FIXED:NO /BASE:0x10000 ^
-   src\mcp-w32s.c src\serial.c src\json_parser.c ^
-   kernel32.lib user32.lib wsock32.lib
-```
-
-### Visual Studio 2022 (modern development)
-
-```batch
-cl /W4 /O2 /TC /std:c11 /arch:IA32 /Isrc /FIXED:NO /BASE:0x10000 ^
-   src\mcp-w32s.c src\serial.c src\json_parser.c ^
-   kernel32.lib user32.lib wsock32.lib
-```
-
-### MinGW-w64 (CI / cross-compile from Linux)
+### MinGW-w64 (the build exercised on the dev host and in CI)
 
 ```bash
-i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
-  -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
-  -Wl,--dynamicbase -Wl,--image-base,0x10000 \
-  -Isrc -o mcp-w32s.exe \
-  src/mcp-w32s.c src/serial.c src/json_parser.c \
-  -lkernel32 -luser32 -lwsock32
+cmake --preset mingw
+cmake --build --preset mingw
+ctest --preset mingw            # runs all 7 test binaries
 ```
 
-### Building Tests (MinGW example)
+`./build.sh` (and `./build.sh test`) is a thin wrapper around exactly these.
+The flags come from `toolchains/mingw-w64-i386.cmake`
+(`-std=c89 -march=i386 -mtune=i386 -Wall -Werror -pedantic -Wdouble-promotion
+-Wfloat-equal`, image base `0x10000`, relocations on).
 
-```bash
-# JSON parser tests
-i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Isrc \
-  -o tests/test_json.exe tests/test_json.c src/json_parser.c -lkernel32
+### Visual C++ 6.0 (period-authentic build, **no IDE**)
 
-# Serial + main loop tests
-i686-w64-mingw32-gcc -O2 -std=c89 -Wall -Isrc -DTEST_BUILD \
-  -o tests/test_serial.exe tests/test_serial.c \
-  src/mcp-w32s.c src/serial.c src/json_parser.c \
-  -lkernel32 -luser32 -lwsock32
+CMake removed its *Visual Studio 6* project generator in 3.6, but its docs
+bless building **with** the VC6 tools via the **NMake Makefiles** generator —
+that is the `vc6` preset. There is no `.dsp`/`.dsw` to maintain; the same
+`CMakeLists.txt` drives `cl.exe` 12.00 + `nmake`. Run on a Windows host with
+the VC6 tools on `PATH` (e.g. after `VCVARS32.BAT`):
+
+```batch
+cmake --preset vc6
+cmake --build --preset vc6
 ```
+
+`build.bat` wraps this. VC6 is **not** exercised in CI (no VC6 on the runners);
+`toolchains/vc6-nmake.cmake` keeps the VC6 flag mapping (`/G3 /TC`, `/FIXED:NO`,
+`/BASE:0x10000`) faithful by living beside the others.
 
 ### Running Tests
 
-**Test-execution environment:** the dev host is **WSL2 on a Windows host**, so MinGW-built PEs run **natively on Windows via WSL interop** (`./tests/test_json.exe` executes through real `kernel32`/`wsock32`). This is the source of truth for local verification — **Wine is a convenience/fallback, not a requirement.** Network tests (`test_tcp`) and the TCP end-to-end path are therefore **proven against real Winsock locally and must not be skipped**; the `wsock32`-probe self-skip exists only for environments that genuinely lack Winsock (CI's Ubuntu+Wine). CI itself runs on Ubuntu and uses Wine.
+**Test-execution environment:** the dev host is **WSL2 on a Windows host**, so MinGW-built PEs run **natively on Windows via WSL interop** through real `kernel32`/`wsock32`. This is the source of truth for local verification — **Wine is a convenience/fallback, not a requirement.** `toolchains/mingw-w64-i386.cmake` sets `CMAKE_CROSSCOMPILING_EMULATOR` accordingly: empty (native) when WSL interop is present, `wine` otherwise (CI's Ubuntu). So `ctest --preset mingw` runs natively on the dev host and under Wine in CI with no change. Network tests (`test_tcp`) and the TCP end-to-end path are therefore **proven against real Winsock locally and must not be skipped**.
 
 ```bash
-# On the WSL2+Windows dev host (native — no Wine, real Winsock)
-tests/test_json.exe
-tests/test_serial.exe
-
-# On Linux CI / when no Windows host is reachable (via Wine, convenience fallback)
-wine tests/test_json.exe
-wine tests/test_serial.exe
+ctest --preset mingw                    # all suites; native or Wine, auto-selected
+ctest --preset mingw -R test_tcp -V     # one suite, verbose
 ```
 
 ### Running Tests Locally (native GCC, for quick iteration)
@@ -282,35 +274,37 @@ mcp         # Model Context Protocol SDK
 
 | Tool | Purpose |
 |------|---------|
-| Visual C++ 6.0 | Reference retro compiler |
-| MinGW-w64 | Cross-compile from Linux for CI |
-| Visual Studio 2015+ | Modern Windows development |
+| CMake (>= 3.21) + Ninja | Build orchestration (single source of truth) |
+| MinGW-w64 | Cross-compile from Linux for CI (`mingw` preset) |
+| Visual C++ 6.0 | Period-authentic compiler via the `vc6` preset (NMake generator, no IDE) |
+| Visual Studio 2015+ | Modern Windows development (opens CMakeLists.txt directly) |
 | Wine | Run Win32 binaries on Linux for CI testing |
 
 ## CI/CD
 
 GitHub Actions runs on **every push and pull request** (`.github/workflows/build-and-test.yml`):
 
-1. Install MinGW-w64 and Wine on Ubuntu
-2. Build with strict C89/i386 flags: `-std=c89 -march=i386 -mtune=i386 -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal`
-3. Run unit tests via Wine
-4. Verify no FPU instructions in application object code (`objdump -d json_parser.o | grep fld|fst`)
-5. Verify no 486+ instructions in application object code (`objdump -d json_parser.o | grep cpuid|cmpxchg|bswap`)
-6. Upload compiled artifacts
+1. Install MinGW-w64, Wine, CMake and Ninja on Ubuntu
+2. `cmake --preset mingw && cmake --build --preset mingw` (strict C89/i386 flags from the toolchain file)
+3. `ctest --preset mingw` — run all suites via Wine
+4. Verify `mcp-w32s.exe` has no static `wsock32`/`ws2_32` import (TCP is runtime-loaded)
+5. Verify no FPU instructions in application object code (`objdump -d build/mingw/CMakeFiles/mcp-w32s.dir/src/*.obj`)
+6. Verify no 486+ instructions in application object code (`grep cpuid|cmpxchg|bswap`)
+7. Upload compiled artifacts
 
 **Strategy: CI from day one.** Every commit must pass the full pipeline. Binary instruction verification is done on application `.o` files only (not CRT startup code, which contains MinGW runtime FPU/atomic instructions that don't affect Win32s compatibility).
 
 ### Running Tests Locally
 
 ```bash
-# Linux (MinGW cross-compile + Wine)
-./build.sh test
+# MinGW cross-compile (native via WSL interop on the dev host, Wine elsewhere)
+./build.sh test                 # == cmake --preset mingw && build && ctest
 
-# Linux (native GCC, for quick iteration)
+# Linux (native GCC, for quick iteration on OS-independent modules)
 gcc -std=c89 -Wall -Werror -pedantic -Isrc -o test_json tests/test_json.c src/json_parser.c && ./test_json
 
-# Windows (VC++ 6.0)
-build.bat test
+# Windows with VC6 tools on PATH (NMake generator, no IDE)
+build.bat test                  # == cmake --preset vc6 && build && ctest
 ```
 
 ## Specification & Test Workflow (Allium + theft)
