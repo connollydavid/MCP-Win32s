@@ -6,7 +6,7 @@ MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables
 
 **License:** Public Domain (Unlicense)
 
-**Current status:** Phase 3 complete (backend-agnostic transport vtable, serial refactored onto it, TCP/Winsock peer runtime-loaded, `/AUTO` fallback + `/BIND` scope, SO_KEEPALIVE, 115 tests incl. PBT). See Implementation Phases below.
+**Current status:** see the phase index in the agentic host repo (`plan/PLAN.md` in [Agentic-MCP-Win32s](https://github.com/connollydavid/Agentic-MCP-Win32s)).
 
 ## Repository Structure
 
@@ -327,17 +327,9 @@ theft can never compile for the Win32s target (it is C99 + POSIX) — that is by
 
 ## Implementation Phases
 
-| Phase | Focus | Status |
-|-------|-------|--------|
-| 1 | Test framework + JSON parser + CI + serial init + main exe | **Complete** |
-| 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
-| 3 | Network & transport: vtable backends, serial refactor + TCP/Winsock peer, /AUTO fallback, /BIND scope, SO_KEEPALIVE | **Complete** |
-| 4 | Command execution + catalog + feature uplift + theft harness + spec backfill | **Spec'd** |
-| 5 | MCP integration | Not started |
-| 6 | Cross-platform testing | Not started |
-| 7 | Documentation & polish | Not started |
+Phase plans, the phase index, and per-phase status live in the agentic host repo ([Agentic-MCP-Win32s](https://github.com/connollydavid/Agentic-MCP-Win32s), `plan/PLAN.md` + `plan/PHASE<N>.md`) — they are not duplicated here.
 
-**Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates above: tend-written specs before code, propagate-derived tests, and a weed-clean audit — required before **every merge** (see "Merge gate"), not only at phase completion.
+**Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates: tend-written specs before code, propagate-derived tests, and a weed-clean audit — required before **every merge** (see "Merge gate" in the host repo's `CLAUDE.md`), not only at phase completion.
 
 **Why transport precedes command execution:** the protocol I/O is currently hard-wired to a Win32 `HANDLE` (`ReadFile`/`WriteFile`), but a Winsock `SOCKET` is not a file handle on Win32s/Win9x (needs `recv`/`send`). Phase 4's ready message and exec stdout/stderr flow over the transport, so the vtable abstraction (Phase 3) must land first or exec ships serial-only and gets rewritten. See plan/PHASE3.md in the agentic host repo.
 
