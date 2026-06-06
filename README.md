@@ -1537,20 +1537,99 @@ mcp-w32s.exe
 
 **Command Format** (JSON-like, newline-delimited):
 ```json
-{"cmd":"exec","id":"123","line":"cl /c test.c"}
+{"cmd":"exec","id":"123","argv":["cl","/c","test.c"],"timeout_ms":30000}
+{"cmd":"exec","id":"123b","line":"cl /c test.c"}
+{"cmd":"ptyExec","id":"123c","argv":["cmd"],"cols":80,"rows":25}
 {"cmd":"read","id":"124","path":"C:\\PROJECTS\\test.c"}
 {"cmd":"write","id":"125","path":"C:\\PROJECTS\\new.c","data":"...base64..."}
 {"cmd":"list","id":"126","path":"C:\\PROJECTS"}
 {"cmd":"delete","id":"127","path":"C:\\PROJECTS\\old.obj"}
 ```
 
+`exec` accepts `argv` (preferred) or legacy `line` (if both, `argv` wins),
+plus `cwd`, `shell`, `timeout_ms` (0/omitted = server default 55000ms,
+ceiling 600000ms), `stdin_b64` (max 4096 decoded bytes), `max_output`
+(0/omitted = 65536 per stream, larger clamps), `unsafe` (per-request
+catalog bypass), `mem_cap_bytes`/`cpu_time_ms` (job-object limits,
+NT 4.0+ only). `ptyExec` adds `cols`/`rows` and requires Windows 10
+1809+ (`features.pty` in the ready message).
+
 **Response Format**:
 ```json
-{"id":"123","status":"ok","output":"Microsoft (R) 32-bit C/C++ Compiler..."}
-{"id":"123","status":"error","error":"File not found"}
+{"id":"123","status":"ok","exit_code":0,"stdout_b64":"...","stderr_b64":"",
+ "stdout_truncated":false,"stderr_truncated":false,"duration_ms":47,
+ "exec_method":"direct","binary_type":"pe32","killed_by":""}
+{"id":"123c","status":"ok","exit_code":0,"output_b64":"...","output_kind":"ansi",
+ "output_truncated":false,"duration_ms":123}
+{"id":"123","status":"error","error":"timed out"}
+{"id":"123","status":"error","error":"busy","blocking_cmd_line":"...","elapsed_ms":1500}
 {"id":"124","status":"ok","data":"...base64..."}
-{"id":"126","status":"ok","files":["test.c","main.c"]}
+{"id":"126","status":"ok","files":"test.c\nmain.c"}
 ```
+
+exec stdout/stderr are ALWAYS base64 (raw OEM-codepage bytes; decode
+using `codepage` from the ready message). `exec_method` is one of
+`direct|shell|vdm-best-effort`; `binary_type` one of
+`pe32|ne16|mz|shell-builtin|unknown`; `killed_by` one of
+`""|timeout|ctrl_break|memory_cap|cpu_cap`. A response with
+`"unsafe_used":true` records a per-request whitelist bypass. Error
+reasons include: `busy` (a deliberately-unkilled 16-bit child is still
+running; the response names it and its elapsed ms), `stdin too large`,
+`command not in catalog`, `argument not allowed`, `command line too
+long`, `invalid base64`, `timed out`, `spawn failed: <code>`, and
+`pty not available on this Windows` (ptyExec only).
+
+#### Command Catalog (whitelist)
+
+`catalog/win32-commands.json` ships next to the binary (override with
+`/CATALOG:<path>`): 30 era-tagged commands with typed options that map
+1:1 onto MCP tool definitions (`catalog/MCP-MAPPING.md`). With the
+catalog loaded, `exec` only runs catalogued commands with catalogued
+flags; shell built-ins (`dir`, `copy`, ...) auto-route through the
+era-correct shell (`cmd.exe` / `command.com`) and report
+`exec_method:"shell"`. `/UNSAFE` disables enforcement server-wide; a
+per-request `"unsafe":true` bypasses it for one exec and is reported
+back as `unsafe_used`. The catalog is fixed per session (restart to
+reload). A missing catalog adds `"warning":"catalog not loaded"` to the
+ready message and disables enforcement.
+
+#### Feature Detection & Graceful Uplift
+
+The binary's baseline is Win32s 1.25a; at startup `src/feat.c` probes
+newer APIs via `GetProcAddress` (never the import table - CI enforces
+this) and uplifts at runtime:
+
+| Capability | Min OS | Used for | Baseline fallback |
+|---|---|---|---|
+| Threads | Win 95 / NT | reader threads in the capture loop | `PeekNamedPipe` polling |
+| Job objects | NT 4.0 | kill-on-close containment + `mem_cap_bytes`/`cpu_time_ms` | children survive a server crash; no caps |
+| `GenerateConsoleCtrlEvent` | NT 4.0 | graceful Ctrl-Break before `TerminateProcess` on timeout | direct terminate |
+| `GetBinaryTypeA` | NT / 95 | `binary_type` classification | manual MZ/NE/PE header read |
+| `CreatePseudoConsole` | Win 10 1809 | the `ptyExec` command | explicit `pty not available` error |
+
+The per-connection ready message advertises the live feature set:
+```json
+{"status":"ready","codepage":437,"version":"Windows 10.0.19045 (NT)",
+ "transport":"tcp","features":{"is_win32s":false,"is_win9x":false,
+ "is_nt":true,"is_wow64":false,"threads":true,"job_objects":true,
+ "ctrl_events":true,"pty":true,"binary_classify":"GetBinaryTypeA",
+ "process_mitigation":false}}
+```
+
+#### Command Execution: Win32s caveats
+
+- `WaitForSingleObject(hProcess)` returns immediately on Win32s
+  (KB Q125213): the capture loop polls `GetExitCodeProcess` until it
+  stops returning `STILL_ACTIVE`.
+- The era shell is `COMMAND.COM` on Win 3.x, `cmd.exe` on NT/95+; the
+  catalog records both forms per built-in.
+- A timed-out **16-bit child is never terminated**: it shares the VDM
+  with unrelated processes (killing it can take siblings down). The
+  child is left running ("still_active", after `GetExitCodeProcess`'s
+  own sentinel), the request gets an in-band `timed out` error, and
+  subsequent exec/ptyExec requests get `busy` - naming the blocking
+  command line and its elapsed ms - until a later request's re-poll
+  observes it exited (implicit reap).
 
 ### Implementation (Win32s-Compatible C)
 

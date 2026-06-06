@@ -1,0 +1,95 @@
+-- allium: 3
+-- base64.allium
+
+-- Scope: The base64 codec used for ALL binary payloads on the wire
+--        (file data, exec stdin/stdout/stderr) - distilled from
+--        src/base64.c (Phases 1-2 spec debt, backfilled in Phase 4)
+-- Includes: encode/decode obligations, rejection rules, the roundtrip
+--           guarantee the protocol depends on
+-- Excludes:
+--   - Where payloads are used (mcp-protocol.allium, process-ops.allium)
+--   - Buffer-size arithmetic beyond the documented output-size law
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+-- The codec obligation every wire payload relies on. Standard RFC 4648
+-- alphabet (A-Z a-z 0-9 + /) with '=' padding; integer-only by project
+-- constraint.
+contract Base64Codec {
+    encode: (bytes: Any) -> String
+    decode: (text: String) -> Any
+
+    @invariant Roundtrip
+        -- decode(encode(bytes)) reproduces the input byte-for-byte for
+        -- every byte sequence (PBT-verified: theft 50k trials + prop.h
+        -- on the target binary).
+
+    @invariant EncodedShape
+        -- encode output uses only the standard alphabet plus '='
+        -- padding, and its length is exactly 4 * ceil(n / 3) for n
+        -- input bytes. Empty input encodes to the empty string.
+
+    @invariant DecodeTolerance
+        -- decode skips ASCII whitespace (space, tab, CR, LF) between
+        -- groups, so payloads survive line-wrapping transports.
+
+    @guidance
+        -- The accumulator must be unsigned: a rolling six-bit shift
+        -- overflows a signed int on long high-value runs - undefined
+        -- behaviour found by the Phase 4 sanitizer harness.
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- One decode attempt of wire text into bytes. Decoding is strict:
+-- anything that is not a well-formed payload is rejected rather than
+-- partially decoded, because decoded bytes feed file writes and exec
+-- stdin.
+entity DecodeAttempt {
+    status: ok | rejected
+
+    transitions status {
+        terminal: ok, rejected
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule DecodeAccepted {
+    when: DecodeRequested(attempt, well_formed)
+    requires: well_formed = true
+    ensures: attempt.status = ok
+}
+
+-- Rejection covers, equivalently: a character outside the alphabet
+-- (and not whitespace/padding), padding that leaves non-zero leftover
+-- bits (a truncated or corrupt final group), or a payload larger than
+-- the receiver allows. The caller surfaces these as "invalid base64".
+rule DecodeRejected {
+    when: DecodeRequested(attempt, well_formed)
+    requires: well_formed = false
+    ensures: attempt.status = rejected
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The codec's caller: the protocol dispatcher decoding "data" /
+-- "stdin_b64" fields and encoding captured output.
+surface CodecCaller {
+    facing a: DecodeAttempt
+
+    contracts:
+        fulfils Base64Codec
+
+    provides:
+        DecodeRequested(a, well_formed)
+}

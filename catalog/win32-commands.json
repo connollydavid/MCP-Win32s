@@ -1,0 +1,388 @@
+{
+  "version": 1,
+  "commands": {
+    "dir": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c dir",
+      "shell_win32s": "command.com /c dir",
+      "supports_win32s": true,
+      "description": "Displays a list of files and subdirectories in a directory.",
+      "options": [
+        {"flag": "/A", "arg": "attrs", "desc": "Displays files with specified attributes (D R H A S I L); prefix with - to negate."},
+        {"flag": "/B", "desc": "Uses bare format (no heading information or summary)."},
+        {"flag": "/S", "desc": "Displays files in the specified directory and all subdirectories."},
+        {"flag": "/O", "arg": "order", "desc": "Lists files in sorted order (N E S D G); prefix with - to reverse."},
+        {"flag": "/W", "desc": "Uses wide list format."},
+        {"flag": "/P", "desc": "Pauses after each screenful of information."}
+      ],
+      "positional": [{"name": "path", "optional": true, "type": "path"}],
+      "examples": ["dir", "dir /B", "dir C:\\PROJECTS /S /B"]
+    },
+    "copy": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c copy",
+      "shell_win32s": "command.com /c copy",
+      "supports_win32s": true,
+      "description": "Copies one or more files to another location.",
+      "options": [
+        {"flag": "/Y", "desc": "Suppresses prompting to confirm overwriting an existing destination file."},
+        {"flag": "/V", "desc": "Verifies that new files are written correctly."},
+        {"flag": "/A", "desc": "Indicates an ASCII text file."},
+        {"flag": "/B", "desc": "Indicates a binary file."}
+      ],
+      "positional": [
+        {"name": "source", "optional": false, "type": "path"},
+        {"name": "destination", "optional": true, "type": "path"}
+      ],
+      "examples": ["copy a.txt b.txt", "copy /Y *.c C:\\BACKUP"]
+    },
+    "del": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c del",
+      "shell_win32s": "command.com /c del",
+      "supports_win32s": true,
+      "description": "Deletes one or more files.",
+      "options": [
+        {"flag": "/P", "desc": "Prompts for confirmation before deleting each file."},
+        {"flag": "/F", "desc": "Forces deletion of read-only files."},
+        {"flag": "/S", "desc": "Deletes specified files from the current directory and all subdirectories."},
+        {"flag": "/Q", "desc": "Specifies quiet mode (do not prompt on global wildcard delete)."}
+      ],
+      "positional": [{"name": "names", "optional": false, "type": "path"}],
+      "examples": ["del old.txt", "del /Q *.tmp"]
+    },
+    "type": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c type",
+      "shell_win32s": "command.com /c type",
+      "supports_win32s": true,
+      "description": "Displays the contents of a text file.",
+      "options": [],
+      "positional": [{"name": "file", "optional": false, "type": "path"}],
+      "examples": ["type readme.txt", "type C:\\CONFIG.SYS"]
+    },
+    "echo": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c echo",
+      "shell_win32s": "command.com /c echo",
+      "supports_win32s": true,
+      "description": "Displays messages, or turns command echoing on or off.",
+      "options": [],
+      "positional": [{"name": "message", "optional": true, "type": "string"}],
+      "examples": ["echo Hello", "echo off"]
+    },
+    "cd": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c cd",
+      "shell_win32s": "command.com /c cd",
+      "supports_win32s": true,
+      "description": "Displays the name of or changes the current directory.",
+      "options": [
+        {"flag": "/D", "desc": "Changes the current drive in addition to the current directory."}
+      ],
+      "positional": [{"name": "path", "optional": true, "type": "path"}],
+      "examples": ["cd", "cd C:\\PROJECTS"]
+    },
+    "mkdir": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c mkdir",
+      "shell_win32s": "command.com /c mkdir",
+      "supports_win32s": true,
+      "description": "Creates a directory.",
+      "options": [],
+      "positional": [{"name": "path", "optional": false, "type": "path"}],
+      "examples": ["mkdir build", "mkdir C:\\PROJECTS\\NEW"]
+    },
+    "rmdir": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c rmdir",
+      "shell_win32s": "command.com /c rmdir",
+      "supports_win32s": true,
+      "description": "Removes (deletes) a directory.",
+      "options": [
+        {"flag": "/S", "desc": "Removes the directory tree, including all files and subdirectories."},
+        {"flag": "/Q", "desc": "Quiet mode; does not ask for confirmation when removing a directory tree."}
+      ],
+      "positional": [{"name": "path", "optional": false, "type": "path"}],
+      "examples": ["rmdir build", "rmdir /S /Q C:\\TEMP\\OLD"]
+    },
+    "ren": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c ren",
+      "shell_win32s": "command.com /c ren",
+      "supports_win32s": true,
+      "description": "Renames a file or files.",
+      "options": [],
+      "positional": [
+        {"name": "oldname", "optional": false, "type": "path"},
+        {"name": "newname", "optional": false, "type": "string"}
+      ],
+      "examples": ["ren a.txt b.txt", "ren *.txt *.bak"]
+    },
+    "set": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c set",
+      "shell_win32s": "command.com /c set",
+      "supports_win32s": true,
+      "description": "Displays, sets, or removes environment variables.",
+      "options": [],
+      "positional": [{"name": "assignment", "optional": true, "type": "string"}],
+      "examples": ["set", "set PATH=C:\\BIN;%PATH%"]
+    },
+    "path": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c path",
+      "shell_win32s": "command.com /c path",
+      "supports_win32s": true,
+      "description": "Displays or sets a search path for executable files.",
+      "options": [],
+      "positional": [{"name": "dirs", "optional": true, "type": "string"}],
+      "examples": ["path", "path C:\\WINDOWS;C:\\DOS"]
+    },
+    "ver": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c ver",
+      "shell_win32s": "command.com /c ver",
+      "supports_win32s": true,
+      "description": "Displays the operating system version.",
+      "options": [],
+      "positional": [],
+      "examples": ["ver"]
+    },
+    "cls": {
+      "kind": "shell-builtin",
+      "shell_modern": "cmd.exe /c cls",
+      "shell_win32s": "command.com /c cls",
+      "supports_win32s": true,
+      "description": "Clears the screen.",
+      "options": [],
+      "positional": [],
+      "examples": ["cls"]
+    },
+    "attrib": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Displays or changes file attributes.",
+      "options": [
+        {"flag": "/S", "desc": "Processes matching files in the current folder and all subfolders."},
+        {"flag": "/D", "desc": "Processes folders as well."},
+        {"flag": "/L", "desc": "Works on the attributes of the symbolic link versus the target of the symbolic link."}
+      ],
+      "positional": [{"name": "path", "optional": true, "type": "path"}],
+      "examples": ["attrib", "attrib +R C:\\CONFIG.SYS"]
+    },
+    "xcopy": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Copies files and directory trees.",
+      "options": [
+        {"flag": "/S", "desc": "Copies directories and subdirectories except empty ones."},
+        {"flag": "/E", "desc": "Copies directories and subdirectories, including empty ones."},
+        {"flag": "/I", "desc": "If destination does not exist and copying more than one file, assumes destination is a directory."},
+        {"flag": "/Y", "desc": "Suppresses prompting to confirm overwriting an existing destination file."},
+        {"flag": "/D", "arg": "date", "desc": "Copies files changed on or after the specified date (m-d-y)."}
+      ],
+      "positional": [
+        {"name": "source", "optional": false, "type": "path"},
+        {"name": "destination", "optional": true, "type": "path"}
+      ],
+      "examples": ["xcopy src dst /S", "xcopy /E /I C:\\A C:\\B"]
+    },
+    "find": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Searches for a text string in a file or files.",
+      "options": [
+        {"flag": "/V", "desc": "Displays all lines not containing the specified string."},
+        {"flag": "/C", "desc": "Counts the number of lines containing the string."},
+        {"flag": "/N", "desc": "Displays line numbers with the displayed lines."},
+        {"flag": "/I", "desc": "Ignores the case of characters when searching for the string."}
+      ],
+      "positional": [
+        {"name": "string", "optional": false, "type": "string"},
+        {"name": "files", "optional": true, "type": "path"}
+      ],
+      "examples": ["find \"TODO\" main.c", "find /I /N \"error\" log.txt"]
+    },
+    "more": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Displays output one screen at a time.",
+      "options": [
+        {"flag": "/C", "desc": "Clears the screen before displaying the page."},
+        {"flag": "/S", "desc": "Squeezes multiple blank lines into a single line."}
+      ],
+      "positional": [{"name": "files", "optional": true, "type": "path"}],
+      "examples": ["more readme.txt", "more /S log.txt"]
+    },
+    "sort": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Sorts input and writes the results to the screen, a file, or another device.",
+      "options": [
+        {"flag": "/R", "desc": "Reverses the sort order (Z to A, then 9 to 0)."},
+        {"flag": "/+", "arg": "n", "desc": "Sorts the file according to characters in column n."}
+      ],
+      "positional": [{"name": "file", "optional": true, "type": "path"}],
+      "examples": ["sort names.txt", "sort /R names.txt"]
+    },
+    "cl": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Microsoft C/C++ compiler driver: compiles and links C and C++ source files.",
+      "options": [
+        {"flag": "/c", "desc": "Compiles without linking."},
+        {"flag": "/TC", "desc": "Specifies that all source files are C source, regardless of extension."},
+        {"flag": "/TP", "desc": "Specifies that all source files are C++ source, regardless of extension."},
+        {"flag": "/Fe", "arg": "name", "desc": "Names the executable file (glued form: /Fename)."},
+        {"flag": "/I", "arg": "dir", "desc": "Adds a directory to the list searched for include files."},
+        {"flag": "/D", "arg": "macro", "desc": "Defines a preprocessor macro."},
+        {"flag": "/O2", "desc": "Creates fast code (maximize speed)."},
+        {"flag": "/W", "arg": "level", "desc": "Sets the warning level (0-4); glued form /W4."}
+      ],
+      "positional": [{"name": "sources", "optional": false, "type": "path"}],
+      "examples": ["cl /TC file.c", "cl /c /W4 main.c util.c"]
+    },
+    "link": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Microsoft incremental linker: links object files and libraries into an executable or DLL.",
+      "options": [
+        {"flag": "/OUT", "arg": "file", "desc": "Overrides the default name of the program the linker creates (glued: /OUT:file)."},
+        {"flag": "/DLL", "desc": "Builds a DLL as the main output file."},
+        {"flag": "/SUBSYSTEM", "arg": "type", "desc": "Tells the operating system how to run the .exe (glued: /SUBSYSTEM:CONSOLE)."},
+        {"flag": "/DEBUG", "desc": "Creates debugging information for the .exe or DLL."},
+        {"flag": "/LIBPATH", "arg": "dir", "desc": "Overrides the environment library path (glued: /LIBPATH:dir)."}
+      ],
+      "positional": [{"name": "objects", "optional": false, "type": "path"}],
+      "examples": ["link main.obj", "link /OUT:app.exe /DEBUG main.obj util.obj"]
+    },
+    "lib": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Microsoft Library Manager: creates and manages a library of object files.",
+      "options": [
+        {"flag": "/OUT", "arg": "file", "desc": "Overrides the default output file name (glued: /OUT:file)."},
+        {"flag": "/LIST", "desc": "Displays information about the output library to standard output."},
+        {"flag": "/REMOVE", "arg": "member", "desc": "Omits the specified object from the output library (glued: /REMOVE:member)."}
+      ],
+      "positional": [{"name": "objects", "optional": false, "type": "path"}],
+      "examples": ["lib /OUT:mylib.lib a.obj b.obj", "lib /LIST mylib.lib"]
+    },
+    "nmake": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Microsoft Program Maintenance Utility: builds projects based on commands in a description file.",
+      "options": [
+        {"flag": "/f", "arg": "makefile", "desc": "Specifies the name of the description (makefile) to use."},
+        {"flag": "/a", "desc": "Forces a build of all evaluated targets."},
+        {"flag": "/n", "desc": "Displays but does not execute the commands."},
+        {"flag": "/nologo", "desc": "Suppresses the NMAKE copyright banner."}
+      ],
+      "positional": [{"name": "targets", "optional": true, "type": "string"}],
+      "examples": ["nmake", "nmake /f Makefile.win all"]
+    },
+    "ml": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Microsoft Macro Assembler: assembles and links one or more assembly-language source files.",
+      "options": [
+        {"flag": "/c", "desc": "Assembles only; does not link."},
+        {"flag": "/Fo", "arg": "file", "desc": "Names the output object file (glued: /Fofile)."},
+        {"flag": "/coff", "desc": "Generates common object file format (COFF) output."},
+        {"flag": "/Zi", "desc": "Generates CodeView debugging information."}
+      ],
+      "positional": [{"name": "sources", "optional": false, "type": "path"}],
+      "examples": ["ml /c boot.asm", "ml /coff /c /Fofoo.obj foo.asm"]
+    },
+    "rc": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Microsoft Resource Compiler: compiles a resource-definition (.rc) file into a binary resource (.res) file.",
+      "options": [
+        {"flag": "/fo", "arg": "file", "desc": "Names the output .res file."},
+        {"flag": "/d", "arg": "macro", "desc": "Defines a symbol for the preprocessor."},
+        {"flag": "/i", "arg": "dir", "desc": "Adds a directory to the include-file search path."},
+        {"flag": "/v", "desc": "Displays messages giving the progress of the compiler (verbose)."}
+      ],
+      "positional": [{"name": "script", "optional": false, "type": "path"}],
+      "examples": ["rc app.rc", "rc /fo app.res /i include app.rc"]
+    },
+    "mt": {
+      "kind": "external",
+      "supports_win32s": false,
+      "description": "Microsoft Manifest Tool: generates signed files and catalogs and manages application manifests.",
+      "options": [
+        {"flag": "/manifest", "arg": "file", "desc": "Specifies the name of a manifest file to process."},
+        {"flag": "/out", "arg": "file", "desc": "Specifies the name of the output manifest (glued: /out:file)."},
+        {"flag": "/nologo", "desc": "Suppresses the startup banner."}
+      ],
+      "positional": [],
+      "examples": ["mt /manifest app.manifest /out:app.exe.manifest", "mt /nologo /manifest app.manifest /out:out.manifest"]
+    },
+    "mc": {
+      "kind": "external",
+      "supports_win32s": false,
+      "description": "Microsoft Message Compiler: compiles a message-text file into resources used by an application.",
+      "options": [
+        {"flag": "/h", "arg": "dir", "desc": "Specifies the directory for the generated header file."},
+        {"flag": "/r", "arg": "dir", "desc": "Specifies the directory for the generated .rc and .bin files."},
+        {"flag": "/v", "desc": "Gives verbose output."}
+      ],
+      "positional": [{"name": "messagefile", "optional": false, "type": "path"}],
+      "examples": ["mc messages.mc", "mc /h inc /r res messages.mc"]
+    },
+    "gcc": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "GNU C compiler driver: compiles, assembles, and links C source files.",
+      "options": [
+        {"flag": "-c", "desc": "Compiles or assembles the source files but does not link."},
+        {"flag": "-o", "arg": "file", "desc": "Places output in the named file."},
+        {"flag": "-O2", "desc": "Optimizes; turns on nearly all supported optimizations."},
+        {"flag": "-Wall", "desc": "Enables all the commonly used warning messages."},
+        {"flag": "-I", "arg": "dir", "desc": "Adds a directory to the search path for include files."},
+        {"flag": "-D", "arg": "macro", "desc": "Predefines a preprocessor macro."}
+      ],
+      "positional": [{"name": "sources", "optional": false, "type": "path"}],
+      "examples": ["gcc -c main.c", "gcc -O2 -Wall -o app main.c util.c"]
+    },
+    "make": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "GNU make: determines which pieces of a program need to be recompiled and issues the commands to recompile them.",
+      "options": [
+        {"flag": "-f", "arg": "file", "desc": "Uses the named file as a makefile."},
+        {"flag": "-j", "arg": "jobs", "desc": "Specifies the number of jobs (commands) to run simultaneously."},
+        {"flag": "-n", "desc": "Prints the commands that would be executed but does not execute them."},
+        {"flag": "-k", "desc": "Continues as much as possible after an error."}
+      ],
+      "positional": [{"name": "targets", "optional": true, "type": "string"}],
+      "examples": ["make", "make -f build.mk all"]
+    },
+    "mem": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Displays the amount of used and free memory in your system.",
+      "options": [
+        {"flag": "/C", "desc": "Classifies programs by memory usage; lists program sizes."},
+        {"flag": "/F", "desc": "Displays information about the amount of free memory."},
+        {"flag": "/P", "desc": "Pauses after each screenful of output."}
+      ],
+      "positional": [],
+      "examples": ["mem", "mem /C"]
+    },
+    "chkdsk": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Checks a disk and displays a status report.",
+      "options": [
+        {"flag": "/F", "desc": "Fixes errors on the disk."},
+        {"flag": "/V", "desc": "Displays the full path and name of every file on the disk."},
+        {"flag": "/R", "desc": "Locates bad sectors and recovers readable information (implies /F)."}
+      ],
+      "positional": [{"name": "drive", "optional": true, "type": "path"}],
+      "examples": ["chkdsk", "chkdsk C: /F"]
+    }
+  }
+}

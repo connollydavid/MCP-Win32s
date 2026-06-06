@@ -189,6 +189,9 @@ rule TransportShutdown {
 
 -- The ready message is emitted once per connection and names the
 -- active backend, so the bridge can surface transport metadata.
+-- ReadyMessageSent abstracts the full extended ready line (codepage,
+-- version, features, optional warning) specified client-side in
+-- wire-contract.allium's ReadyHandshake contract.
 
 rule ReadyOnConnect {
     when: t: Transport.status transitions_to connected
@@ -200,7 +203,11 @@ rule ReadyOnConnect {
 ------------------------------------------------------------
 
 -- The operator boundary: command-line flags select a backend at startup
--- (/SERIAL, /TCP, /AUTO) and process exit shuts the transport down.
+-- (/SERIAL, /TCP, /AUTO, with /BIND as a TCP modifier) and process exit
+-- shuts the transport down. The startup parse also carries the exec
+-- gate flags /UNSAFE and /CATALOG:<path>, consumed by catalog.allium's
+-- ServerStartup surface - listed here only because they share the
+-- command line.
 surface OperatorControl {
     facing t: Transport
 
