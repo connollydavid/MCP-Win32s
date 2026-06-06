@@ -6,7 +6,7 @@ MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables
 
 **License:** Public Domain (Unlicense)
 
-**Current status:** Phase 2 complete (file operations + base64 + echo + 87 tests incl. PBT). See Implementation Phases below.
+**Current status:** Phase 3 complete (backend-agnostic transport vtable, serial refactored onto it, TCP/Winsock peer runtime-loaded, `/AUTO` fallback + `/BIND` scope, SO_KEEPALIVE, 115 tests incl. PBT). See Implementation Phases below.
 
 ## Repository Structure
 
@@ -29,16 +29,24 @@ MCP-Win32s/
 │   ├── json_parser.c           # JSON parsing + response building (~334 lines C89)
 │   ├── json_parser.h           # Parser/builder public API
 │   ├── mcp-w32s.c              # Main executable (protocol loop, dispatch)
-│   ├── serial.c                # Serial port init + config builders
-│   └── serial.h                # Serial/transport API
+│   ├── serial.c                # Serial backend (DCB/timeouts) on the vtable
+│   ├── serial.h                # Serial backend API
+│   ├── tcp.c                   # TCP backend (Winsock 1.1, runtime-loaded)
+│   ├── tcp.h                   # TCP backend API
+│   ├── transport.c             # Transport vtable, registry, cmdline parse
+│   └── transport.h             # Transport abstraction + TransportConfig
 ├── tests/
+│   ├── mock_transport.c        # In-memory transport backend (tests)
+│   ├── mock_transport.h        # Mock transport API
 │   ├── prop.h                  # Minimal C89 property-based testing framework
 │   ├── test_base64.c           # 14 base64 encode/decode tests
 │   ├── test_file_ops.c         # 10 file operation tests
 │   ├── test_framework.h        # Minimal C89 test framework (header-only)
 │   ├── test_json.c             # 31 JSON parser unit tests
 │   ├── test_pbt_base64.c       # 4 property-based tests (4000 random trials)
-│   └── test_serial.c           # 28 serial + main loop tests
+│   ├── test_serial.c           # 33 serial + main loop + cmdline tests
+│   ├── test_tcp.c              # 8 TCP backend tests (real Winsock)
+│   └── test_transport.c        # 15 transport vtable/registry tests
 ├── toolchains/
 │   ├── mingw-w64-i386.cmake   # Cross-compile toolchain (dev host + CI)
 │   └── vc6-nmake.cmake        # VC6 cl/nmake toolchain (no IDE; NMake generator)
@@ -60,19 +68,15 @@ MCP-Win32s/
 
 ```
 src/
-├── transport.c/.h     # Transport abstraction: vtable interface + backend registry (Phase 3)
-├── tcp.c/.h           # TCP backend, Winsock 1.1, runtime-probed (Phase 3)
 ├── named_pipes.c/.h   # Named pipe backend (Win95+) — Phase 5+
 └── (Phase 4 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see PLAN.md
 specs/
-├── transport.allium   # Phase 3: backend-agnostic transport lifecycle
 ├── process-ops.allium # Phase 4: Process/ExecResult/Capabilities
 ├── catalog.allium     # Phase 4: command catalog
 └── (distill backfill) # base64, json-parser, serial — see Specification Workflow
 catalog/
 └── win32-commands.json # Phase 4: machine-readable command docs + whitelist
 tests/
-├── mock_transport.c/.h # Phase 3: in-memory transport backend for asserting response bytes
 └── host/              # Phase 4: theft-based host-native PBT harness
 ```
 
@@ -332,7 +336,7 @@ Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.all
 
 This applies to *every* PR, not just phase-completion PRs. CI green is necessary but **not sufficient** — the weed audit must also be clean. Running the lifecycle is part of preparing a PR for merge, the same way tests are.
 
-**Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`.
+**Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`, `transport.allium`.
 **Known gaps (distill targets, scheduled in Phase 4):** `base64`, `json_parser`, `serial` have implementations but no specs.
 
 ### Property-based testing: two frameworks, two jobs
@@ -352,7 +356,7 @@ theft can never compile for the Win32s target (it is C99 + POSIX) — that is by
 |-------|-------|--------|
 | 1 | Test framework + JSON parser + CI + serial init + main exe | **Complete** |
 | 2 | File operations + base64 + echo + 87 tests incl. PBT | **Complete** |
-| 3 | Network & transport: vtable backends, serial refactor + TCP/Winsock peer (fully worked plan in PLAN.md) | **Spec'd — in progress** |
+| 3 | Network & transport: vtable backends, serial refactor + TCP/Winsock peer, /AUTO fallback, /BIND scope, SO_KEEPALIVE | **Complete** |
 | 4 | Command execution + catalog + feature uplift + theft harness + spec backfill | **Spec'd** |
 | 5 | MCP integration | Not started |
 | 6 | Cross-platform testing | Not started |
