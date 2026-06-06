@@ -18,10 +18,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 
 # i386-only codegen + the strict warning gate the project has always used.
+# (The -O2 Release pin lives in CMakeLists.txt, where it can override CMake's
+# GNU default after project() rather than merely seed it.)
 set(CMAKE_C_FLAGS_INIT
     "-march=i386 -mtune=i386 -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal")
-# Match the historic -O2 (CMake's GNU Release default is -O3).
-set(CMAKE_C_FLAGS_RELEASE_INIT "-O2 -DNDEBUG")
 
 # Run the PEs natively when WSL interop is present (the dev host); otherwise
 # fall back to Wine (CI). Mirrors build.sh's RUNNER detection.
