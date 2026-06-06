@@ -1,0 +1,216 @@
+-- allium: 3
+-- wire-contract.allium
+
+-- Scope: Client-side wire contract for MCP-Win32s (the smoke harness's
+--        view of the protocol; Phase 4.0b)
+-- Includes: ready-message handshake, request/response id correlation,
+--           client robustness to unknown keys and malformed responses
+-- Excludes:
+--   - Server-side dispatch and semantics (mcp-protocol.allium)
+--   - Transport backends + lifecycle (transport.allium)
+--   - The bridge implementation (Phase 5)
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+-- What the server owes any client on every connection, before any
+-- command is sent.
+contract ReadyHandshake {
+    read_ready: (line: String) -> Any
+
+    @invariant ReadyIsFirst
+        -- The first line the server sends on a new connection is a
+        -- single JSON object with status:"ready".
+
+    @invariant ReadyShape
+        -- The ready message carries codepage (Integer, the OEM code
+        -- page for decoding captured output, Q6), version (non-empty
+        -- String, e.g. "Windows 10.0.19045 (NT)"), transport (the
+        -- active backend name) and features (an object of capability
+        -- booleans: is_win32s, is_win9x, is_nt, is_wow64, threads,
+        -- job_objects, ctrl_events, pty, plus binary_classify and
+        -- process_mitigation). The documented keys are always present;
+        -- their values vary by host.
+
+    @guidance
+        -- Clients must tolerate additional keys in the ready message:
+        -- the feature set grows with capability uplift.
+}
+
+-- What each side owes the other for every request/response exchange.
+contract RequestResponse {
+    send_request: (line: String) -> Any
+    read_response: (line: String) -> Any
+
+    @invariant OneLineOneMessage
+        -- The wire is newline-delimited JSON: one request per line in,
+        -- one response per line out, in order (single-client-
+        -- sequential).
+
+    @invariant IdCorrelation
+        -- Every response carries the id of the request it answers.
+
+    @guidance
+        -- Clients must ignore unknown response keys, and a malformed
+        -- response line must surface as a client-side error - never a
+        -- crash of the client parser (PBT obligation for the smoke
+        -- harness).
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- One client connection to the server, from the client's point of
+-- view. No command may be sent before the ready message is read.
+entity WireSession {
+    transport_name: String
+    status: connected | ready | closed | failed
+
+    transitions status {
+        connected -> ready
+        connected -> failed
+        ready     -> closed
+        ready     -> failed
+        terminal: closed, failed
+    }
+
+    codepage: Integer when status = ready | closed
+    server_version: String when status = ready | closed
+}
+
+-- A request the client has put on the wire.
+entity WireRequest {
+    session: WireSession
+    id: String
+    status: sent | answered
+
+    transitions status {
+        sent -> answered
+        terminal: answered
+    }
+}
+
+entity WireResponse {
+    request: WireRequest
+    id: String
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule SessionOpened {
+    when: ConnectionEstablished(transport_name)
+    ensures: WireSession.created(
+        transport_name: transport_name,
+        status: connected
+    )
+}
+
+rule RequestPutOnWire {
+    when: RequestSent(session, id)
+    requires: session.status = ready
+    ensures: WireRequest.created(session: session, id: id, status: sent)
+}
+
+rule ReadyReceived {
+    when: ReadyMessageReceived(session, codepage, version)
+    requires: session.status = connected
+    ensures: session.status = ready
+    ensures: session.codepage = codepage
+    ensures: session.server_version = version
+}
+
+-- A connection whose first line is not a valid ready message is
+-- unusable: the harness fails it rather than guessing.
+rule ReadyMalformed {
+    when: MalformedReadyReceived(session)
+    requires: session.status = connected
+    ensures: session.status = failed
+}
+
+-- Correlation: the client matches a response to its request by id.
+rule ResponseCorrelated {
+    when: ResponseReceived(request, response_id)
+    requires: request.status = sent
+    requires: response_id = request.id
+    ensures: request.status = answered
+    ensures: WireResponse.created(request: request, id: response_id)
+}
+
+rule SessionClosed {
+    when: ClientDisconnects(session)
+    requires: session.status = ready
+    ensures: session.status = closed
+}
+
+rule SessionFailed {
+    when: WireFault(session)
+    requires: session.status = ready
+    ensures: session.status = failed
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ResponsesMatchTheirRequest {
+    for r in WireResponses:
+        r.id = r.request.id
+}
+
+invariant RequestsOnlyOnReadySessions {
+    for r in WireRequests:
+        r.session.status != connected
+}
+
+invariant ReadySessionsHaveVersion {
+    for s in WireSessions:
+        s.status = ready implies s.server_version.size > 0
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The smoke harness itself: it opens connections and puts requests on
+-- the wire.
+surface HarnessControl {
+    facing s: WireSession
+
+    provides:
+        ConnectionEstablished(transport_name)
+        RequestSent(s, id)
+            when s.status = ready
+}
+
+-- The server as seen down the wire by the smoke client.
+surface ServerWire {
+    facing s: WireSession
+
+    contracts:
+        demands ReadyHandshake
+        demands RequestResponse
+
+    provides:
+        ReadyMessageReceived(s, codepage, version)
+            when s.status = connected
+        MalformedReadyReceived(s)
+            when s.status = connected
+        ClientDisconnects(s)
+            when s.status = ready
+        WireFault(s)
+            when s.status = ready
+}
+
+-- The wire events on an in-flight request.
+surface RequestWire {
+    facing r: WireRequest
+
+    provides:
+        ResponseReceived(r, response_id)
+            when r.status = sent
+}

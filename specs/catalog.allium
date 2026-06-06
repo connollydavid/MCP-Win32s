@@ -1,0 +1,201 @@
+-- allium: 3
+-- catalog.allium
+
+-- Scope: Command catalog whitelist gating for exec/ptyExec (Phase 4)
+-- Includes: catalog load at startup, lookup, argument validation,
+--           unsafe bypass, shell-builtin auto-routing
+-- Excludes:
+--   - Spawn and capture (process-ops.allium)
+--   - JSON envelope and dispatch (mcp-protocol.allium)
+--   - Catalog file schema and its 1:1 MCP tool mapping
+--     (catalog/MCP-MAPPING.md, documentation)
+-- Dependencies: process-ops.allium, mcp-protocol.allium
+
+use "./process-ops.allium" as procops
+use "./mcp-protocol.allium" as protocol
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- shell_builtin entries have no .exe of their own: they are wrapped in
+-- the era-correct shell (cmd.exe on NT/95+, command.com on Win32s, Q9).
+enum EntryKind { shell_builtin | external_program }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- The whitelist, loaded once at startup (/CATALOG:<path>); changing it
+-- requires a server restart (fixed per session, like the probe-once
+-- Capabilities). enforced is false when /UNSAFE disables the whitelist;
+-- the catalog is still consulted for routing and binary_type.
+entity Catalog {
+    path: String
+    loaded: Boolean
+    enforced: Boolean
+    entry_count: Integer
+}
+
+entity CatalogEntry {
+    catalog: Catalog
+    name: String
+    kind: EntryKind
+    supports_win32s: Boolean
+}
+
+------------------------------------------------------------
+-- Given
+------------------------------------------------------------
+
+given {
+    catalog: Catalog
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Startup: the operator's command line decides path and enforcement;
+-- the load outcome is recorded. A missing catalog surfaces as a
+-- warning in the ready message, not a startup failure.
+
+rule CatalogLoadRecorded {
+    when: CatalogLoadCompleted(c, load_ok, entry_count)
+    ensures: c.loaded = load_ok
+    ensures: c.entry_count = entry_count
+}
+
+rule WhitelistDisabledByOperator {
+    when: WhitelistDisabled(c)
+    ensures: c.enforced = false
+}
+
+-- Gating: every exec/ptyExec passes through here (mcp-protocol emits
+-- ExecGateRequested). Exactly one of the five outcomes applies.
+-- args_allowed is the validation black box: flags must appear in the
+-- entry's options (case-insensitive), glued (/A:v) and split (/A v)
+-- forms validate identically.
+
+-- Per-request unsafe bypasses the whitelist for this exec only; the
+-- response reports it via unsafe_used (a response field, never
+-- injected into stderr).
+rule GateBypassedByUnsafeRequest {
+    when: ExecGateRequested(cmd, pty)
+    requires: cmd.unsafe = true
+    ensures: procops/ExecRequest.created(
+        request_id: cmd.id,
+        cmd_line: cmd.line,
+        cwd: cmd.cwd,
+        shell: cmd.shell,
+        pty: pty,
+        unsafe_used: true,
+        routed_via_shell: cmd.shell,
+        timeout_ms: cmd.timeout_ms,
+        stdin_size: cmd.stdin_size,
+        max_output: cmd.max_output
+    )
+}
+
+rule GateUnenforced {
+    when: ExecGateRequested(cmd, pty)
+    requires: cmd.unsafe = false and catalog.enforced = false
+    ensures: procops/ExecRequest.created(
+        request_id: cmd.id,
+        cmd_line: cmd.line,
+        cwd: cmd.cwd,
+        shell: cmd.shell,
+        pty: pty,
+        unsafe_used: false,
+        routed_via_shell: cmd.shell,
+        timeout_ms: cmd.timeout_ms,
+        stdin_size: cmd.stdin_size,
+        max_output: cmd.max_output
+    )
+}
+
+-- Decision 3: a catalogued shell built-in auto-routes via the
+-- era-correct shell regardless of the request's shell flag.
+rule GateBuiltinHit {
+    when: ExecGateRequested(cmd, pty)
+    requires: cmd.unsafe = false and catalog.enforced = true
+    let entry = CatalogEntry{name: cmd.argv.first}
+    requires: exists entry and entry.kind = shell_builtin
+    requires: args_allowed(entry, cmd.argv)
+    ensures: procops/ExecRequest.created(
+        request_id: cmd.id,
+        cmd_line: cmd.line,
+        cwd: cmd.cwd,
+        shell: true,
+        pty: pty,
+        unsafe_used: false,
+        routed_via_shell: true,
+        timeout_ms: cmd.timeout_ms,
+        stdin_size: cmd.stdin_size,
+        max_output: cmd.max_output
+    )
+}
+
+rule GateExternalHit {
+    when: ExecGateRequested(cmd, pty)
+    requires: cmd.unsafe = false and catalog.enforced = true
+    let entry = CatalogEntry{name: cmd.argv.first}
+    requires: exists entry and entry.kind = external_program
+    requires: args_allowed(entry, cmd.argv)
+    ensures: procops/ExecRequest.created(
+        request_id: cmd.id,
+        cmd_line: cmd.line,
+        cwd: cmd.cwd,
+        shell: cmd.shell,
+        pty: pty,
+        unsafe_used: false,
+        routed_via_shell: cmd.shell,
+        timeout_ms: cmd.timeout_ms,
+        stdin_size: cmd.stdin_size,
+        max_output: cmd.max_output
+    )
+}
+
+rule GateMiss {
+    when: ExecGateRequested(cmd, pty)
+    requires: cmd.unsafe = false and catalog.enforced = true
+    let entry = CatalogEntry{name: cmd.argv.first}
+    requires: not exists entry
+    ensures: ExecRejected(request_id: cmd.id, reason: "command not in catalog")
+}
+
+rule GateArgsInvalid {
+    when: ExecGateRequested(cmd, pty)
+    requires: cmd.unsafe = false and catalog.enforced = true
+    let entry = CatalogEntry{name: cmd.argv.first}
+    requires: exists entry and not args_allowed(entry, cmd.argv)
+    ensures: ExecRejected(request_id: cmd.id, reason: "argument not allowed")
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant LoadedCatalogHasEntries {
+    for c in Catalogs:
+        c.loaded implies c.entry_count > 0
+}
+
+invariant EntriesBelongToTheCatalog {
+    for e in CatalogEntries:
+        e.name.size > 0
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The operator boundary at startup: /CATALOG:<path> selects the file,
+-- /UNSAFE disables whitelist enforcement, and the load completes once.
+surface ServerStartup {
+    facing c: Catalog
+
+    provides:
+        CatalogLoadCompleted(c, load_ok, entry_count)
+        WhitelistDisabled(c)
+}
