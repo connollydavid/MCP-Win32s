@@ -12,8 +12,6 @@ MCP-Win32s is a **Model Context Protocol server for Win32 systems** that enables
 
 ```
 MCP-Win32s/
-├── .claude/
-│   └── settings.json           # Enables the allium@juxt-plugins plugin
 ├── .github/
 │   └── workflows/
 │       └── build-and-test.yml  # GitHub Actions CI (MinGW + Wine)
@@ -52,8 +50,6 @@ MCP-Win32s/
 │   └── vc6-nmake.cmake        # VC6 cl/nmake toolchain (no IDE; NMake generator)
 ├── vendor/
 │   └── theft/                  # Vendored PBT library with autoshrinking (host-side only)
-├── AGENTS.md                   # Condensed agent guide (constraints + layout)
-├── PLAN.md                     # Phase plans; Phase 3 = transport, Phase 4 = exec (both fully worked)
 ├── CMakeLists.txt              # Build single source of truth (targets + tests)
 ├── CMakePresets.json           # "mingw" and "vc6" configure/build/test presets
 ├── build.bat                   # Thin wrapper -> cmake vc6 preset
@@ -69,7 +65,7 @@ MCP-Win32s/
 ```
 src/
 ├── named_pipes.c/.h   # Named pipe backend (Win95+) — Phase 5+
-└── (Phase 4 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see PLAN.md
+└── (Phase 4 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see plan/PHASE4.md in the agentic host repo
 specs/
 ├── process-ops.allium # Phase 4: Process/ExecResult/Capabilities
 ├── catalog.allium     # Phase 4: command catalog
@@ -247,7 +243,7 @@ A `SOCKET` is **not** a Win32 file handle on Win32s/Win9x — `ReadFile`/`WriteF
 - Newline-JSON framing (`LineBuffer`) lives **above** the transport, so any reliable ordered byte backend works unchanged. Message-oriented backends set a flag to bypass framing.
 - Network-capable backends (TCP, future QUIC/RDMA) are **runtime-loaded** (`LoadLibraryA`/`GetProcAddress`), never statically imported — otherwise the binary fails to load on hosts lacking the DLL (e.g. `wsock32.dll` on bare Win32s). CI asserts `objdump -p mcp-w32s.exe | grep -i wsock32` is empty.
 
-This layer is **Phase 3** and lands before command execution (Phase 4 exec responses flow over it). See PLAN.md "Phase 3: Network & Transport".
+This layer is **Phase 3** and lands before command execution (Phase 4 exec responses flow over it). See plan/PHASE3.md in the agentic host repo.
 
 ## Dependencies
 
@@ -313,28 +309,7 @@ build.bat test                  # == cmake --preset vc6 && build && ctest
 
 ## Specification & Test Workflow (Allium + theft)
 
-Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.allium`, language version 3) **before** it is implemented. The Allium plugin (`allium@juxt-plugins`, enabled via `.claude/settings.json`) provides six skills. Every phase passes through this lifecycle, and each skill has a defined job:
-
-| Stage | Skill | When | Output |
-|-------|-------|------|--------|
-| 1. Discover | `/allium:elicit` | Phase planning — turn phase goals and open questions into draft entities/rules through structured Q&A | Draft spec content |
-| 2. Specify | `/allium:tend` | ALL spec writing and editing — new specs, refinements, syntax fixes, migrations. Never hand-edit `.allium` files outside tend | Valid `specs/*.allium` (`allium check` clean) |
-| 3. Derive tests | `/allium:propagate` | Before implementation — generate the test obligations the specs imply | Obligation list: unit + property + state-machine tests |
-| 4. Implement | (normal coding) | Code to the spec; every test traces to a propagated obligation | `src/*.c` + `tests/*.c` |
-| 5. Audit | `/allium:weed` | Before marking a phase Complete — find spec↔code drift | Drift report; zero drift is the completion gate |
-| 6. Backfill | `/allium:distill` | Whenever code exists without a spec — reverse-engineer one | New `specs/*.allium` |
-
-`/allium:allium` is the language reference for any syntax or semantics question.
-
-### Merge gate (non-negotiable)
-
-**Never merge a PR until the full Allium lifecycle has been run for the change.** Concretely, before merging any branch:
-
-1. **Specs current (`/allium:tend`)** — every behavioural change is reflected in `specs/*.allium`, `allium check` clean. Code without a spec is backfilled (`/allium:distill`).
-2. **Obligations propagated (`/allium:propagate`)** — the spec's implied unit/property/state-machine tests exist and trace to the implementation.
-3. **Audit clean (`/allium:weed`)** — a weed pass reports **zero spec↔code drift**. This is the gate; a non-zero drift report blocks the merge until resolved (fix code, fix spec, or record an explicit intentional gap).
-
-This applies to *every* PR, not just phase-completion PRs. CI green is necessary but **not sufficient** — the weed audit must also be clean. Running the lifecycle is part of preparing a PR for merge, the same way tests are.
+Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.allium`, language version 3) **before** it is implemented. The agentic process — the Allium skill lifecycle (elicit → tend → propagate → implement → weed → distill) and the **non-negotiable merge gate** (specs current, obligations propagated, weed audit clean before *every* merge) — is defined in the agentic host repository ([Agentic-MCP-Win32s](https://github.com/connollydavid/Agentic-MCP-Win32s), which vendors this repo as a submodule). See the host repo's `CLAUDE.md`.
 
 **Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`, `transport.allium`.
 **Known gaps (distill targets, scheduled in Phase 4):** `base64`, `json_parser`, `serial` have implementations but no specs.
@@ -348,7 +323,7 @@ This applies to *every* PR, not just phase-completion PRs. CI green is necessary
 
 theft can never compile for the Win32s target (it is C99 + POSIX) — that is by design. It hammers portable pure-logic modules natively at high trial counts, and its autoshrinker reduces failing inputs to minimal counterexamples. Properties propagated from a spec are implemented in theft first (find bugs fast), then mirrored in `prop.h` at lower trial counts (prove they hold on the actual C89/i386 build).
 
-**Status:** theft is vendored but not yet wired into `build.sh`/CI — wiring it in (`tests/host/`, `./build.sh host-pbt`, CI step) is a Phase 4 deliverable. See PLAN.md.
+**Status:** theft is vendored but not yet wired into `build.sh`/CI — wiring it in (`tests/host/`, `./build.sh host-pbt`, CI step) is a Phase 4 deliverable. See `plan/PHASE4.md` in the agentic host repo.
 
 ## Implementation Phases
 
@@ -364,7 +339,7 @@ theft can never compile for the Win32s target (it is C99 + POSIX) — that is by
 
 **Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates above: tend-written specs before code, propagate-derived tests, and a weed-clean audit — required before **every merge** (see "Merge gate"), not only at phase completion.
 
-**Why transport precedes command execution:** the protocol I/O is currently hard-wired to a Win32 `HANDLE` (`ReadFile`/`WriteFile`), but a Winsock `SOCKET` is not a file handle on Win32s/Win9x (needs `recv`/`send`). Phase 4's ready message and exec stdout/stderr flow over the transport, so the vtable abstraction (Phase 3) must land first or exec ships serial-only and gets rewritten. See PLAN.md "Phase 3: Network & Transport".
+**Why transport precedes command execution:** the protocol I/O is currently hard-wired to a Win32 `HANDLE` (`ReadFile`/`WriteFile`), but a Winsock `SOCKET` is not a file handle on Win32s/Win9x (needs `recv`/`send`). Phase 4's ready message and exec stdout/stderr flow over the transport, so the vtable abstraction (Phase 3) must land first or exec ships serial-only and gets rewritten. See plan/PHASE3.md in the agentic host repo.
 
 ## Common Mistakes to Avoid
 

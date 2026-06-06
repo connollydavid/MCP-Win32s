@@ -2512,7 +2512,7 @@ Pin 8 (CTS) <--->  Pin 7 (RTS)  [Optional for hardware flow control]
 
 ### Phase 3: Network & Transport (serial + TCP/Winsock)
 
-Make the network a first-class peer of the serial port. See PLAN.md "Phase 3: Network & Transport" for the fully worked plan.
+Make the network a first-class peer of the serial port. See plan/PHASE3.md in the agentic host repo ([Agentic-MCP-Win32s](https://github.com/connollydavid/Agentic-MCP-Win32s)) for the fully worked plan.
 
 - [ ] Transport abstraction: vtable interface (`read`/`write`/`close`/optional `accept`) + runtime backend registry (`src/transport.c/.h`)
 - [ ] Refactor serial onto the abstraction (`SerialBackendOpen`); move `TransportConfig`/`ParseCommandLine` to `transport.c`
