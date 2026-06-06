@@ -607,6 +607,18 @@ int CatalogLoad(const char *path, Catalog **outCat, char *errMsg, int errSize)
         return 0;
     }
 
+    /* A whitelist with nothing whitelisted is a load failure, not a
+     * loaded catalog (spec: catalog.allium invariant
+     * LoadedCatalogHasEntries; weed 2026-06-06). */
+    if (cat->entry_count == 0) {
+        free(fileBuf);
+        free(cat);
+        if (errMsg != NULL) {
+            lstrcpynA(errMsg, "no commands in catalog", errSize);
+        }
+        return 0;
+    }
+
     free(fileBuf);
     *outCat = cat;
     return 1;

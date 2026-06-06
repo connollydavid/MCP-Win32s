@@ -432,6 +432,30 @@ TEST_CASE(parse_exec_unknown_array_ignored) {
     TEST_ASSERT_STR_EQUAL("dir", cmd.argv[0], "argv[0]");
 }
 
+TEST_CASE(parse_exec_unknown_array_scalars_ignored) {
+    /* Obligation: json-parser.allium rule LineParses - unknown keys
+     * are ignored whatever their scalar value kind, including arrays
+     * of numbers/booleans/null (weed 2026-06-06 pinning test). argv
+     * itself stays strings-only. */
+    static JsonCommand cmd;
+    TEST_ASSERT_INT_EQUAL(1,
+        ParseJsonCommand("{\"cmd\":\"exec\",\"id\":\"u1\","
+                         "\"future\":[1,2,-3]}", &cmd),
+        "unknown numeric array tolerated");
+    TEST_ASSERT_STR_EQUAL("u1", cmd.id, "fields still parsed");
+    TEST_ASSERT_INT_EQUAL(1,
+        ParseJsonCommand("{\"future\":[true,false,null,\"x\",7]}", &cmd),
+        "unknown mixed-scalar array tolerated");
+    /* argv remains strings-only */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"argv\":[1,2]}", &cmd),
+        "non-string argv element still rejected");
+    /* nested containers stay rejected (single-level wire) */
+    TEST_ASSERT_INT_EQUAL(0,
+        ParseJsonCommand("{\"future\":[[1]]}", &cmd),
+        "nested array rejected");
+}
+
 TEST_CASE(parse_exec_malformed_values) {
     static JsonCommand cmd;
     /* Fractional number: rejected (no FP in the protocol) */
@@ -500,6 +524,7 @@ int main(void)
     RUN_TEST(parse_exec_defaults_zeroed);
     RUN_TEST(parse_exec_negative_number);
     RUN_TEST(parse_exec_unknown_array_ignored);
+    RUN_TEST(parse_exec_unknown_array_scalars_ignored);
     RUN_TEST(parse_exec_malformed_values);
 
     printf("\nResponse Building:\n");

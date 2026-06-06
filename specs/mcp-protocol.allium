@@ -32,6 +32,10 @@ entity Command {
     timeout_ms: Integer
     stdin_size: Integer
     max_output: Integer
+    mem_cap_bytes: Integer
+    cpu_time_ms: Integer
+    cols: Integer
+    rows: Integer
     status: pending | processed | error
 
     transitions status {
@@ -263,7 +267,12 @@ rule ExecRejectedResponse {
 -- The full exec response envelope (exit_code, stdout_b64, stderr_b64,
 -- truncation flags, duration_ms, exec_method, binary_type, killed_by,
 -- unsafe_used) is modelled by process-ops/ExecResult; Response captures
--- the key/value abstraction over it.
+-- the key/value abstraction over it. Recorded abstraction (weed
+-- 2026-06-06): the wire emits ONE multi-key JSON object per response -
+-- the Process fields (exec_method, binary_type, killed_by) flatten to
+-- top-level keys - while this spec's Response entity names one
+-- representative key per rule. The concrete envelope shape is pinned
+-- by the integration tests and the wire-contract smoke client.
 rule ExecSuccess {
     when: result: procops/ExecResult.status becomes ok
     let cmd = Command{id: result.request_id}

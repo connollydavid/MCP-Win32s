@@ -314,9 +314,12 @@ int ParseJsonCommand(const char *json, JsonCommand *out)
 
             assign_field(out, key_start, key_len, val_start, val_len);
         } else if (*p == '[') {
-            /* Array of strings. Only "argv" is stored; arrays under
-             * other keys are scanned and ignored (unknown-key
-             * tolerance). Non-string elements are a parse error. */
+            /* Array values. "argv" is stored and must contain only
+             * strings; arrays under UNKNOWN keys are scanned and
+             * ignored whatever their scalar element kind - strings,
+             * numbers, booleans, null (forward compatibility, spec:
+             * json-parser.allium; weed 2026-06-06). Nested containers
+             * stay rejected: the wire is single-level. */
             char key_buf[64];
             int is_argv;
 
@@ -336,34 +339,54 @@ int ParseJsonCommand(const char *json, JsonCommand *out)
                     p++;
                     continue;
                 }
-                if (*p != '"') {
+                if (*p == '"') {
+                    p++;
+                    val_start = p;
+                    while (*p != '\0') {
+                        if (*p == '\\' && *(p + 1) != '\0') {
+                            p += 2;
+                        } else if (*p == '"') {
+                            break;
+                        } else {
+                            p++;
+                        }
+                    }
+                    if (*p != '"') {
+                        return 0;
+                    }
+                    val_len = (int)(p - val_start);
+                    p++;
+
+                    if (is_argv && out->argv_count < MCP_MAX_ARGV) {
+                        json_unescape(val_start, val_len,
+                                      out->argv[out->argv_count],
+                                      MCP_MAX_ARG_LEN);
+                        out->argv_count++;
+                    }
+                    /* Elements beyond MCP_MAX_ARGV are dropped
+                     * silently; the dispatcher polices meaning. */
+                } else if (is_argv) {
+                    /* argv elements must be strings */
                     return 0;
-                }
-                p++;
-                val_start = p;
-                while (*p != '\0') {
-                    if (*p == '\\' && *(p + 1) != '\0') {
-                        p += 2;
-                    } else if (*p == '"') {
-                        break;
-                    } else {
+                } else if (*p == '-' || (*p >= '0' && *p <= '9')) {
+                    if (*p == '-') {
                         p++;
                     }
-                }
-                if (*p != '"') {
+                    if (*p < '0' || *p > '9') {
+                        return 0;
+                    }
+                    while ((*p >= '0' && *p <= '9') || *p == '.') {
+                        p++;
+                    }
+                } else if (strncmp(p, "true", 4) == 0) {
+                    p += 4;
+                } else if (strncmp(p, "false", 5) == 0) {
+                    p += 5;
+                } else if (strncmp(p, "null", 4) == 0) {
+                    p += 4;
+                } else {
                     return 0;
                 }
-                val_len = (int)(p - val_start);
-                p++;
-
-                if (is_argv && out->argv_count < MCP_MAX_ARGV) {
-                    json_unescape(val_start, val_len,
-                                  out->argv[out->argv_count],
-                                  MCP_MAX_ARG_LEN);
-                    out->argv_count++;
-                }
-                /* Elements beyond MCP_MAX_ARGV are dropped silently;
-                 * the dispatcher rejects oversized argv via count. */
             }
         } else if (*p == '-' || (*p >= '0' && *p <= '9')) {
             /* Integer value (no float support - FP is banned) */

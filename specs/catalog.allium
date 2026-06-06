@@ -60,10 +60,18 @@ given {
 -- the load outcome is recorded. A missing catalog surfaces as a
 -- warning in the ready message, not a startup failure.
 
+-- A failed load (file missing, unparseable, or empty - a whitelist
+-- with nothing whitelisted is a load failure) leaves the gate
+-- UNENFORCED for the session, exactly like /UNSAFE: the operator was
+-- warned in the ready message and execution proceeds without a
+-- whitelist (weed 2026-06-06).
 rule CatalogLoadRecorded {
     when: CatalogLoadCompleted(c, load_ok, entry_count)
     ensures: c.loaded = load_ok
     ensures: c.entry_count = entry_count
+    ensures:
+        if load_ok = false:
+            c.enforced = false
 }
 
 rule WhitelistDisabledByOperator {
@@ -75,7 +83,14 @@ rule WhitelistDisabledByOperator {
 -- ExecGateRequested). Exactly one of the five outcomes applies.
 -- args_allowed is the validation black box: flags must appear in the
 -- entry's options (case-insensitive), glued (/A:v) and split (/A v)
--- forms validate identically.
+-- forms validate identically. Argument validation applies to the
+-- argv form; a legacy line-only request (argv absent) passes the name
+-- lookup but bypasses per-flag validation - args_allowed is vacuously
+-- true for an absent argv (weed 2026-06-06, recorded).
+-- effective_cmd_line is the command line actually spawned: built from
+-- argv via the documented quoting rules (argv preferred over the
+-- legacy line), with builtins embedding the era shell and shell-flag
+-- externals wrapped in it - NOT the request's raw line field.
 
 -- Per-request unsafe bypasses the whitelist for this exec only; the
 -- response reports it via unsafe_used (a response field, never
@@ -85,7 +100,7 @@ rule GateBypassedByUnsafeRequest {
     requires: cmd.unsafe = true
     ensures: procops/ExecRequest.created(
         request_id: cmd.id,
-        cmd_line: cmd.line,
+        cmd_line: effective_cmd_line(cmd),
         cwd: cmd.cwd,
         shell: cmd.shell,
         pty: pty,
@@ -102,7 +117,7 @@ rule GateUnenforced {
     requires: cmd.unsafe = false and catalog.enforced = false
     ensures: procops/ExecRequest.created(
         request_id: cmd.id,
-        cmd_line: cmd.line,
+        cmd_line: effective_cmd_line(cmd),
         cwd: cmd.cwd,
         shell: cmd.shell,
         pty: pty,
@@ -124,7 +139,7 @@ rule GateBuiltinHit {
     requires: args_allowed(entry, cmd.argv)
     ensures: procops/ExecRequest.created(
         request_id: cmd.id,
-        cmd_line: cmd.line,
+        cmd_line: effective_cmd_line(cmd),
         cwd: cmd.cwd,
         shell: true,
         pty: pty,
@@ -144,7 +159,7 @@ rule GateExternalHit {
     requires: args_allowed(entry, cmd.argv)
     ensures: procops/ExecRequest.created(
         request_id: cmd.id,
-        cmd_line: cmd.line,
+        cmd_line: effective_cmd_line(cmd),
         cwd: cmd.cwd,
         shell: cmd.shell,
         pty: pty,

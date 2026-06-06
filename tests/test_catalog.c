@@ -148,6 +148,38 @@ TEST_CASE(malformed_json_errors) {
     TEST_ASSERT_INT_EQUAL(0, (int)(err[0] == '\0'), "err message non-empty");
 }
 
+TEST_CASE(empty_catalog_rejected) {
+    /* Obligation: catalog.allium invariant LoadedCatalogHasEntries -
+     * a parseable catalog with zero commands is a LOAD FAILURE, never
+     * a loaded-but-empty whitelist (weed 2026-06-06 pinning test). */
+    Catalog *cat;
+    char err[128];
+    char tmpDir[MAX_PATH];
+    char path[MAX_PATH];
+    int ok;
+    HANDLE hFile;
+    DWORD written;
+    const char *empty = "{ \"version\": 1, \"commands\": { } }";
+
+    GetTempPathA(sizeof(tmpDir), tmpDir);
+    lstrcpynA(path, tmpDir, sizeof(path));
+    lstrcatA(path, "mcp_empty_catalog.json");
+
+    hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL, NULL);
+    TEST_ASSERT(hFile != INVALID_HANDLE_VALUE, "temp file created");
+    WriteFile(hFile, empty, (DWORD)lstrlenA(empty), &written, NULL);
+    CloseHandle(hFile);
+
+    err[0] = '\0';
+    cat = NULL;
+    ok = CatalogLoad(path, &cat, err, sizeof(err));
+    DeleteFileA(path);
+    TEST_ASSERT_INT_EQUAL(0, ok, "empty catalog returns 0");
+    TEST_ASSERT_STR_EQUAL("no commands in catalog", err,
+                          "empty catalog reason");
+}
+
 TEST_CASE(lookup_dir_is_builtin) {
     Catalog *cat;
     char err[128];
@@ -295,6 +327,7 @@ int main(void)
     RUN_TEST(load_count_at_least_30);
     RUN_TEST(missing_file_errors);
     RUN_TEST(malformed_json_errors);
+    RUN_TEST(empty_catalog_rejected);
     RUN_TEST(lookup_dir_is_builtin);
     RUN_TEST(lookup_unknown_is_null);
     RUN_TEST(validate_dir_b_ok);

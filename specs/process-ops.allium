@@ -105,7 +105,9 @@ entity Process {
 
 -- The exec response payload. Output fields are filled from the capture
 -- buffers by the host runtime; the spec models their presence and the
--- ok/error split.
+-- ok/error split. On the wire the process's exec_method, binary_type
+-- and killed_by flatten into this envelope as top-level keys (see
+-- mcp-protocol.allium's recorded abstraction note).
 entity ExecResult {
     process: Process
     request_id: String
@@ -228,11 +230,11 @@ rule ExecRequestAccepted {
     requires: request.pty = false or capabilities.has_pty = true
     ensures: request.status = accepted
     ensures: request.effective_timeout_ms =
-        if request.timeout_ms = 0: config.default_timeout_ms
+        if request.timeout_ms <= 0: config.default_timeout_ms
         else if request.timeout_ms > config.max_timeout_ms: config.max_timeout_ms
         else: request.timeout_ms
     ensures: request.effective_output_cap =
-        if request.max_output = 0 or request.max_output > config.output_cap: config.output_cap
+        if request.max_output <= 0 or request.max_output > config.output_cap: config.output_cap
         else: request.max_output
     ensures: SpawnRequested(request: request)
 }
@@ -256,7 +258,11 @@ rule ProcessSpawned {
 }
 
 -- The error response carries the Win32 error code in the reason text
--- ("spawn failed: <code>"); the spec models the stable prefix.
+-- ("spawn failed: <code>"); the spec models the stable prefix. An
+-- empty command line is rejected with the same stable prefix
+-- ("spawn failed: empty command line") WITHOUT a spawn attempt -
+-- recorded intentional (weed 2026-06-06): the reason vocabulary stays
+-- one entry shorter at the cost of a pedantic misnomer.
 rule ProcessSpawnFailed {
     when: SpawnFailed(request, error_code)
     requires: request.status = accepted
@@ -346,8 +352,14 @@ rule OrphanReaped {
     ensures: p.status = exited
 }
 
--- Job-object limit kills (NT 4.0+): the kernel terminates the child;
--- the result is still a completed exec whose killed_by names the limit.
+-- Job-object limit kills (NT 4.0+). Windows semantics bound what is
+-- attributable (weed 2026-06-06): the CPU-time limit TERMINATES the
+-- child (quota exit), so cpu_cap is reliably detected; the memory
+-- limit only FAILS further allocations - such a child dies on its own
+-- and is attributed memory_cap only via the documented quota exit
+-- code, otherwise it reports as a normal nonzero exit with killed_by
+-- none. The result is still a completed exec whose killed_by names
+-- the limit when attributable.
 rule JobLimitKills {
     when: JobLimitKilled(p, limit, exit_code)
     requires: p.status = running
