@@ -25,6 +25,7 @@ typedef SOCKET (WINAPI *fn_accept)(SOCKET, struct sockaddr *, int *);
 typedef int    (WINAPI *fn_recv)(SOCKET, char *, int, int);
 typedef int    (WINAPI *fn_send)(SOCKET, const char *, int, int);
 typedef int    (WINAPI *fn_closesocket)(SOCKET);
+typedef int    (WINAPI *fn_setsockopt)(SOCKET, int, int, const char *, int);
 typedef int    (WINAPI *fn_wsagle)(void);
 
 static struct {
@@ -37,6 +38,7 @@ static struct {
     fn_recv         recv;
     fn_send         send;
     fn_closesocket  closesocket;
+    fn_setsockopt   setsockopt;
     fn_wsagle       lasterror;
 } g_ws;
 
@@ -81,13 +83,15 @@ int TcpBackendProbe(void)
     g_ws.recv        = (fn_recv)        GetProcAddress(h, "recv");
     g_ws.send        = (fn_send)        GetProcAddress(h, "send");
     g_ws.closesocket = (fn_closesocket) GetProcAddress(h, "closesocket");
+    g_ws.setsockopt  = (fn_setsockopt)  GetProcAddress(h, "setsockopt");
     g_ws.lasterror   = (fn_wsagle)      GetProcAddress(h, "WSAGetLastError");
 
     if (g_ws.startup == NULL || g_ws.cleanup == NULL ||
         g_ws.socket == NULL || g_ws.bind == NULL ||
         g_ws.listen == NULL || g_ws.accept == NULL ||
         g_ws.recv == NULL || g_ws.send == NULL ||
-        g_ws.closesocket == NULL || g_ws.lasterror == NULL) {
+        g_ws.closesocket == NULL || g_ws.setsockopt == NULL ||
+        g_ws.lasterror == NULL) {
         return 0;
     }
 
@@ -126,11 +130,23 @@ static void tcp_sock_close(Transport *t)
 static Transport *tcp_accept(Transport *listener)
 {
     SOCKET c;
+    int on;
 
     c = g_ws.accept(listener->io.sock, NULL, NULL);
     if (c == INVALID_SOCKET) {
         return NULL;
     }
+
+    /*
+     * Enable TCP keep-alive so a peer that vanishes WITHOUT sending FIN
+     * (crash, pulled cable, NAT idle-timeout - a half-open connection) is
+     * eventually detected: recv then fails instead of blocking forever.
+     * This is the TCP counterpart to serial having no idle-close. Best
+     * effort - if it fails the connection still works, just without
+     * dead-peer detection, so the result is intentionally not checked.
+     */
+    on = 1;
+    g_ws.setsockopt(c, SOL_SOCKET, SO_KEEPALIVE, (const char *)&on, sizeof(on));
 
     g_conn.name = "tcp";
     g_conn.kind = TRANSPORT_TCP;

@@ -153,6 +153,46 @@ TEST_CASE(sequential_second_client) {
     listener.close(&listener);
 }
 
+TEST_CASE(accept_enables_keepalive) {
+    TransportConfig cfg;
+    Transport listener;
+    Transport *conn;
+    char err[64];
+    SOCKET client;
+    struct sockaddr_in addr;
+    int ka;
+    int kalen;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.transport = TRANSPORT_TCP;
+    cfg.tcpPort = TEST_PORT + 3;
+    TEST_ASSERT_INT_EQUAL(1, TcpBackendOpen(&cfg, &listener, err, sizeof(err)),
+                          "open listener");
+
+    client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = McpHtons(TEST_PORT + 3);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    TEST_ASSERT(connect(client, (struct sockaddr *)&addr, sizeof(addr)) == 0,
+                "client connects");
+
+    conn = listener.accept(&listener);
+    TEST_ASSERT(conn != NULL, "accept returns a connection");
+
+    /* The accepted connection must have keep-alive enabled so a peer that
+     * vanishes without FIN is eventually detected. */
+    ka = 0;
+    kalen = (int)sizeof(ka);
+    TEST_ASSERT(getsockopt((SOCKET)conn->io.sock, SOL_SOCKET, SO_KEEPALIVE,
+                           (char *)&ka, &kalen) == 0, "getsockopt SO_KEEPALIVE ok");
+    TEST_ASSERT(ka != 0, "keep-alive enabled on accepted socket");
+
+    closesocket(client);
+    conn->close(conn);
+    listener.close(&listener);
+}
+
 int main(void)
 {
     WSADATA wsa;
@@ -176,6 +216,7 @@ int main(void)
     printf("\nLoopback round-trip:\n");
     RUN_TEST(roundtrip_echo);
     RUN_TEST(sequential_second_client);
+    RUN_TEST(accept_enables_keepalive);
 
     TcpBackendCleanup();
     WSACleanup();
