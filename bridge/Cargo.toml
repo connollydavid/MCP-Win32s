@@ -28,7 +28,13 @@ futures = "0.3"
 async-trait = "0.1"
 
 [dev-dependencies]
+# The `client` feature is test-only (the in-memory MCP client). Feature
+# unification gives it to test builds; the release binary stays client-free.
+rmcp = { version = "1.7", features = ["client"] }
 proptest = "1"
+# rt-multi-thread is test-only (the lifecycle test drives client+server
+# concurrently); the binary stays current-thread.
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [profile.release]
 opt-level = 2
