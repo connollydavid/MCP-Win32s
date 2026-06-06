@@ -117,7 +117,6 @@ rule WriteCommand {
     requires: cmd.cmd = write
     ensures: fileops/FileWriteResult.created(
         file: fileops/File(path: cmd.path),
-        data: cmd.data,
         request_id: cmd.id
     )
 }
