@@ -41,6 +41,7 @@ entity Transport {
     name: String
     kind: TransportKind
     message_oriented: Boolean
+    autodetect: Boolean
     status: opening | listening | connected | closed | error
 
     transitions status {
@@ -70,6 +71,7 @@ rule TransportSelected {
         kind: requested,
         name: backend.name,
         message_oriented: false,
+        autodetect: autodetect,
         status: opening
     )
 }
@@ -83,6 +85,26 @@ rule TransportFallsBackToSerial {
         kind: serial,
         name: serial_backend.name,
         message_oriented: false,
+        autodetect: true,
+        status: opening
+    )
+}
+
+-- /AUTO also falls back when the requested backend probes available but
+-- its open FAILS (e.g. wsock32 present yet bind/listen fails): the failed
+-- transport errors (TransportOpenFails) and a serial transport is opened
+-- in its place. Serial fallback open failure ends in error with no
+-- further fallback (TransportOpenFails covers it; kind != serial guard
+-- prevents a fallback loop).
+rule TransportFallsBackOnOpenFailure {
+    when: TransportOpenFailed(t)
+    let serial_backend = TransportBackend{kind: serial}
+    requires: t.status = opening and t.autodetect = true and t.kind != serial
+    ensures: Transport.created(
+        kind: serial,
+        name: serial_backend.name,
+        message_oriented: false,
+        autodetect: false,
         status: opening
     )
 }
@@ -171,6 +193,46 @@ rule TransportShutdown {
 rule ReadyOnConnect {
     when: t: Transport.status transitions_to connected
     ensures: ReadyMessageSent(transport: t, backend: t.name)
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The operator boundary: command-line flags select a backend at startup
+-- (/SERIAL, /TCP, /AUTO) and process exit shuts the transport down.
+surface OperatorControl {
+    facing t: Transport
+
+    provides:
+        TransportRequested(requested, autodetect)
+        TransportShutdownRequested(t)
+            when t.status in {listening, connected}
+}
+
+-- The host-runtime boundary: startup probes record whether each
+-- registered backend is usable on this host (e.g. wsock32 present).
+surface HostRuntimeProbe {
+    facing b: TransportBackend
+
+    provides:
+        BackendProbeCompleted(b, result)
+}
+
+-- The connection boundary: the OS comms layer and the remote peer raise
+-- lifecycle events against a live transport.
+surface ConnectionEvents {
+    facing t: Transport
+
+    provides:
+        TransportOpenFailed(t)
+            when t.status = opening
+        TcpClientAccepted(t)
+            when t.kind = tcp and t.status = listening
+        PeerDisconnected(t)
+            when t.status = connected
+        TransportError(t)
+            when t.status = connected
 }
 
 ------------------------------------------------------------
