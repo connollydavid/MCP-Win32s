@@ -25,6 +25,7 @@ typedef SOCKET (WINAPI *fn_accept)(SOCKET, struct sockaddr *, int *);
 typedef int    (WINAPI *fn_recv)(SOCKET, char *, int, int);
 typedef int    (WINAPI *fn_send)(SOCKET, const char *, int, int);
 typedef int    (WINAPI *fn_closesocket)(SOCKET);
+typedef int    (WINAPI *fn_setsockopt)(SOCKET, int, int, const char *, int);
 typedef int    (WINAPI *fn_wsagle)(void);
 
 static struct {
@@ -37,6 +38,7 @@ static struct {
     fn_recv         recv;
     fn_send         send;
     fn_closesocket  closesocket;
+    fn_setsockopt   setsockopt;
     fn_wsagle       lasterror;
 } g_ws;
 
@@ -57,6 +59,44 @@ unsigned long McpHtonl(unsigned long x)
            ((x & 0x0000FF00UL) << 8)  |
            ((x & 0x00FF0000UL) >> 8)  |
            ((x & 0xFF000000UL) >> 24);
+}
+
+/*
+ * McpInetAddr - Parse a dotted-quad ("a.b.c.d") into a network-byte-order
+ * address, like inet_addr, but by hand so we need not import it from wsock32.
+ * An empty or malformed string yields 0 (INADDR_ANY = bind all interfaces),
+ * which is the project default.
+ */
+unsigned long McpInetAddr(const char *s)
+{
+    unsigned long octet;
+    unsigned long acc;   /* host-order address being assembled */
+    int parts;
+
+    if (s == NULL || s[0] == '\0') {
+        return 0;
+    }
+
+    acc = 0;
+    octet = 0;
+    parts = 0;
+    while (*s != '\0' && *s != ' ' && *s != '\t') {
+        if (*s >= '0' && *s <= '9') {
+            octet = octet * 10 + (unsigned long)(*s - '0');
+        } else if (*s == '.') {
+            acc = (acc << 8) | (octet & 0xFF);
+            octet = 0;
+            parts++;
+        }
+        s++;
+    }
+    acc = (acc << 8) | (octet & 0xFF);
+    parts++;
+
+    if (parts != 4) {
+        return 0;   /* malformed -> INADDR_ANY */
+    }
+    return McpHtonl(acc);
 }
 
 int TcpBackendProbe(void)
@@ -81,13 +121,15 @@ int TcpBackendProbe(void)
     g_ws.recv        = (fn_recv)        GetProcAddress(h, "recv");
     g_ws.send        = (fn_send)        GetProcAddress(h, "send");
     g_ws.closesocket = (fn_closesocket) GetProcAddress(h, "closesocket");
+    g_ws.setsockopt  = (fn_setsockopt)  GetProcAddress(h, "setsockopt");
     g_ws.lasterror   = (fn_wsagle)      GetProcAddress(h, "WSAGetLastError");
 
     if (g_ws.startup == NULL || g_ws.cleanup == NULL ||
         g_ws.socket == NULL || g_ws.bind == NULL ||
         g_ws.listen == NULL || g_ws.accept == NULL ||
         g_ws.recv == NULL || g_ws.send == NULL ||
-        g_ws.closesocket == NULL || g_ws.lasterror == NULL) {
+        g_ws.closesocket == NULL || g_ws.setsockopt == NULL ||
+        g_ws.lasterror == NULL) {
         return 0;
     }
 
@@ -126,11 +168,23 @@ static void tcp_sock_close(Transport *t)
 static Transport *tcp_accept(Transport *listener)
 {
     SOCKET c;
+    int on;
 
     c = g_ws.accept(listener->io.sock, NULL, NULL);
     if (c == INVALID_SOCKET) {
         return NULL;
     }
+
+    /*
+     * Enable TCP keep-alive so a peer that vanishes WITHOUT sending FIN
+     * (crash, pulled cable, NAT idle-timeout - a half-open connection) is
+     * eventually detected: recv then fails instead of blocking forever.
+     * This is the TCP counterpart to serial having no idle-close. Best
+     * effort - if it fails the connection still works, just without
+     * dead-peer detection, so the result is intentionally not checked.
+     */
+    on = 1;
+    g_ws.setsockopt(c, SOL_SOCKET, SO_KEEPALIVE, (const char *)&on, sizeof(on));
 
     g_conn.name = "tcp";
     g_conn.kind = TRANSPORT_TCP;
@@ -185,7 +239,7 @@ int TcpBackendOpen(const TransportConfig *cfg, Transport *out,
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = McpHtons((unsigned short)cfg->tcpPort);
-    addr.sin_addr.s_addr = 0;   /* INADDR_ANY (0, byte-order-agnostic) */
+    addr.sin_addr.s_addr = McpInetAddr(cfg->bindAddr);  /* "" => INADDR_ANY */
 
     if (g_ws.bind(s, (const struct sockaddr *)&addr, sizeof(addr)) ==
         SOCKET_ERROR) {

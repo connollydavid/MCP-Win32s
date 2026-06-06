@@ -36,10 +36,21 @@ void BuildSerialTimeouts(COMMTIMEOUTS *timeouts)
         return;
     }
 
+    /*
+     * Interval-only timeouts (total = 0): ReadFile BLOCKS until the first
+     * byte arrives, then returns each burst after a 50ms lull. This is the
+     * classic serial-terminal read pattern - a serial line has no orderly
+     * "close" event, so an idle line must NOT end the session. With a total
+     * timeout (the old config) ReadFile returned 0 bytes on idle, which the
+     * transport layer reads as a peer close. With interval-only, idle simply
+     * blocks; the session ends only on a real comms error (ReadFile fails).
+     * See MSDN "Time-Outs": interval timing "does not begin until the first
+     * character is received".
+     */
     memset(timeouts, 0, sizeof(COMMTIMEOUTS));
     timeouts->ReadIntervalTimeout = 50;
-    timeouts->ReadTotalTimeoutMultiplier = 10;
-    timeouts->ReadTotalTimeoutConstant = 50;
+    timeouts->ReadTotalTimeoutMultiplier = 0;
+    timeouts->ReadTotalTimeoutConstant = 0;
     /* Write timeouts left at 0 (no timeout) */
 }
 
@@ -86,10 +97,23 @@ void CloseSerialPort(HANDLE hPort)
 static int serial_read(Transport *t, void *buf, int len)
 {
     DWORD n;
-    if (!ReadFile(t->io.handle, buf, (DWORD)len, &n, NULL)) {
-        return -1;
+
+    /*
+     * A serial line has no orderly close, so this never reports 0 (which the
+     * transport contract reserves for "peer closed"). Interval-only timeouts
+     * make ReadFile block until a burst arrives, so the loop normally runs
+     * once; the guard is defensive (a stray 0-byte success just waits again),
+     * and it can never busy-spin because the blocking read holds inside
+     * ReadFile. The session ends only when ReadFile fails (a comms error).
+     */
+    for (;;) {
+        if (!ReadFile(t->io.handle, buf, (DWORD)len, &n, NULL)) {
+            return -1;
+        }
+        if (n > 0) {
+            return (int)n;
+        }
     }
-    return (int)n;   /* 0 = no data within timeout / closed */
 }
 
 static int serial_write(Transport *t, const void *buf, int len)

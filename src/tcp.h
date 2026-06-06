@@ -32,4 +32,8 @@ void TcpBackendRegister(void);
 unsigned short McpHtons(unsigned short x);
 unsigned long  McpHtonl(unsigned long x);
 
+/* Parse a dotted-quad bind address into network byte order ("" => INADDR_ANY),
+ * by hand so inet_addr need not be imported from wsock32. */
+unsigned long  McpInetAddr(const char *s);
+
 #endif /* TCP_H */
