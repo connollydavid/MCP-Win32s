@@ -162,5 +162,13 @@ invariant ListResultHasEntries {
         result.status = ok implies result.entries.size >= 0
 }
 
+-- Recorded intentional gap (weed 2026-06-06, finding #4): the
+-- implementation's error vocabulary is richer than this spec ("cannot
+-- get file size", "read error", "encode error", "invalid base64",
+-- "cannot create file", "write error", "incomplete write",
+-- "buffer overflow", "null parameter"). The spec models only the
+-- externally meaningful reasons; finer-grained I/O failure detail is
+-- implementation-defined and may vary without spec change.
+
 open question "Should write operations preserve existing file permissions or set defaults?"
 open question "Should list operations include hidden files?"
