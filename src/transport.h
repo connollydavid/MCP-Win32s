@@ -30,9 +30,10 @@
 /* Transport flags */
 #define TRANSPORT_FLAG_MESSAGE 0x01  /* one message = one command; bypass framing */
 
-/* Serial defaults (transport-level config) */
+/* Serial / TCP defaults (transport-level config) */
 #define DEFAULT_BAUD_RATE CBR_115200
 #define DEFAULT_PORT      "COM1"
+#define DEFAULT_TCP_PORT  0x7C00   /* 31744 - the x86 boot-sector load address */
 
 /*
  * TransportConfig - parsed command-line transport selection.
@@ -44,6 +45,7 @@ typedef struct {
     int   tcpPort;          /* TCP listen port */
     char  pipeName[260];    /* reserved */
     int   autodetect;       /* 1 = try requested, fall back to serial */
+    char  bindAddr[16];     /* TCP bind address (dotted quad); "" = INADDR_ANY */
 } TransportConfig;
 
 /*

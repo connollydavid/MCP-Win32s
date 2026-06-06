@@ -33,6 +33,16 @@ TEST_CASE(htonl_swaps) {
     TEST_ASSERT(McpHtonl(0x01020304UL) == 0x04030201UL, "htonl swaps 4 bytes");
 }
 
+TEST_CASE(inet_addr_parses) {
+    /* Dotted quad -> network byte order, matching inet_addr. */
+    TEST_ASSERT(McpInetAddr("127.0.0.1") == inet_addr("127.0.0.1"),
+                "loopback matches inet_addr");
+    TEST_ASSERT(McpInetAddr("0.0.0.0") == 0, "0.0.0.0 is INADDR_ANY");
+    TEST_ASSERT(McpInetAddr("") == 0, "empty string is INADDR_ANY");
+    TEST_ASSERT(McpInetAddr("192.168.1.255") == inet_addr("192.168.1.255"),
+                "general address matches inet_addr");
+}
+
 /* ========================================================
  * Probe + listener
  * ======================================================== */
@@ -208,6 +218,7 @@ int main(void)
     printf("\nByte order:\n");
     RUN_TEST(htons_swaps);
     RUN_TEST(htonl_swaps);
+    RUN_TEST(inet_addr_parses);
 
     printf("\nProbe + listener:\n");
     RUN_TEST(probe_succeeds);
