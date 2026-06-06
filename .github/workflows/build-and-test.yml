@@ -10,43 +10,41 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    - name: Install MinGW-w64 and Wine
+    - name: Install MinGW-w64, Wine, CMake and Ninja
       run: |
         sudo dpkg --add-architecture i386
         sudo apt-get update
-        sudo apt-get install -y mingw-w64 wine wine32
+        sudo apt-get install -y mingw-w64 wine wine32 cmake ninja-build
 
-    # Single source of truth for the build + test matrix: build.sh. On this
-    # Ubuntu runner there is no WSL interop, so build.sh auto-selects Wine to
-    # run the PEs (the dev host runs them natively). This includes the
-    # transport, TCP (real Winsock via Wine) and mock-transport suites.
-    - name: Build and run all tests (build.sh, Wine runner)
-      run: |
-        chmod +x build.sh
-        ./build.sh test
+    # Single source of truth: CMakeLists.txt + the "mingw" preset. On this
+    # Ubuntu runner there is no WSL interop, so the toolchain selects Wine to
+    # run the PEs (the dev host runs them natively). ctest covers the json,
+    # transport, tcp (real Winsock via Wine), serial, base64, file-ops and PBT
+    # suites.
+    - name: Configure (mingw preset)
+      run: cmake --preset mingw
 
-    # Criterion: mcp-w32s.exe must carry NO static Winsock import - the TCP
-    # backend is runtime-loaded (LoadLibraryA), so the binary still loads on
-    # bare Win32s without TCP/IP-32.
+    - name: Build
+      run: cmake --build --preset mingw
+
+    - name: Test (ctest, Wine runner)
+      run: ctest --preset mingw
+
+    # mcp-w32s.exe must carry NO static Winsock import - the TCP backend is
+    # runtime-loaded (LoadLibraryA), so the binary still loads on bare Win32s.
     - name: Verify no static Winsock import in mcp-w32s.exe
       run: |
-        if i686-w64-mingw32-objdump -p mcp-w32s.exe | grep -i 'wsock32\|ws2_32'; then
+        if i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe | grep -i 'wsock32\|ws2_32'; then
           echo "ERROR: mcp-w32s.exe has a static Winsock import (must be runtime-loaded)!"
           exit 1
         fi
         echo "OK: no static Winsock import; TCP is runtime-loaded."
 
+    # Binary instruction purity is checked on the application objects CMake
+    # built (CRT startup is excluded - it legitimately contains FPU/atomics).
     - name: Verify no FPU instructions in application code
       run: |
-        # Compile every application .c file to an object file (no CRT).
-        for src in json_parser serial transport tcp mcp-w32s base64 file_ops; do
-          i686-w64-mingw32-gcc -O2 -std=c89 -march=i386 -mtune=i386 \
-            -Wall -Werror -pedantic -Wdouble-promotion -Wfloat-equal \
-            -Isrc -c -o /tmp/$src.o src/$src.c
-        done
-        i686-w64-mingw32-objdump -d \
-          /tmp/json_parser.o /tmp/serial.o /tmp/transport.o /tmp/tcp.o \
-          /tmp/mcp-w32s.o /tmp/base64.o /tmp/file_ops.o > app_disasm.txt
+        i686-w64-mingw32-objdump -d build/mingw/CMakeFiles/mcp-w32s.dir/src/*.obj > app_disasm.txt
         if grep -E 'fld|fst[^r]|fadd|fmul|fdiv|fsub|fsqrt|fcom|fild|fistp' app_disasm.txt; then
           echo "ERROR: Application code contains FPU instructions!"
           exit 1
@@ -65,17 +63,10 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: mcp-w32s.exe
-        path: mcp-w32s.exe
+        path: build/mingw/mcp-w32s.exe
 
     - name: Upload test binaries
       uses: actions/upload-artifact@v7
       with:
         name: test-binaries
-        path: |
-          tests/test_json.exe
-          tests/test_transport.exe
-          tests/test_tcp.exe
-          tests/test_serial.exe
-          tests/test_base64.exe
-          tests/test_file_ops.exe
-          tests/test_pbt_base64.exe
+        path: build/mingw/test_*.exe

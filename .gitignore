@@ -18,3 +18,4 @@ vc6/Release/
 *.opt
 *.plg
 .claude/
+build/
