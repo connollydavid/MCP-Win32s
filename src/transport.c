@@ -96,6 +96,60 @@ static int simple_atoi(const char *s)
     return result;
 }
 
+/*
+ * find_flag_tok - Like find_flag, but the flag need not carry a value.
+ * Returns a pointer to the character immediately after the flag name (':'
+ * when a value follows, or a boundary char such as space/end), or NULL if
+ * the flag token is absent. Used for /AUTO, whose port is optional.
+ */
+static const char *find_flag_tok(const char *cmdLine, const char *flag)
+{
+    const char *p;
+    int flagLen;
+
+    if (cmdLine == NULL || flag == NULL) {
+        return NULL;
+    }
+
+    flagLen = 0;
+    while (flag[flagLen] != '\0') {
+        flagLen++;
+    }
+
+    p = cmdLine;
+    while (*p != '\0') {
+        if (*p == '/') {
+            const char *start;
+            int match;
+            int i;
+            char c;
+
+            start = p + 1;
+            match = 1;
+            for (i = 0; i < flagLen && start[i] != '\0'; i++) {
+                char a, b;
+                a = start[i];
+                b = flag[i];
+                if (a >= 'a' && a <= 'z') a = a - ('a' - 'A');
+                if (b >= 'a' && b <= 'z') b = b - ('a' - 'A');
+                if (a != b) {
+                    match = 0;
+                    break;
+                }
+            }
+            if (match && i == flagLen) {
+                c = start[i];
+                if (c == ':' || c == ' ' || c == '\t' || c == '\0') {
+                    return &start[i];
+                }
+            }
+        }
+        p++;
+    }
+
+    return NULL;
+}
+
 int ParseCommandLine(const char *cmdLine, TransportConfig *config)
 {
     const char *val;
@@ -116,12 +170,39 @@ int ParseCommandLine(const char *cmdLine, TransportConfig *config)
         return 1;
     }
 
+    /* Optional bind-address modifier (TCP only; "" => INADDR_ANY). */
+    val = find_flag(cmdLine, "BIND");
+    if (val != NULL) {
+        copy_until_space(val, config->bindAddr, sizeof(config->bindAddr));
+    }
+
     val = find_flag(cmdLine, "SERIAL");
     if (val != NULL) {
         config->transport = TRANSPORT_SERIAL;
         copy_until_space(val, config->port, sizeof(config->port));
         config->baudRate = DEFAULT_BAUD_RATE;
         return 1;
+    }
+
+    /* /AUTO[:port] - try TCP, fall back to serial if Winsock is absent. */
+    {
+        const char *a;
+        a = find_flag_tok(cmdLine, "AUTO");
+        if (a != NULL) {
+            config->transport = TRANSPORT_TCP;
+            config->autodetect = 1;
+            if (*a == ':') {
+                char portStr[16];
+                copy_until_space(a + 1, portStr, sizeof(portStr));
+                config->tcpPort = simple_atoi(portStr);
+            } else {
+                config->tcpPort = DEFAULT_TCP_PORT;
+            }
+            if (config->tcpPort <= 0 || config->tcpPort > 65535) {
+                return 0;
+            }
+            return 1;
+        }
     }
 
     val = find_flag(cmdLine, "TCP");

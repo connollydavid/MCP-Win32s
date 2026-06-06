@@ -322,6 +322,16 @@ Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.all
 
 `/allium:allium` is the language reference for any syntax or semantics question.
 
+### Merge gate (non-negotiable)
+
+**Never merge a PR until the full Allium lifecycle has been run for the change.** Concretely, before merging any branch:
+
+1. **Specs current (`/allium:tend`)** — every behavioural change is reflected in `specs/*.allium`, `allium check` clean. Code without a spec is backfilled (`/allium:distill`).
+2. **Obligations propagated (`/allium:propagate`)** — the spec's implied unit/property/state-machine tests exist and trace to the implementation.
+3. **Audit clean (`/allium:weed`)** — a weed pass reports **zero spec↔code drift**. This is the gate; a non-zero drift report blocks the merge until resolved (fix code, fix spec, or record an explicit intentional gap).
+
+This applies to *every* PR, not just phase-completion PRs. CI green is necessary but **not sufficient** — the weed audit must also be clean. Running the lifecycle is part of preparing a PR for merge, the same way tests are.
+
 **Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`.
 **Known gaps (distill targets, scheduled in Phase 4):** `base64`, `json_parser`, `serial` have implementations but no specs.
 
@@ -348,7 +358,7 @@ theft can never compile for the Win32s target (it is C99 + POSIX) — that is by
 | 6 | Cross-platform testing | Not started |
 | 7 | Documentation & polish | Not started |
 
-**Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates above: tend-written specs before code, propagate-derived tests, weed-clean before Complete.
+**Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates above: tend-written specs before code, propagate-derived tests, and a weed-clean audit — required before **every merge** (see "Merge gate"), not only at phase completion.
 
 **Why transport precedes command execution:** the protocol I/O is currently hard-wired to a Win32 `HANDLE` (`ReadFile`/`WriteFile`), but a Winsock `SOCKET` is not a file handle on Win32s/Win9x (needs `recv`/`send`). Phase 4's ready message and exec stdout/stderr flow over the transport, so the vtable abstraction (Phase 3) must land first or exec ships serial-only and gets rewritten. See PLAN.md "Phase 3: Network & Transport".
 

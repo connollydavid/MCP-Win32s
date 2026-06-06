@@ -168,6 +168,44 @@ TEST_CASE(cmdline_with_exe_prefix) {
     TEST_ASSERT_STR_EQUAL("COM2", config.port, "port name");
 }
 
+TEST_CASE(cmdline_auto_with_port) {
+    TransportConfig config;
+    int result;
+    result = ParseCommandLine("/AUTO:9000", &config);
+    TEST_ASSERT_INT_EQUAL(1, result, "should parse successfully");
+    TEST_ASSERT_INT_EQUAL(TRANSPORT_TCP, config.transport, "auto prefers tcp");
+    TEST_ASSERT_INT_EQUAL(1, config.autodetect, "autodetect enabled");
+    TEST_ASSERT_INT_EQUAL(9000, config.tcpPort, "explicit auto port");
+}
+
+TEST_CASE(cmdline_auto_default_port) {
+    TransportConfig config;
+    int result;
+    result = ParseCommandLine("/AUTO", &config);
+    TEST_ASSERT_INT_EQUAL(1, result, "bare /AUTO should parse");
+    TEST_ASSERT_INT_EQUAL(TRANSPORT_TCP, config.transport, "auto prefers tcp");
+    TEST_ASSERT_INT_EQUAL(1, config.autodetect, "autodetect enabled");
+    TEST_ASSERT_INT_EQUAL(DEFAULT_TCP_PORT, config.tcpPort, "default auto port");
+}
+
+TEST_CASE(cmdline_bind_address) {
+    TransportConfig config;
+    int result;
+    result = ParseCommandLine("/TCP:8932 /BIND:127.0.0.1", &config);
+    TEST_ASSERT_INT_EQUAL(1, result, "should parse tcp + bind");
+    TEST_ASSERT_INT_EQUAL(TRANSPORT_TCP, config.transport, "transport type");
+    TEST_ASSERT_INT_EQUAL(8932, config.tcpPort, "tcp port");
+    TEST_ASSERT_STR_EQUAL("127.0.0.1", config.bindAddr, "bind address captured");
+}
+
+TEST_CASE(cmdline_bind_defaults_any) {
+    TransportConfig config;
+    int result;
+    result = ParseCommandLine("/TCP:8932", &config);
+    TEST_ASSERT_INT_EQUAL(1, result, "should parse");
+    TEST_ASSERT_STR_EQUAL("", config.bindAddr, "no /BIND => empty (INADDR_ANY)");
+}
+
 /* ========================================================
  * BuildSerialDCB tests
  * ======================================================== */
@@ -212,9 +250,11 @@ TEST_CASE(dcb_null_safe) {
 TEST_CASE(timeouts_values) {
     COMMTIMEOUTS t;
     BuildSerialTimeouts(&t);
+    /* Interval-only: ReadFile blocks until a burst, idle never ends the
+     * session. Total multiplier/constant MUST be 0 (see BuildSerialTimeouts). */
     TEST_ASSERT_INT_EQUAL(50, (int)t.ReadIntervalTimeout, "interval");
-    TEST_ASSERT_INT_EQUAL(10, (int)t.ReadTotalTimeoutMultiplier, "multiplier");
-    TEST_ASSERT_INT_EQUAL(50, (int)t.ReadTotalTimeoutConstant, "constant");
+    TEST_ASSERT_INT_EQUAL(0, (int)t.ReadTotalTimeoutMultiplier, "no total multiplier");
+    TEST_ASSERT_INT_EQUAL(0, (int)t.ReadTotalTimeoutConstant, "no total constant");
     TEST_ASSERT_INT_EQUAL(0, (int)t.WriteTotalTimeoutMultiplier, "write mult");
     TEST_ASSERT_INT_EQUAL(0, (int)t.WriteTotalTimeoutConstant, "write const");
 }
@@ -416,6 +456,10 @@ int main(void)
     RUN_TEST(cmdline_null_config);
     RUN_TEST(cmdline_no_flag);
     RUN_TEST(cmdline_with_exe_prefix);
+    RUN_TEST(cmdline_auto_with_port);
+    RUN_TEST(cmdline_auto_default_port);
+    RUN_TEST(cmdline_bind_address);
+    RUN_TEST(cmdline_bind_defaults_any);
 
     printf("\nBuildSerialDCB:\n");
     RUN_TEST(dcb_default_settings);
