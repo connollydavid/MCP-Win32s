@@ -17,7 +17,11 @@ MCP-Win32s/
 │       └── build-and-test.yml  # GitHub Actions CI (MinGW + Wine)
 ├── specs/
 │   ├── file-ops.allium         # Allium 3 spec: file read/write/list/delete
-│   └── mcp-protocol.allium     # Allium 3 spec: command dispatch + responses
+│   ├── mcp-protocol.allium     # Allium 3 spec: command dispatch + responses
+│   ├── transport.allium        # Allium 3 spec: transport lifecycle
+│   ├── process-ops.allium      # Allium 3 spec: exec/ptyExec process core (Phase 4)
+│   ├── catalog.allium          # Allium 3 spec: command-catalog whitelist gate (Phase 4)
+│   └── wire-contract.allium    # Allium 3 spec: client-side wire contract (Phase 4.0b)
 ├── src/
 │   ├── base64.c                # Base64 encode/decode (integer-only)
 │   ├── base64.h                # Base64 public API
@@ -27,6 +31,13 @@ MCP-Win32s/
 │   ├── json_parser.c           # JSON parsing + response building (~334 lines C89)
 │   ├── json_parser.h           # Parser/builder public API
 │   ├── mcp-w32s.c              # Main executable (protocol loop, dispatch)
+│   ├── argv.c/.h               # argv -> CreateProcess cmdline (CommandLineToArgvW reverse-rules)
+│   ├── binfmt.c/.h             # MZ/NE/PE classifier (+GetBinaryTypeA uplift)
+│   ├── catalog.c/.h            # JSON catalog loader + whitelist validation
+│   ├── exec_ops.c/.h           # spawn/capture/timeout core (polling + threaded paths)
+│   ├── feat.c/.h               # runtime capability probing (g_features)
+│   ├── pty_exec.c/.h           # CreatePseudoConsole exec (ptyExec, Win10 1809+)
+│   ├── ready.c/.h              # extended ready message (codepage/version/features)
 │   ├── serial.c                # Serial backend (DCB/timeouts) on the vtable
 │   ├── serial.h                # Serial backend API
 │   ├── tcp.c                   # TCP backend (Winsock 1.1, runtime-loaded)
@@ -40,9 +51,17 @@ MCP-Win32s/
 │   ├── test_base64.c           # 14 base64 encode/decode tests
 │   ├── test_file_ops.c         # 10 file operation tests
 │   ├── test_framework.h        # Minimal C89 test framework (header-only)
-│   ├── test_json.c             # 31 JSON parser unit tests
+│   ├── test_json.c             # 39 JSON parser unit tests (incl. Phase 4 exec fields)
 │   ├── test_pbt_base64.c       # 4 property-based tests (4000 random trials)
-│   ├── test_serial.c           # 33 serial + main loop + cmdline tests
+│   ├── test_argv.c             # 15 argv quoting tests + 1000-trial spawn PBT
+│   ├── test_binfmt.c           # 7 binary classification tests (+fixtures/)
+│   ├── test_catalog.c          # 10 catalog load/lookup/validation tests
+│   ├── test_exec_ops.c         # 27 exec core tests (incl. capability fallbacks)
+│   ├── test_feat.c             # 6 capability-probe tests
+│   ├── test_pty_exec.c         # 4 ConPTY tests (skip-if-absent)
+│   ├── test_serial.c           # 41 serial + main loop + cmdline + exec-integration tests
+│   ├── smoke/wire_client.c     # 4.0b wire-contract smoke client (TCP + PBT)
+│   ├── host/                   # theft host-native PBT harness (C99+ASan, Linux)
 │   ├── test_tcp.c              # 8 TCP backend tests (real Winsock)
 │   └── test_transport.c        # 15 transport vtable/registry tests
 ├── toolchains/
@@ -64,16 +83,9 @@ MCP-Win32s/
 
 ```
 src/
-├── named_pipes.c/.h   # Named pipe backend (Win95+) — Phase 5+
-└── (Phase 4 modules)  # feat, exec_ops, pty_exec, argv, binfmt, catalog, ready — see plan/PHASE4.md in the agentic host repo
+└── named_pipes.c/.h   # Named pipe backend (Win95+) — Phase 5+
 specs/
-├── process-ops.allium # Phase 4: Process/ExecResult/Capabilities
-├── catalog.allium     # Phase 4: command catalog
 └── (distill backfill) # base64, json-parser, serial — see Specification Workflow
-catalog/
-└── win32-commands.json # Phase 4: machine-readable command docs + whitelist
-tests/
-└── host/              # Phase 4: theft-based host-native PBT harness
 ```
 
 ## Hard Technical Constraints
@@ -311,7 +323,7 @@ build.bat test                  # == cmake --preset vc6 && build && ctest
 
 Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.allium`, language version 3) **before** it is implemented. The agentic process — the Allium skill lifecycle (elicit → tend → propagate → implement → weed → distill) and the **non-negotiable merge gate** (specs current, obligations propagated, weed audit clean before *every* merge) — is defined in the agentic host repository ([Agentic-MCP-Win32s](https://github.com/connollydavid/Agentic-MCP-Win32s), which vendors this repo as a submodule). See the host repo's `CLAUDE.md`.
 
-**Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`, `transport.allium`.
+**Current spec coverage:** `file-ops.allium`, `mcp-protocol.allium`, `transport.allium`, `process-ops.allium`, `catalog.allium`, `wire-contract.allium`.
 **Known gaps (distill targets, scheduled in Phase 4):** `base64`, `json_parser`, `serial` have implementations but no specs.
 
 ### Property-based testing: two frameworks, two jobs
@@ -323,7 +335,7 @@ Behaviour is specified in [Allium](https://juxt.github.io/allium/) (`specs/*.all
 
 theft can never compile for the Win32s target (it is C99 + POSIX) — that is by design. It hammers portable pure-logic modules natively at high trial counts, and its autoshrinker reduces failing inputs to minimal counterexamples. Properties propagated from a spec are implemented in theft first (find bugs fast), then mirrored in `prop.h` at lower trial counts (prove they hold on the actual C89/i386 build).
 
-**Status:** theft is vendored but not yet wired into `build.sh`/CI — wiring it in (`tests/host/`, `./build.sh host-pbt`, CI step) is a Phase 4 deliverable. See `plan/PHASE4.md` in the agentic host repo.
+**Status:** wired. `./build.sh host-pbt` builds `vendor/theft` + `tests/host/*` natively (gcc -std=c99 + ASan/UBSan) and runs 50k trials per property; CI runs it before the Wine suite. The Win32 calls in `catalog.c` compile natively through the minimal shim in `tests/host/win32_shim.h`.
 
 ## Implementation Phases
 
@@ -332,6 +344,21 @@ Phase plans, the phase index, and per-phase status live in the agentic host repo
 **Note:** GitHub Actions CI was integrated into Phase 1 (not a separate phase). All subsequent phases inherit CI validation automatically. Phases 3+ additionally inherit the Allium lifecycle gates: tend-written specs before code, propagate-derived tests, and a weed-clean audit — required before **every merge** (see "Merge gate" in the host repo's `CLAUDE.md`), not only at phase completion.
 
 **Why transport precedes command execution:** the protocol I/O is currently hard-wired to a Win32 `HANDLE` (`ReadFile`/`WriteFile`), but a Winsock `SOCKET` is not a file handle on Win32s/Win9x (needs `recv`/`send`). Phase 4's ready message and exec stdout/stderr flow over the transport, so the vtable abstraction (Phase 3) must land first or exec ships serial-only and gets rewritten. See plan/PHASE3.md in the agentic host repo.
+
+## Runtime capability detection (Phase 4 convention)
+
+All version-specific Win32 APIs are probed once at startup by `FeatInit()`
+(`src/feat.c`) and reached ONLY via the `g_features` function pointers —
+never `#ifdef _WIN32_WINNT`, never a static import (CI greps the import
+table). Every `if (g_features.has_X)` uplift path has a Win32s-correct
+fallback; removing `feat.c` conceptually leaves a working
+lowest-common-denominator binary. Child processes are spawned with
+hard-error dialogs suppressed (`SetErrorMode` around `CreateProcessA`) —
+a hidden child popping a blocking dialog would hang the capture loop.
+
+The test suite floor is **≥163 tests** across 13 ctest suites plus the
+theft host harness and the `wire_client` smoke run (see
+`tests/OBLIGATIONS-PHASE4.md` for the obligation→test index).
 
 ## Common Mistakes to Avoid
 

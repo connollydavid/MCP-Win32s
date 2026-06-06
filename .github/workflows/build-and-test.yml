@@ -16,6 +16,12 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y mingw-w64 wine wine32 cmake ninja-build
 
+    # Phase 4: theft host-native PBT (gcc -std=c99 + ASan/UBSan on the
+    # OS-independent modules) runs BEFORE the Wine suite - fail fast with
+    # autoshrunk minimal counterexamples. See tests/host/README.md.
+    - name: Host-native property tests (theft + sanitizers)
+      run: ./build.sh host-pbt
+
     # Single source of truth: CMakeLists.txt + the "mingw" preset. On this
     # Ubuntu runner there is no WSL interop, so the toolchain selects Wine to
     # run the PEs (the dev host runs them natively). ctest covers the json,
@@ -40,6 +46,32 @@ jobs:
         fi
         echo "OK: no static Winsock import; TCP is runtime-loaded."
 
+    # Phase 4: the delay-loaded uplift APIs must never appear in the import
+    # table - they are GetProcAddress-only, or the binary fails to load on
+    # Win32s 1.25a (PHASE4 acceptance criterion 4).
+    - name: Verify no delay-loaded uplift API in the import table
+      run: |
+        if i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe | \
+           grep -E 'CreateJobObject|CreatePseudoConsole|IsWow64Process|GenerateConsoleCtrlEvent|QueryFullProcessImageName|SetProcessMitigationPolicy'; then
+          echo "ERROR: uplift API in the import table (must be runtime-loaded)!"
+          exit 1
+        fi
+        echo "OK: uplift APIs are GetProcAddress-only."
+
+    # Phase 4.0b: wire-contract smoke - real server over /TCP under Wine,
+    # validated by the spec-driven smoke client (acceptance criteria 10, 21).
+    - name: Wire-contract smoke (server /TCP + wire_client)
+      run: |
+        cd build/mingw
+        cp -r ../../catalog .
+        wine ./mcp-w32s.exe /TCP:31799 &
+        SERVER_PID=$!
+        sleep 8
+        RC=0
+        wine ./wire_client.exe 127.0.0.1 31799 || RC=$?
+        kill $SERVER_PID 2>/dev/null || true
+        exit $RC
+
     # Binary instruction purity is checked on the application objects CMake
     # built (CRT startup is excluded - it legitimately contains FPU/atomics).
     - name: Verify no FPU instructions in application code
@@ -63,7 +95,9 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: mcp-w32s.exe
-        path: build/mingw/mcp-w32s.exe
+        path: |
+          build/mingw/mcp-w32s.exe
+          catalog/win32-commands.json
 
     - name: Upload test binaries
       uses: actions/upload-artifact@v7

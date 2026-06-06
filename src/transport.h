@@ -46,6 +46,8 @@ typedef struct {
     char  pipeName[260];    /* reserved */
     int   autodetect;       /* 1 = try requested, fall back to serial */
     char  bindAddr[16];     /* TCP bind address (dotted quad); "" = INADDR_ANY */
+    int   unsafeMode;       /* 1 = /UNSAFE: whitelist enforcement disabled */
+    char  catalogPath[260]; /* /CATALOG:<path> override; "" = default */
 } TransportConfig;
 
 /*

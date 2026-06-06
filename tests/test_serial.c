@@ -17,6 +17,9 @@
 #include "json_parser.h"
 #include "common.h"
 #include "mock_transport.h"
+#include "feat.h"
+#include "catalog.h"
+#include "base64.h"
 
 /* ========================================================
  * Forward declarations for functions in mcp-w32s.c
@@ -35,6 +38,11 @@ extern int ProcessBuffer(LineBuffer *buf, const char *input, int inputLen,
                          Transport *t);
 
 extern void ProcessCommand(const char *line, Transport *t);
+
+/* Phase 4 exec dispatcher hooks (mcp-w32s.c, TEST_BUILD) */
+extern void ExecConfigure(Catalog *cat, int unsafeMode);
+extern void ExecInjectOrphanForTest(HANDLE h, DWORD startTick,
+                                    const char *cmdLine);
 
 /* ========================================================
  * Test helpers
@@ -435,6 +443,226 @@ TEST_CASE(dispatch_empty_line) {
     TEST_ASSERT(1, "empty/null input handled without crash");
 }
 
+
+/* ========================================================
+ * Phase 4 exec integration (full JSON -> ProcessCommand ->
+ * response shape). Obligations (tests/OBLIGATIONS-PHASE4.md):
+ * rule-success.ExecCommand, rule-success.ExecSuccess,
+ * rule-success.ExecRejectedResponse, rule-success.GateMiss,
+ * rule-success.GateBypassedByUnsafeRequest (+unsafe_used field),
+ * rule-success.GateBuiltinHit (auto-route, exec_method shell),
+ * rule-success.ExecRequestBusy / OrphanReaped (busy detail+reap),
+ * rule-success.ExecStdinTooLarge, invariant.ShellRoutingReported.
+ * ======================================================== */
+
+static Catalog *load_test_catalog(void)
+{
+    static const char *candidates[] = {
+        "catalog\\win32-commands.json",
+        "..\\catalog\\win32-commands.json",
+        "..\\..\\catalog\\win32-commands.json"
+    };
+    Catalog *cat;
+    char err[160];
+    int i;
+
+    for (i = 0; i < 3; i++) {
+        cat = NULL;
+        if (CatalogLoad(candidates[i], &cat, err, (int)sizeof(err))) {
+            return cat;
+        }
+    }
+    return NULL;
+}
+
+TEST_CASE(exec_integration_full_response) {
+    /* exec happy path: every Phase 4 response key present.
+     * unsafe:true so the test is catalog-independent; asserts the
+     * unsafe_used response field (decision 6). */
+    MockTransport m;
+    ExecConfigure(NULL, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"e1\","
+                   "\"argv\":[\"cmd\",\"/c\",\"echo\",\"hi\"],"
+                   "\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"id\":\"e1\"") != NULL, "id echoed");
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL, "status ok");
+    TEST_ASSERT(strstr(m.out, "\"exit_code\":0") != NULL, "exit 0");
+    TEST_ASSERT(strstr(m.out, "\"stdout_b64\":\"aGkNCg==\"") != NULL,
+                "stdout 'hi\\r\\n' base64");
+    TEST_ASSERT(strstr(m.out, "\"stderr_b64\":\"\"") != NULL, "stderr empty");
+    TEST_ASSERT(strstr(m.out, "\"stdout_truncated\":false") != NULL,
+                "stdout not truncated");
+    TEST_ASSERT(strstr(m.out, "\"duration_ms\":") != NULL, "duration present");
+    TEST_ASSERT(strstr(m.out, "\"exec_method\":\"direct\"") != NULL,
+                "direct exec");
+    TEST_ASSERT(strstr(m.out, "\"binary_type\":\"pe32\"") != NULL,
+                "cmd.exe is pe32");
+    TEST_ASSERT(strstr(m.out, "\"killed_by\":\"\"") != NULL, "not killed");
+    TEST_ASSERT(strstr(m.out, "\"unsafe_used\":true") != NULL,
+                "unsafe_used reported in the response, not stderr");
+}
+
+TEST_CASE(exec_catalog_miss_rejected) {
+    /* enforced catalog + uncatalogued command -> command not in
+     * catalog (rule GateMiss). */
+    MockTransport m;
+    Catalog *cat;
+    cat = load_test_catalog();
+    TEST_ASSERT(cat != NULL, "test catalog loads");
+    ExecConfigure(cat, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"e2\","
+                   "\"argv\":[\"nonexistent_xyz\"]}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"error\"") != NULL, "error");
+    TEST_ASSERT(strstr(m.out, "command not in catalog") != NULL,
+                "catalog miss reason");
+    ExecConfigure(NULL, 0);
+    CatalogFree(cat);
+}
+
+TEST_CASE(exec_unsafe_bypasses_catalog) {
+    /* per-request unsafe bypasses the whitelist for one exec
+     * (rule GateBypassedByUnsafeRequest). */
+    MockTransport m;
+    Catalog *cat;
+    cat = load_test_catalog();
+    TEST_ASSERT(cat != NULL, "test catalog loads");
+    ExecConfigure(cat, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"e3\","
+                   "\"argv\":[\"cmd\",\"/c\",\"echo\",\"ok\"],"
+                   "\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL,
+                "uncatalogued cmd runs with unsafe");
+    TEST_ASSERT(strstr(m.out, "\"unsafe_used\":true") != NULL,
+                "bypass reported");
+    ExecConfigure(NULL, 0);
+    CatalogFree(cat);
+}
+
+TEST_CASE(exec_builtin_autoroutes_via_shell) {
+    /* catalogued shell built-in auto-routes via the era shell even
+     * with shell:false (decision 3; invariant ShellRoutingReported). */
+    MockTransport m;
+    Catalog *cat;
+    cat = load_test_catalog();
+    TEST_ASSERT(cat != NULL, "test catalog loads");
+    ExecConfigure(cat, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"e4\","
+                   "\"argv\":[\"ver\"],\"shell\":false}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL, "ver runs");
+    TEST_ASSERT(strstr(m.out, "\"exec_method\":\"shell\"") != NULL,
+                "exec_method reports shell routing");
+    TEST_ASSERT(strstr(m.out, "\"binary_type\":\"shell-builtin\"") != NULL,
+                "builtin classified without file read");
+    ExecConfigure(NULL, 0);
+    CatalogFree(cat);
+}
+
+TEST_CASE(exec_busy_carries_detail_then_reaps) {
+    /* still_active orphan blocks exec AND ptyExec with informative
+     * busy; once the orphan exits the next request proceeds
+     * (rules ExecRequestBusy / OrphanReaped, decisions 9+10). */
+    MockTransport m;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    static char childCmd[64];
+    int ok;
+
+    ExecConfigure(NULL, 0);
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    lstrcpyA(childCmd, "cmd /c ping -n 30 127.0.0.1");
+    ok = CreateProcessA(NULL, childCmd, NULL, NULL, FALSE, 0,
+                        NULL, NULL, &si, &pi);
+    TEST_ASSERT(ok, "long-running child spawns");
+    CloseHandle(pi.hThread);
+    ExecInjectOrphanForTest(pi.hProcess, GetTickCount(),
+                            "legacy16.exe /batch");
+
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"e5\","
+                   "\"argv\":[\"cmd\",\"/c\",\"echo\",\"x\"],"
+                   "\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"error\":\"busy\"") != NULL, "busy");
+    TEST_ASSERT(strstr(m.out, "\"blocking_cmd_line\":\"legacy16.exe /batch\"")
+                != NULL, "busy carries the blocking cmd_line");
+    TEST_ASSERT(strstr(m.out, "\"elapsed_ms\":") != NULL,
+                "busy carries elapsed ms");
+
+    /* ptyExec shares the busy domain (decision 10) */
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"ptyExec\",\"id\":\"e6\","
+                   "\"argv\":[\"cmd\"],\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"error\":\"busy\"") != NULL,
+                "ptyExec blocked by the same orphan");
+
+    /* Reap: kill the orphan; the next request proceeds. */
+    TerminateProcess(pi.hProcess, 0);
+    WaitForSingleObject(pi.hProcess, 5000);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"e7\","
+                   "\"argv\":[\"cmd\",\"/c\",\"echo\",\"y\"],"
+                   "\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL,
+                "request proceeds after implicit reap");
+}
+
+TEST_CASE(exec_stdin_too_large_rejected) {
+    /* decoded stdin above the 4096 one-pipe-buffer cap is an error,
+     * not a clamp (rule ExecStdinTooLarge, config stdin_max). */
+    MockTransport m;
+    static unsigned char raw[4097];
+    static char b64[8192];
+    static char json[16384];
+    int i;
+    for (i = 0; i < 4097; i++) {
+        raw[i] = (unsigned char)'a';
+    }
+    TEST_ASSERT(Base64Encode(raw, 4097, b64, (int)sizeof(b64)) > 0,
+                "encode oversize stdin");
+    ExecConfigure(NULL, 0);
+    json[0] = '\0';
+    lstrcatA(json, "{\"cmd\":\"exec\",\"id\":\"e8\","
+                   "\"argv\":[\"cmd\",\"/c\",\"more\"],"
+                   "\"unsafe\":true,\"stdin_b64\":\"");
+    lstrcatA(json, b64);
+    lstrcatA(json, "\"}");
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand(json, &m.t);
+    TEST_ASSERT(strstr(m.out, "stdin too large") != NULL,
+                "oversize stdin rejected");
+}
+
+TEST_CASE(exec_invalid_stdin_b64_rejected) {
+    MockTransport m;
+    ExecConfigure(NULL, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"e9\","
+                   "\"argv\":[\"cmd\"],\"unsafe\":true,"
+                   "\"stdin_b64\":\"!!notb64!!\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "invalid base64") != NULL,
+                "invalid stdin_b64 rejected");
+}
+
+TEST_CASE(ptyexec_capability_absent_error) {
+    /* ptyExec on a host without ConPTY -> explicit error
+     * (rule PtyUnavailable; rule PtyExecCommand dispatches). */
+    MockTransport m;
+    FeatForceFallback(FEAT_FORCE_NO_PTY);
+    ExecConfigure(NULL, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"ptyExec\",\"id\":\"p1\","
+                   "\"argv\":[\"cmd\"],\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "pty not available on this Windows") != NULL,
+                "capability-absent error");
+    FeatInit(); /* restore */
+}
+
 /* ========================================================
  * Main - Run all tests
  * ======================================================== */
@@ -486,6 +714,17 @@ int main(void)
     RUN_TEST(dispatch_malformed_json);
     RUN_TEST(dispatch_known_commands);
     RUN_TEST(dispatch_empty_line);
+
+    printf("\nPhase 4 exec integration:\n");
+    FeatInit();
+    RUN_TEST(exec_integration_full_response);
+    RUN_TEST(exec_catalog_miss_rejected);
+    RUN_TEST(exec_unsafe_bypasses_catalog);
+    RUN_TEST(exec_builtin_autoroutes_via_shell);
+    RUN_TEST(exec_busy_carries_detail_then_reaps);
+    RUN_TEST(exec_stdin_too_large_rejected);
+    RUN_TEST(exec_invalid_stdin_b64_rejected);
+    RUN_TEST(ptyexec_capability_absent_error);
 
     print_test_summary();
     return g_tests_failed;

@@ -47,4 +47,11 @@ int BuildJsonResponse(const char *id, const char *status,
                       const char *key, const char *value,
                       char *json, int json_size);
 
+/*
+ * JsonEscape - Escape a string for inclusion as a JSON value.
+ * Returns escaped length, or -1 if dst is too small. (Public wrapper
+ * for builders of multi-key responses, e.g. the exec dispatcher.)
+ */
+int JsonEscape(const char *src, char *dst, int dst_size);
+
 #endif /* JSON_PARSER_H */

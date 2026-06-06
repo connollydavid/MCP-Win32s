@@ -122,24 +122,38 @@ static int json_escape(const char *src, char *dst, int dst_size)
     return out;
 }
 
+int JsonEscape(const char *src, char *dst, int dst_size)
+{
+    return json_escape(src, dst, dst_size);
+}
+
 /*
- * assign_field - Copy a value into the appropriate JsonCommand field
- * based on the key name. Unknown keys are silently ignored.
+ * copy_key - Null-terminate a key into a small buffer for comparison.
+ */
+static void copy_key(char *key_buf, int key_buf_size,
+                     const char *key, int key_len)
+{
+    int copy_len;
+
+    copy_len = key_len;
+    if (copy_len >= key_buf_size) {
+        copy_len = key_buf_size - 1;
+    }
+    memcpy(key_buf, key, copy_len);
+    key_buf[copy_len] = '\0';
+}
+
+/*
+ * assign_field - Copy a string value into the appropriate JsonCommand
+ * field based on the key name. Unknown keys are silently ignored.
  */
 static void assign_field(JsonCommand *cmd,
                          const char *key, int key_len,
                          const char *val, int val_len)
 {
     char key_buf[64];
-    int copy_len;
 
-    /* Null-terminate the key for comparison */
-    copy_len = key_len;
-    if (copy_len >= (int)sizeof(key_buf)) {
-        copy_len = (int)sizeof(key_buf) - 1;
-    }
-    memcpy(key_buf, key, copy_len);
-    key_buf[copy_len] = '\0';
+    copy_key(key_buf, (int)sizeof(key_buf), key, key_len);
 
     if (strcmp(key_buf, "cmd") == 0) {
         json_unescape(val, val_len, cmd->cmd, MCP_MAX_CMD);
@@ -151,6 +165,54 @@ static void assign_field(JsonCommand *cmd,
         json_unescape(val, val_len, cmd->line, MCP_MAX_LINE);
     } else if (strcmp(key_buf, "data") == 0) {
         json_unescape(val, val_len, cmd->data, MCP_MAX_DATA);
+    } else if (strcmp(key_buf, "cwd") == 0) {
+        json_unescape(val, val_len, cmd->cwd, MCP_MAX_PATH_LEN);
+    } else if (strcmp(key_buf, "stdin_b64") == 0) {
+        json_unescape(val, val_len, cmd->stdin_b64, MCP_MAX_STDIN_B64);
+    }
+    /* Unknown keys are silently ignored */
+}
+
+/*
+ * assign_int_field - Store a parsed integer value by key name.
+ */
+static void assign_int_field(JsonCommand *cmd,
+                             const char *key, int key_len, int value)
+{
+    char key_buf[64];
+
+    copy_key(key_buf, (int)sizeof(key_buf), key, key_len);
+
+    if (strcmp(key_buf, "timeout_ms") == 0) {
+        cmd->timeout_ms = value;
+    } else if (strcmp(key_buf, "max_output") == 0) {
+        cmd->max_output = value;
+    } else if (strcmp(key_buf, "mem_cap_bytes") == 0) {
+        cmd->mem_cap_bytes = value;
+    } else if (strcmp(key_buf, "cpu_time_ms") == 0) {
+        cmd->cpu_time_ms = value;
+    } else if (strcmp(key_buf, "cols") == 0) {
+        cmd->cols = value;
+    } else if (strcmp(key_buf, "rows") == 0) {
+        cmd->rows = value;
+    }
+    /* Unknown keys are silently ignored */
+}
+
+/*
+ * assign_bool_field - Store a parsed boolean value by key name.
+ */
+static void assign_bool_field(JsonCommand *cmd,
+                              const char *key, int key_len, int value)
+{
+    char key_buf[64];
+
+    copy_key(key_buf, (int)sizeof(key_buf), key, key_len);
+
+    if (strcmp(key_buf, "shell") == 0) {
+        cmd->shell_flag = value;
+    } else if (strcmp(key_buf, "unsafe") == 0) {
+        cmd->unsafe_flag = value;
     }
     /* Unknown keys are silently ignored */
 }
@@ -229,31 +291,117 @@ int ParseJsonCommand(const char *json, JsonCommand *out)
             p++;
         }
 
-        /* Expect opening quote for value */
-        if (*p != '"') {
-            return 0;
-        }
-        p++;
-        val_start = p;
+        /* Dispatch on value type: string, array, number, boolean, null */
+        if (*p == '"') {
+            p++;
+            val_start = p;
 
-        /* Find closing quote for value, handling escapes */
-        while (*p != '\0') {
-            if (*p == '\\' && *(p + 1) != '\0') {
-                p += 2; /* Skip escaped character */
-            } else if (*p == '"') {
-                break;
-            } else {
+            /* Find closing quote for value, handling escapes */
+            while (*p != '\0') {
+                if (*p == '\\' && *(p + 1) != '\0') {
+                    p += 2; /* Skip escaped character */
+                } else if (*p == '"') {
+                    break;
+                } else {
+                    p++;
+                }
+            }
+            if (*p != '"') {
+                return 0;
+            }
+            val_len = (int)(p - val_start);
+            p++;
+
+            assign_field(out, key_start, key_len, val_start, val_len);
+        } else if (*p == '[') {
+            /* Array of strings. Only "argv" is stored; arrays under
+             * other keys are scanned and ignored (unknown-key
+             * tolerance). Non-string elements are a parse error. */
+            char key_buf[64];
+            int is_argv;
+
+            copy_key(key_buf, (int)sizeof(key_buf), key_start, key_len);
+            is_argv = (strcmp(key_buf, "argv") == 0);
+            p++;
+
+            for (;;) {
+                while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+                    p++;
+                }
+                if (*p == ']') {
+                    p++;
+                    break;
+                }
+                if (*p == ',') {
+                    p++;
+                    continue;
+                }
+                if (*p != '"') {
+                    return 0;
+                }
+                p++;
+                val_start = p;
+                while (*p != '\0') {
+                    if (*p == '\\' && *(p + 1) != '\0') {
+                        p += 2;
+                    } else if (*p == '"') {
+                        break;
+                    } else {
+                        p++;
+                    }
+                }
+                if (*p != '"') {
+                    return 0;
+                }
+                val_len = (int)(p - val_start);
+                p++;
+
+                if (is_argv && out->argv_count < MCP_MAX_ARGV) {
+                    json_unescape(val_start, val_len,
+                                  out->argv[out->argv_count],
+                                  MCP_MAX_ARG_LEN);
+                    out->argv_count++;
+                }
+                /* Elements beyond MCP_MAX_ARGV are dropped silently;
+                 * the dispatcher rejects oversized argv via count. */
+            }
+        } else if (*p == '-' || (*p >= '0' && *p <= '9')) {
+            /* Integer value (no float support - FP is banned) */
+            int sign;
+            long acc;
+
+            sign = 1;
+            if (*p == '-') {
+                sign = -1;
                 p++;
             }
-        }
-        if (*p != '"') {
+            if (*p < '0' || *p > '9') {
+                return 0;
+            }
+            acc = 0;
+            while (*p >= '0' && *p <= '9') {
+                if (acc < 214748364L) {
+                    acc = acc * 10 + (*p - '0');
+                }
+                p++;
+            }
+            if (*p == '.') {
+                /* Fractional values are not part of the protocol */
+                return 0;
+            }
+            assign_int_field(out, key_start, key_len, (int)(sign * acc));
+        } else if (strncmp(p, "true", 4) == 0) {
+            p += 4;
+            assign_bool_field(out, key_start, key_len, 1);
+        } else if (strncmp(p, "false", 5) == 0) {
+            p += 5;
+            assign_bool_field(out, key_start, key_len, 0);
+        } else if (strncmp(p, "null", 4) == 0) {
+            p += 4;
+            /* null leaves the field zeroed */
+        } else {
             return 0;
         }
-        val_len = (int)(p - val_start);
-        p++;
-
-        /* Assign to the appropriate field */
-        assign_field(out, key_start, key_len, val_start, val_len);
     }
 
     /* Reached end of string without closing brace */
@@ -290,7 +438,9 @@ int BuildJsonResponse(const char *id, const char *status,
                       const char *key, const char *value,
                       char *json, int json_size)
 {
-    char escaped_value[MCP_MAX_RESPONSE];
+    /* Static: 256KB would overflow/probe the stack; server is
+     * single-threaded by hard constraint (Win32s). */
+    static char escaped_value[MCP_MAX_RESPONSE];
     int pos;
 
     if (json == NULL || json_size < 1) {
