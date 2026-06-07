@@ -19,10 +19,13 @@ use "./process-ops.allium" as procops
 -- Exec-only fields (argv, cwd, shell, unsafe, timeout_ms, stdin_size,
 -- max_output) are parsed for every command but only consumed by the
 -- exec/ptyExec path; stdin_size is the decoded byte count of stdin_b64.
+-- dest is consumed only by the copy/move path (the destination path;
+-- the source rides in path).
 entity Command {
     cmd: String
     id: String
     path: String
+    dest: String
     line: String
     data: String
     argv: List<String>
@@ -68,13 +71,13 @@ rule CommandCreated {
 
 rule CommandDispatch {
     when: cmd: Command.status becomes pending
-    requires: cmd.cmd in {echo, read, write, list, delete, exec, `ptyExec`}
+    requires: cmd.cmd in {echo, read, write, list, delete, copy, move, mkdir, rmdir, exec, `ptyExec`}
     ensures: cmd.status = processed
 }
 
 rule CommandUnknown {
     when: cmd: Command.status becomes pending
-    requires: cmd.cmd not in {echo, read, write, list, delete, exec, `ptyExec`}
+    requires: cmd.cmd not in {echo, read, write, list, delete, copy, move, mkdir, rmdir, exec, `ptyExec`}
     ensures: cmd.status = error
     ensures: Response.created(
         command: cmd,
@@ -219,6 +222,140 @@ rule DeleteSuccess {
 
 rule DeleteError {
     when: result: fileops/FileDeleteResult.status becomes error
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule CopyCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = copy
+    ensures: fileops/FileCopyResult.created(
+        source: fileops/File(path: cmd.path),
+        dest: fileops/File(path: cmd.dest),
+        request_id: cmd.id
+    )
+}
+
+rule CopySuccess {
+    when: result: fileops/FileCopyResult.status becomes ok
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: ok,
+        key: "message",
+        value: "copied"
+    )
+}
+
+rule CopyError {
+    when: result: fileops/FileCopyResult.status becomes error
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule MoveCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = move
+    ensures: fileops/FileMoveResult.created(
+        source: fileops/File(path: cmd.path),
+        dest: fileops/File(path: cmd.dest),
+        request_id: cmd.id
+    )
+}
+
+rule MoveSuccess {
+    when: result: fileops/FileMoveResult.status becomes ok
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: ok,
+        key: "message",
+        value: "moved"
+    )
+}
+
+rule MoveError {
+    when: result: fileops/FileMoveResult.status becomes error
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule MkdirCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = mkdir
+    ensures: fileops/MakeDirResult.created(
+        directory: fileops/Directory(path: cmd.path),
+        request_id: cmd.id
+    )
+}
+
+rule MkdirSuccess {
+    when: result: fileops/MakeDirResult.status becomes ok
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: ok,
+        key: "message",
+        value: "created"
+    )
+}
+
+rule MkdirError {
+    when: result: fileops/MakeDirResult.status becomes error
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: error,
+        key: "error",
+        value: result.error_reason
+    )
+}
+
+rule RmdirCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = rmdir
+    ensures: fileops/RemoveDirResult.created(
+        directory: fileops/Directory(path: cmd.path),
+        request_id: cmd.id
+    )
+}
+
+rule RmdirSuccess {
+    when: result: fileops/RemoveDirResult.status becomes ok
+    let cmd = Command{id: result.request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: result.request_id,
+        status: ok,
+        key: "message",
+        value: "removed"
+    )
+}
+
+rule RmdirError {
+    when: result: fileops/RemoveDirResult.status becomes error
     let cmd = Command{id: result.request_id}
     ensures: Response.created(
         command: cmd,

@@ -1,7 +1,8 @@
 //! A mock MCP-Win32s device for conformance/integration runs: listens on
-//! TCP, sends the ready message, then answers `echo` (and replies a
-//! recoverable error to any other command). Models the device side of
-//! specs/wire-contract.allium. Usage: `mock_device [HOST:PORT]`.
+//! TCP, sends the ready message, then answers `echo` and the eight file
+//! commands (and replies a recoverable error to any other command). Models
+//! the device side of specs/wire-contract.allium.
+//! Usage: `mock_device [HOST:PORT]`.
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -36,11 +37,23 @@ async fn handle(sock: tokio::net::TcpStream) -> std::io::Result<()> {
         };
         let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
         let cmd = v.get("cmd").and_then(|x| x.as_str()).unwrap_or("");
-        let resp = if cmd == "echo" {
-            let data = v.get("line").and_then(|x| x.as_str()).unwrap_or("");
-            serde_json::json!({"id": id, "status": "ok", "data": data})
-        } else {
-            serde_json::json!({"id": id, "status": "error", "error": "unknown command"})
+        let resp = match cmd {
+            "echo" => {
+                let data = v.get("line").and_then(|x| x.as_str()).unwrap_or("");
+                serde_json::json!({"id": id, "status": "ok", "data": data})
+            }
+            // The eight file commands ack with their device ok message, so a
+            // conformance tools/call against this mock succeeds (the device
+            // round-trip is exercised; no real filesystem is touched).
+            "read" => serde_json::json!({"id": id, "status": "ok", "data": ""}),
+            "write" => serde_json::json!({"id": id, "status": "ok", "message": "written"}),
+            "list" => serde_json::json!({"id": id, "status": "ok", "entries": []}),
+            "delete" => serde_json::json!({"id": id, "status": "ok", "message": "deleted"}),
+            "copy" => serde_json::json!({"id": id, "status": "ok", "message": "copied"}),
+            "move" => serde_json::json!({"id": id, "status": "ok", "message": "moved"}),
+            "mkdir" => serde_json::json!({"id": id, "status": "ok", "message": "created"}),
+            "rmdir" => serde_json::json!({"id": id, "status": "ok", "message": "removed"}),
+            _ => serde_json::json!({"id": id, "status": "error", "error": "unknown command"}),
         };
         w.write_all(resp.to_string().as_bytes()).await?;
         w.write_all(b"\n").await?;

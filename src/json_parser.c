@@ -161,6 +161,8 @@ static void assign_field(JsonCommand *cmd,
         json_unescape(val, val_len, cmd->id, MCP_MAX_ID);
     } else if (strcmp(key_buf, "path") == 0) {
         json_unescape(val, val_len, cmd->path, MCP_MAX_PATH_LEN);
+    } else if (strcmp(key_buf, "dest") == 0) {
+        json_unescape(val, val_len, cmd->dest, MCP_MAX_PATH_LEN);
     } else if (strcmp(key_buf, "line") == 0) {
         json_unescape(val, val_len, cmd->line, MCP_MAX_LINE);
     } else if (strcmp(key_buf, "data") == 0) {

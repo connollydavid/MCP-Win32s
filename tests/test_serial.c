@@ -433,6 +433,12 @@ TEST_CASE(dispatch_known_commands) {
                    "\"data\":\"AA==\"}", &m.t);
     ProcessCommand("{\"cmd\":\"list\",\"id\":\"4\",\"path\":\"C:\\\\\"}", &m.t);
     ProcessCommand("{\"cmd\":\"delete\",\"id\":\"5\",\"path\":\"C:\\\\old\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"copy\",\"id\":\"6\",\"path\":\"C:\\\\a\","
+                   "\"dest\":\"C:\\\\b\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"move\",\"id\":\"7\",\"path\":\"C:\\\\a\","
+                   "\"dest\":\"C:\\\\b\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"mkdir\",\"id\":\"8\",\"path\":\"C:\\\\d\"}", &m.t);
+    ProcessCommand("{\"cmd\":\"rmdir\",\"id\":\"9\",\"path\":\"C:\\\\d\"}", &m.t);
     TEST_ASSERT(1, "all known commands handled without crash");
 }
 
@@ -441,6 +447,145 @@ TEST_CASE(dispatch_empty_line) {
     ProcessCommand("", NULL);
     ProcessCommand(NULL, NULL);
     TEST_ASSERT(1, "empty/null input handled without crash");
+}
+
+/* ========================================================
+ * File-management wire round-trips (full JSON -> ProcessCommand
+ * -> response envelope). Obligations (tests/OBLIGATIONS-5.1.md):
+ * rule-success.{Copy,Move,Mkdir,Rmdir}Command (+ .failure.1 and
+ * rule-entity-creation.*.1 - dispatch reaches the handler, not
+ * "unknown command"), rule-success.{Copy,Move,Mkdir,Rmdir}Success
+ * (the copied/moved/created/removed envelopes),
+ * rule-success.{Copy,Move,Mkdir,Rmdir}Error (representative pinned
+ * reasons riding the error envelope).
+ * ======================================================== */
+
+TEST_CASE(dispatch_copy_ok_envelope) {
+    MockTransport m;
+    char out[512];
+    DeleteFileA("ser51_src.txt");
+    DeleteFileA("ser51_dst.txt");
+    run_command("{\"cmd\":\"write\",\"id\":\"w\",\"path\":\"ser51_src.txt\","
+                "\"data\":\"aGVsbG8=\"}", &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"ok\"") != NULL, "fixture written");
+    run_command("{\"cmd\":\"copy\",\"id\":\"c1\",\"path\":\"ser51_src.txt\","
+                "\"dest\":\"ser51_dst.txt\"}", &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"id\":\"c1\"") != NULL, "id correlated");
+    TEST_ASSERT(strstr(out, "\"status\":\"ok\"") != NULL, "status ok");
+    TEST_ASSERT(strstr(out, "\"message\":\"copied\"") != NULL, "copied envelope");
+    run_command("{\"cmd\":\"read\",\"id\":\"r\",\"path\":\"ser51_dst.txt\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "aGVsbG8=") != NULL, "dest carries source content");
+    DeleteFileA("ser51_src.txt");
+    DeleteFileA("ser51_dst.txt");
+}
+
+TEST_CASE(dispatch_copy_dest_exists_envelope) {
+    /* The fail-if-exists pin observed at the wire. */
+    MockTransport m;
+    char out[512];
+    run_command("{\"cmd\":\"write\",\"id\":\"w1\",\"path\":\"ser51_src.txt\","
+                "\"data\":\"aGVsbG8=\"}", &m, out, (int)sizeof(out));
+    run_command("{\"cmd\":\"write\",\"id\":\"w2\",\"path\":\"ser51_dst.txt\","
+                "\"data\":\"d29ybGQ=\"}", &m, out, (int)sizeof(out));
+    run_command("{\"cmd\":\"copy\",\"id\":\"c2\",\"path\":\"ser51_src.txt\","
+                "\"dest\":\"ser51_dst.txt\"}", &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"error\"") != NULL, "error status");
+    TEST_ASSERT(strstr(out, "file exists") != NULL, "file exists reason");
+    run_command("{\"cmd\":\"read\",\"id\":\"r2\",\"path\":\"ser51_dst.txt\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "d29ybGQ=") != NULL, "dest content untouched");
+    DeleteFileA("ser51_src.txt");
+    DeleteFileA("ser51_dst.txt");
+}
+
+TEST_CASE(dispatch_move_ok_envelope) {
+    MockTransport m;
+    char out[512];
+    DeleteFileA("ser51_mv.txt");
+    DeleteFileA("ser51_mvd.txt");
+    run_command("{\"cmd\":\"write\",\"id\":\"w\",\"path\":\"ser51_mv.txt\","
+                "\"data\":\"aGVsbG8=\"}", &m, out, (int)sizeof(out));
+    run_command("{\"cmd\":\"move\",\"id\":\"m1\",\"path\":\"ser51_mv.txt\","
+                "\"dest\":\"ser51_mvd.txt\"}", &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"id\":\"m1\"") != NULL, "id correlated");
+    TEST_ASSERT(strstr(out, "\"message\":\"moved\"") != NULL, "moved envelope");
+    run_command("{\"cmd\":\"read\",\"id\":\"r\",\"path\":\"ser51_mv.txt\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"error\"") != NULL, "source gone");
+    run_command("{\"cmd\":\"read\",\"id\":\"r2\",\"path\":\"ser51_mvd.txt\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "aGVsbG8=") != NULL, "dest carries content");
+    DeleteFileA("ser51_mvd.txt");
+}
+
+TEST_CASE(dispatch_move_missing_envelope) {
+    MockTransport m;
+    char out[512];
+    DeleteFileA("ser51_none.txt");
+    run_command("{\"cmd\":\"move\",\"id\":\"m2\",\"path\":\"ser51_none.txt\","
+                "\"dest\":\"ser51_x.txt\"}", &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"error\"") != NULL, "error status");
+    TEST_ASSERT(strstr(out, "file not found") != NULL, "file not found reason");
+}
+
+TEST_CASE(dispatch_mkdir_ok_envelope) {
+    MockTransport m;
+    char out[512];
+    RemoveDirectoryA("ser51_dir");
+    run_command("{\"cmd\":\"mkdir\",\"id\":\"k1\",\"path\":\"ser51_dir\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"id\":\"k1\"") != NULL, "id correlated");
+    TEST_ASSERT(strstr(out, "\"message\":\"created\"") != NULL, "created envelope");
+    RemoveDirectoryA("ser51_dir");
+}
+
+TEST_CASE(dispatch_mkdir_exists_envelope) {
+    MockTransport m;
+    char out[512];
+    RemoveDirectoryA("ser51_dir");
+    run_command("{\"cmd\":\"mkdir\",\"id\":\"k1\",\"path\":\"ser51_dir\"}",
+                &m, out, (int)sizeof(out));
+    run_command("{\"cmd\":\"mkdir\",\"id\":\"k2\",\"path\":\"ser51_dir\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"error\"") != NULL, "error status");
+    TEST_ASSERT(strstr(out, "directory exists") != NULL, "directory exists reason");
+    RemoveDirectoryA("ser51_dir");
+}
+
+TEST_CASE(dispatch_rmdir_ok_envelope) {
+    MockTransport m;
+    char out[512];
+    run_command("{\"cmd\":\"mkdir\",\"id\":\"k\",\"path\":\"ser51_rd\"}",
+                &m, out, (int)sizeof(out));
+    run_command("{\"cmd\":\"rmdir\",\"id\":\"d1\",\"path\":\"ser51_rd\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"id\":\"d1\"") != NULL, "id correlated");
+    TEST_ASSERT(strstr(out, "\"message\":\"removed\"") != NULL, "removed envelope");
+    run_command("{\"cmd\":\"rmdir\",\"id\":\"d2\",\"path\":\"ser51_rd\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "directory not found") != NULL,
+                "second rmdir reports directory not found");
+}
+
+TEST_CASE(dispatch_rmdir_nonempty_envelope) {
+    /* The non-empty refusal pin observed at the wire. */
+    MockTransport m;
+    char out[512];
+    run_command("{\"cmd\":\"mkdir\",\"id\":\"k\",\"path\":\"ser51_ne\"}",
+                &m, out, (int)sizeof(out));
+    run_command("{\"cmd\":\"write\",\"id\":\"w\",\"path\":\"ser51_ne\\\\f.txt\","
+                "\"data\":\"AA==\"}", &m, out, (int)sizeof(out));
+    run_command("{\"cmd\":\"rmdir\",\"id\":\"d3\",\"path\":\"ser51_ne\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"error\"") != NULL, "error status");
+    TEST_ASSERT(strstr(out, "directory not empty") != NULL,
+                "directory not empty reason");
+    run_command("{\"cmd\":\"read\",\"id\":\"r\",\"path\":\"ser51_ne\\\\f.txt\"}",
+                &m, out, (int)sizeof(out));
+    TEST_ASSERT(strstr(out, "\"status\":\"ok\"") != NULL, "contents untouched");
+    DeleteFileA("ser51_ne\\f.txt");
+    RemoveDirectoryA("ser51_ne");
 }
 
 
@@ -765,6 +910,14 @@ int main(void)
     RUN_TEST(dispatch_malformed_json);
     RUN_TEST(dispatch_known_commands);
     RUN_TEST(dispatch_empty_line);
+    RUN_TEST(dispatch_copy_ok_envelope);
+    RUN_TEST(dispatch_copy_dest_exists_envelope);
+    RUN_TEST(dispatch_move_ok_envelope);
+    RUN_TEST(dispatch_move_missing_envelope);
+    RUN_TEST(dispatch_mkdir_ok_envelope);
+    RUN_TEST(dispatch_mkdir_exists_envelope);
+    RUN_TEST(dispatch_rmdir_ok_envelope);
+    RUN_TEST(dispatch_rmdir_nonempty_envelope);
 
     printf("\nPhase 4 exec integration:\n");
     FeatInit();

@@ -28,15 +28,21 @@
  *   {"cmd":"write","id":"789","path":"C:\\out.c","data":"<base64>"}
  *   {"cmd":"list","id":"012","path":"C:\\PROJECTS"}
  *   {"cmd":"delete","id":"345","path":"C:\\old.obj"}
+ *   {"cmd":"copy","id":"678","path":"C:\\a.txt","dest":"C:\\b.txt"}
+ *   {"cmd":"move","id":"901","path":"C:\\a.txt","dest":"C:\\b.txt"}
+ *   {"cmd":"mkdir","id":"234","path":"C:\\NEWDIR"}
+ *   {"cmd":"rmdir","id":"567","path":"C:\\OLDDIR"}
  *
  * Fields not present in the JSON are left zeroed. The exec-only fields
  * (argv..rows) are parsed for every command but only consumed by the
- * exec/ptyExec path (spec: mcp-protocol.allium entity Command).
+ * exec/ptyExec path (spec: mcp-protocol.allium entity Command); dest is
+ * consumed only by the copy/move path (the source rides in path).
  */
 typedef struct {
     char cmd[MCP_MAX_CMD];           /* Command: "exec","read","write","list","delete" */
     char id[MCP_MAX_ID];            /* Request correlation ID */
-    char path[MCP_MAX_PATH_LEN];    /* File path (ANSI) */
+    char path[MCP_MAX_PATH_LEN];    /* File path (ANSI); copy/move source */
+    char dest[MCP_MAX_PATH_LEN];    /* copy/move destination path (ANSI) */
     char line[MCP_MAX_LINE];        /* Command line for exec (legacy; argv wins) */
     char data[MCP_MAX_DATA];        /* Base64 encoded file data */
 

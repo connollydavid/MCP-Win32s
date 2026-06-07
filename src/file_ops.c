@@ -304,3 +304,105 @@ int FileOpDelete(const char *path, char *errMsg, int errSize)
 
     return 1;
 }
+
+int FileOpCopy(const char *src, const char *dest, char *errMsg, int errSize)
+{
+    DWORD lastErr;
+
+    if (src == NULL || dest == NULL) {
+        err_set(errMsg, errSize, "null parameter");
+        return 0;
+    }
+
+    /* TRUE = fail if dest exists: deliberately never overwrite. */
+    if (CopyFileA(src, dest, TRUE)) {
+        return 1;
+    }
+
+    lastErr = GetLastError();
+    if (lastErr == ERROR_FILE_NOT_FOUND || lastErr == ERROR_PATH_NOT_FOUND) {
+        err_set(errMsg, errSize, "file not found");
+    } else if (lastErr == ERROR_FILE_EXISTS ||
+               lastErr == ERROR_ALREADY_EXISTS) {
+        err_set(errMsg, errSize, "file exists");
+    } else {
+        err_set(errMsg, errSize, "copy failed");
+    }
+    return 0;
+}
+
+int FileOpMove(const char *src, const char *dest, char *errMsg, int errSize)
+{
+    DWORD lastErr;
+
+    if (src == NULL || dest == NULL) {
+        err_set(errMsg, errSize, "null parameter");
+        return 0;
+    }
+
+    /* MoveFileA fails if dest exists (no overwrite flag). */
+    if (MoveFileA(src, dest)) {
+        return 1;
+    }
+
+    lastErr = GetLastError();
+    if (lastErr == ERROR_FILE_NOT_FOUND || lastErr == ERROR_PATH_NOT_FOUND) {
+        err_set(errMsg, errSize, "file not found");
+    } else if (lastErr == ERROR_ALREADY_EXISTS ||
+               lastErr == ERROR_FILE_EXISTS) {
+        err_set(errMsg, errSize, "file exists");
+    } else {
+        err_set(errMsg, errSize, "move failed");
+    }
+    return 0;
+}
+
+int FileOpMakeDir(const char *path, char *errMsg, int errSize)
+{
+    DWORD lastErr;
+
+    if (path == NULL) {
+        err_set(errMsg, errSize, "null parameter");
+        return 0;
+    }
+
+    /* Single level only: a missing parent fails, never mkdir -p. */
+    if (CreateDirectoryA(path, NULL)) {
+        return 1;
+    }
+
+    lastErr = GetLastError();
+    if (lastErr == ERROR_ALREADY_EXISTS) {
+        err_set(errMsg, errSize, "directory exists");
+    } else if (lastErr == ERROR_PATH_NOT_FOUND) {
+        err_set(errMsg, errSize, "path not found");
+    } else {
+        err_set(errMsg, errSize, "mkdir failed");
+    }
+    return 0;
+}
+
+int FileOpRemoveDir(const char *path, char *errMsg, int errSize)
+{
+    DWORD lastErr;
+
+    if (path == NULL) {
+        err_set(errMsg, errSize, "null parameter");
+        return 0;
+    }
+
+    /* Refuses non-empty directories: no recursive delete. */
+    if (RemoveDirectoryA(path)) {
+        return 1;
+    }
+
+    lastErr = GetLastError();
+    if (lastErr == ERROR_FILE_NOT_FOUND || lastErr == ERROR_PATH_NOT_FOUND) {
+        err_set(errMsg, errSize, "directory not found");
+    } else if (lastErr == ERROR_DIR_NOT_EMPTY) {
+        err_set(errMsg, errSize, "directory not empty");
+    } else {
+        err_set(errMsg, errSize, "rmdir failed");
+    }
+    return 0;
+}
