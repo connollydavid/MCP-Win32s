@@ -1,5 +1,5 @@
 /*
- * mem_ops.h - Tiered, user-mode memory peek/poke (Phase 5, work-item 5.3)
+ * mem_ops.h - Tiered, user-mode memory peek/poke (work-item 5.3)
  *
  * Spec: memory-ops.allium. The device's highest-stakes capability: bounded,
  * consented, logged ring-3 memory read/write. We use exactly what each OS

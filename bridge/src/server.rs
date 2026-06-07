@@ -74,6 +74,60 @@ pub struct SourceDestParams {
     pub dest: String,
 }
 
+/// Parameters for `win32_spawn_retain`: launch and retain a process as a
+/// memory target. `argv[0]` must be a catalogued command (the device
+/// re-gates it — SpawnRetainCommandIsCatalogued).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SpawnRetainParams {
+    /// The command to launch, as an argv array. `argv[0]` is the catalogued
+    /// command name; the rest are its arguments.
+    pub argv: Vec<String>,
+    /// Working directory for the child, or omit to inherit the device's.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+/// Parameters for `win32_peek`: read memory.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PeekParams {
+    /// The spawn-retain token (from `win32_spawn_retain`) naming the process
+    /// to read. Required on the NT+ `process` tier; omit on the pre-NT
+    /// `arena`/`shared_vm` tiers, which read the shared address space directly.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// The address to read, as a string: hex (`0x...`) or decimal, in
+    /// `[0, 0xFFFFFFFF]` (a 32-bit address does not fit a JSON integer).
+    pub addr: String,
+    /// The number of bytes to read (at most 65536).
+    pub len: u32,
+}
+
+/// Parameters for `win32_poke`: write memory (destructive; gated).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PokeParams {
+    /// The spawn-retain token naming the process to write. Required on the
+    /// NT+ `process` tier; omit on the pre-NT tiers.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// The address to write, as a string: hex (`0x...`) or decimal.
+    pub addr: String,
+    /// The bytes to write, base64-encoded. The write length is the decoded
+    /// byte count (at most 65536).
+    pub data: String,
+}
+
+/// Parameters for the token-only memory tools (`win32_terminate`,
+/// `win32_release`).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct TokenParams {
+    /// The spawn-retain token to act on (from `win32_spawn_retain`).
+    pub token: String,
+}
+
 struct Inner {
     caps: Capabilities,
     device: Mutex<Box<dyn Device>>,
@@ -472,6 +526,108 @@ impl Bridge {
         Parameters(p): Parameters<PathParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("rmdir", self.next_id()).with("path", Value::String(p.path));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    // ----- memory tools (5.3) -------------------------------------------
+    // Each is a 1:1 relay to a device wire command (MemoryToolsRegistered).
+    // They are gated by GATED_TOOLS: spawn_retain/peek/terminate/release on
+    // "mem", poke on the two-factor "mem_write" — pruned from tools/list on a
+    // device that lacks the tier / the operator opt-in (the first real G1
+    // prune). Safety is enforced device-side (the catalog gate, the range/
+    // region guards, the /ALLOWMEMWRITE arm, the audit log); these hints are
+    // advisory only (MemoryToolHintsAreHonest).
+
+    /// Launch a process and retain it as a memory target, returning an opaque
+    /// token. 1:1 relay to the device `spawnRetain` command. You MUST call
+    /// `win32_release` (or `win32_terminate`) on the token when done.
+    #[tool(
+        name = "win32_spawn_retain",
+        description = "Launch a catalogued command and retain its process as a memory target (NT+). Returns a token for win32_peek/win32_poke. Call win32_release or win32_terminate when finished — retained processes are bounded.",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_spawn_retain(
+        &self,
+        Parameters(p): Parameters<SpawnRetainParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut cmd = Command::new("spawnRetain", self.next_id()).with("argv", json!(p.argv));
+        if let Some(cwd) = p.cwd {
+            cmd = cmd.with("cwd", Value::String(cwd));
+        }
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Read memory from a retained process (or the shared address space on
+    /// pre-NT). 1:1 relay to the device `peek` command (token -> mem_token,
+    /// addr -> mem_addr, len -> mem_len). Returns the bytes base64-encoded.
+    #[tool(
+        name = "win32_peek",
+        description = "Read up to 65536 bytes of memory. On NT+ pass the `token` from win32_spawn_retain; `addr` is a hex (0x...) or decimal string. Returns base64 bytes; a pre-NT read may be truncated at a non-accessible region.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn win32_peek(
+        &self,
+        Parameters(p): Parameters<PeekParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut cmd = Command::new("peek", self.next_id())
+            .with("mem_addr", Value::String(p.addr))
+            .with("mem_len", Value::String(p.len.to_string()));
+        if let Some(token) = p.token {
+            cmd = cmd.with("mem_token", Value::String(token));
+        }
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Write memory to a retained process (or the shared address space on
+    /// pre-NT). 1:1 relay to the device `poke` command (token -> mem_token,
+    /// addr -> mem_addr, data -> data). Gated: requires `--allow-memory-write`
+    /// AND the device `/ALLOWMEMWRITE` arm; every write is audit-logged.
+    #[tool(
+        name = "win32_poke",
+        description = "Write base64-encoded bytes to memory (at most 65536). On NT+ pass the `token` from win32_spawn_retain; `addr` is a hex (0x...) or decimal string. Off by default — the operator must arm both the bridge and the device; every poke is audit-logged device-side.",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_poke(
+        &self,
+        Parameters(p): Parameters<PokeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut cmd = Command::new("poke", self.next_id())
+            .with("mem_addr", Value::String(p.addr))
+            .with("data", Value::String(p.data));
+        if let Some(token) = p.token {
+            cmd = cmd.with("mem_token", Value::String(token));
+        }
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Terminate a retained process and free its slot. 1:1 relay to the device
+    /// `terminate` command (token -> mem_token). The token is consumed.
+    #[tool(
+        name = "win32_terminate",
+        description = "Terminate a retained process (TerminateProcess) and free its slot. The token is consumed and cannot be reused.",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_terminate(
+        &self,
+        Parameters(p): Parameters<TokenParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd =
+            Command::new("terminate", self.next_id()).with("mem_token", Value::String(p.token));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Release a retained process handle WITHOUT killing the child (it keeps
+    /// running). 1:1 relay to the device `release` command (token -> mem_token).
+    /// The token is consumed.
+    #[tool(
+        name = "win32_release",
+        description = "Release a retained process handle without killing the child — it keeps running, but the token is consumed and can no longer be peeked/poked."
+    )]
+    pub async fn win32_release(
+        &self,
+        Parameters(p): Parameters<TokenParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("release", self.next_id()).with("mem_token", Value::String(p.token));
         Ok(self.round_trip(cmd).await)
     }
 }

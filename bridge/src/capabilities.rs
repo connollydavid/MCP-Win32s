@@ -42,6 +42,13 @@ pub struct Capabilities {
     /// operator running the bridge consents to it, not the device. Off by
     /// default (`RegistrationRequiresOptIn`).
     pub toolchain_registration: bool,
+    /// Operator opt-in for memory WRITES (the `win32_poke` tool). A
+    /// BRIDGE-operator flag (`--allow-memory-write`), not a device wire field.
+    /// It gates `win32_poke` ADVERTISEMENT via the two-factor `mem_write`
+    /// capability (`mem != None && allow_memory_write`) — the bridge half of
+    /// `PokeRequiresBothArmingLayers`; the device `/ALLOWMEMWRITE` arm is the
+    /// independent device half. Off by default (`MemoryWriteToolRequiresOptIn`).
+    pub allow_memory_write: bool,
 }
 
 impl Capabilities {
@@ -55,6 +62,7 @@ impl Capabilities {
         version: String,
         f: &Features,
         allow_registration: bool,
+        allow_memory_write: bool,
     ) -> Self {
         let mem = match f.extra.get("mem").and_then(|v| v.as_str()) {
             Some("process") => MemTier::Process,
@@ -81,6 +89,7 @@ impl Capabilities {
             version,
             toolchains,
             toolchain_registration: allow_registration,
+            allow_memory_write,
         }
     }
 
@@ -92,6 +101,11 @@ impl Capabilities {
         match cap {
             "pty" => self.has_pty,
             "mem" => self.mem != MemTier::None,
+            // The TWO-FACTOR poke gate (MemoryWriteToolRequiresOptIn): a memory
+            // tier AND the operator opt-in. The bridge half of
+            // PokeRequiresBothArmingLayers (the device /ALLOWMEMWRITE arm is the
+            // independent device half).
+            "mem_write" => self.mem != MemTier::None && self.allow_memory_write,
             "utf8" => self.encoding == EncodingMode::Utf8Native,
             // The runtime-registration opt-in gates win32_register_toolchain
             // (RegistrationRequiresOptIn).
@@ -103,12 +117,18 @@ impl Capabilities {
 
 /// The capability a tool requires to be advertised. `None` = always
 /// advertised; `Some(cap)` = advertised iff `Capabilities::satisfies(cap)`.
-/// The 5.1-5.4 tools register their gate here; 5.0 ships an empty gate
-/// set (only the ungated `win32_echo`).
+/// 5.3 wires the FIRST real entries (the gate was empty/unexercised since
+/// 5.0): the five memory tools. The four read/control tools require `mem`
+/// (any tier); `win32_poke` requires the two-factor `mem_write`
+/// (`MemoryWriteToolRequiresOptIn`). On a `mem: none` device all five are
+/// pruned from `tools/list` — the first real exercise of the G1
+/// prune→absence path.
 pub const GATED_TOOLS: &[(&str, &str)] = &[
-    // ("win32_pty_exec", "pty"),   // 5.3
-    // ("win32_peek", "mem"),       // 5.3
-    // ("win32_poke", "mem"),       // 5.3
+    ("win32_spawn_retain", "mem"),
+    ("win32_peek", "mem"),
+    ("win32_poke", "mem_write"),
+    ("win32_terminate", "mem"),
+    ("win32_release", "mem"),
 ];
 
 /// The tool names that should be pruned from the router because the

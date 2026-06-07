@@ -21,6 +21,8 @@
 #include "catalog.h"
 #include "base64.h"
 #include "ready.h"
+#include "mem_ops.h"
+#include "audit.h"
 
 /* ========================================================
  * Forward declarations for functions in mcp-w32s.c
@@ -903,6 +905,225 @@ TEST_CASE(ready_lists_detected_toolchains) {
 }
 
 /* ========================================================
+ * Memory peek/poke wire dispatch (spec: memory-ops.allium).
+ * The module-level RPM/WPM round-trip + the safety guards live in
+ * test_mem_ops.c; these prove the ProcessCommand SEAM - field parsing,
+ * verb routing, the catalog/arm gates at the wire, and the JSON response
+ * builders in HandleMem.
+ * ======================================================== */
+
+/* Copy a JSON string value for `key` out of `json` into `out`. */
+static int extract_json_str(const char *json, const char *key,
+                            char *out, int outSize)
+{
+    const char *p;
+    char pat[40];
+    int i;
+
+    wsprintfA(pat, "\"%s\":\"", key);
+    p = strstr(json, pat);
+    if (p == NULL) {
+        return 0;
+    }
+    p += lstrlenA(pat);
+    for (i = 0; i < outSize - 1 && *p != '\0' && *p != '"'; i++) {
+        out[i] = *p++;
+    }
+    out[i] = '\0';
+    return 1;
+}
+
+TEST_CASE(mem_ready_carries_tier) {
+    char json[2048];
+    char want[40];
+    ToolchainSet set;
+    int len;
+
+    FeatInit();
+    memset(&set, 0, sizeof(set));
+    len = BuildReadyMessage("tcp", NULL, &set, json, (int)sizeof(json));
+    TEST_ASSERT(len > 0, "ready built");
+    /* features.mem is always present and is the OS-family tier (host-tolerant:
+     * the exact value follows g_features, "process" on the NT dev host/CI). */
+    wsprintfA(want, "\"mem\":\"%s\"", MemTierName(MemTierCurrent()));
+    TEST_ASSERT(strstr(json, want) != NULL, "features.mem carries the tier");
+}
+
+TEST_CASE(mem_spawn_retain_uncatalogued_refused) {
+    /* SAFETY PIN #5 at the wire: an enforced catalog + an uncatalogued
+     * command -> spawnRetain refused (no launch-anything bypass). */
+    MockTransport m;
+    Catalog *cat;
+
+    cat = load_test_catalog();
+    TEST_ASSERT(cat != NULL, "test catalog loads");
+    ExecConfigure(cat, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"spawnRetain\",\"id\":\"s9\","
+                   "\"argv\":[\"nonexistent_xyz\"]}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"error\"") != NULL,
+                "uncatalogued spawnRetain refused");
+    ExecConfigure(NULL, 0);
+    CatalogFree(cat);
+}
+
+TEST_CASE(mem_poke_unarmed_refused) {
+    /* SAFETY PIN #7 (device half) at the wire: with the /ALLOWMEMWRITE arm
+     * absent, a poke is refused regardless of the request - the wire arm
+     * binds every client. (The arm is checked before the target, so no real
+     * process is needed.) */
+    MockTransport m;
+
+    AuditConfigure(0, NULL);   /* disarmed */
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"poke\",\"id\":\"p9\",\"mem_token\":\"m1-1\","
+                   "\"mem_addr\":\"0x1000\",\"data\":\"QUJD\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"error\"") != NULL,
+                "unarmed poke refused at the wire");
+    TEST_ASSERT(strstr(m.out, "arm") != NULL, "reason names the arm");
+}
+
+TEST_CASE(mem_peek_bad_token_errors) {
+    /* The peek dispatch parses mem_addr/mem_len and reaches MemPeek, which
+     * rejects a forged token on the process tier (RetainedTokenValid). A
+     * malformed address is a distinct, earlier rejection. */
+    MockTransport m;
+
+    MemReleaseAll();
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"peek\",\"id\":\"k1\",\"mem_token\":\"forged\","
+                   "\"mem_addr\":\"0x1000\",\"mem_len\":\"8\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"error\"") != NULL,
+                "a forged token is rejected");
+
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"peek\",\"id\":\"k2\",\"mem_token\":\"forged\","
+                   "\"mem_addr\":\"zzz\",\"mem_len\":\"8\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "invalid address") != NULL,
+                "a malformed address is rejected by the parse guard");
+}
+
+TEST_CASE(mem_process_tier_requires_token) {
+    /* Gate-bypass guard: on the NT process tier a token-LESS peek/poke must be
+     * REFUSED - it must never fall through to a local read/write of the
+     * device's OWN memory (the spawn-retain table is the sole process-tier
+     * target; process = null is a pre-NT concept). */
+    MockTransport m;
+
+    FeatInit();
+    if (!g_features.is_nt) {
+        printf("(skip: process-tier token rule is NT-only) ");
+        return;
+    }
+    MemReleaseAll();
+
+    /* peek with no mem_token -> refused, not a self-read. */
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"peek\",\"id\":\"t1\","
+                   "\"mem_addr\":\"0x10000\",\"mem_len\":\"8\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"error\"") != NULL,
+                "token-less peek refused on the process tier");
+    TEST_ASSERT(strstr(m.out, "token") != NULL, "reason names the token");
+    TEST_ASSERT(strstr(m.out, "\"data_b64\"") == NULL,
+                "no device memory was read");
+
+    /* poke with no mem_token, even when armed -> refused, not a self-write. */
+    AuditConfigure(1, NULL);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"poke\",\"id\":\"t2\","
+                   "\"mem_addr\":\"0x10000\",\"data\":\"QUJD\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"error\"") != NULL,
+                "token-less poke refused on the process tier");
+    TEST_ASSERT(strstr(m.out, "\"bytes_written\"") == NULL,
+                "no device memory was written");
+    AuditConfigure(0, NULL);
+}
+
+TEST_CASE(mem_wire_roundtrip) {
+    /* The positive seam path (NT process tier only): spawnRetain -> peek ->
+     * poke -> terminate over ProcessCommand, exercising every HandleMem ok
+     * response builder. Byte-for-byte RPM/WPM correctness is pinned in
+     * test_mem_ops.c; here we assert the wire shapes. */
+    MockTransport m;
+    char token[40];
+    HANDLE hChild;
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned long scan;
+    unsigned long rwAddr;
+    char json[512];
+
+    FeatInit();
+    if (!g_features.is_nt) {
+        printf("(skip: process tier requires NT) ");
+        return;
+    }
+
+    ExecConfigure(NULL, 1);     /* unsafe -> catalog-independent spawn */
+    AuditConfigure(1, NULL);    /* arm + default (writable) audit sink */
+    MemReleaseAll();
+
+    /* spawnRetain mem_target (resolved from the test's working dir). */
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"spawnRetain\",\"id\":\"r1\","
+                   "\"argv\":[\"mem_target\"]}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL, "spawn ok");
+    TEST_ASSERT(strstr(m.out, "\"token\":\"m") != NULL, "token returned");
+    TEST_ASSERT(strstr(m.out, "\"pid\":") != NULL, "pid returned");
+    TEST_ASSERT(extract_json_str(m.out, "token", token, (int)sizeof(token)),
+                "token extracted");
+
+    /* Find a committed read/write region in the child to exercise against. */
+    hChild = MemTokenHandle(token);
+    TEST_ASSERT(hChild != NULL, "token resolves to the retained handle");
+    rwAddr = 0;
+    scan = 0;
+    Sleep(200);   /* let the child's loader settle (see test_mem_ops note) */
+    for (;;) {
+        if (VirtualQueryEx(hChild, (LPCVOID)scan, &mbi, sizeof(mbi)) !=
+            sizeof(mbi)) {
+            break;
+        }
+        if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE &&
+            mbi.RegionSize >= 4096) {
+            rwAddr = (unsigned long)mbi.BaseAddress;
+            break;
+        }
+        scan = (unsigned long)mbi.BaseAddress + (unsigned long)mbi.RegionSize;
+        if (scan == 0) {
+            break;
+        }
+    }
+    TEST_ASSERT(rwAddr != 0, "found a writable region in the child");
+
+    /* peek 8 bytes -> ok response with data_b64 + bytes_read. */
+    MockTransportInit(&m, NULL, 0);
+    wsprintfA(json, "{\"cmd\":\"peek\",\"id\":\"r2\",\"mem_token\":\"%s\","
+              "\"mem_addr\":\"0x%lX\",\"mem_len\":\"8\"}", token, rwAddr);
+    ProcessCommand(json, &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL, "peek ok");
+    TEST_ASSERT(strstr(m.out, "\"data_b64\":\"") != NULL, "data_b64 present");
+    TEST_ASSERT(strstr(m.out, "\"bytes_read\":8") != NULL, "8 bytes read");
+
+    /* poke 3 bytes ("ABC" = QUJD) -> ok response with bytes_written. */
+    MockTransportInit(&m, NULL, 0);
+    wsprintfA(json, "{\"cmd\":\"poke\",\"id\":\"r3\",\"mem_token\":\"%s\","
+              "\"mem_addr\":\"0x%lX\",\"data\":\"QUJD\"}", token, rwAddr);
+    ProcessCommand(json, &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL, "poke ok");
+    TEST_ASSERT(strstr(m.out, "\"bytes_written\":3") != NULL, "3 bytes written");
+
+    /* terminate -> ok response. */
+    MockTransportInit(&m, NULL, 0);
+    wsprintfA(json, "{\"cmd\":\"terminate\",\"id\":\"r4\",\"mem_token\":\"%s\"}",
+              token);
+    ProcessCommand(json, &m.t);
+    TEST_ASSERT(strstr(m.out, "\"terminated\":true") != NULL, "terminate ok");
+
+    AuditConfigure(0, NULL);    /* restore disarmed state */
+    ExecConfigure(NULL, 0);
+}
+
+/* ========================================================
  * Main - Run all tests
  * ======================================================== */
 
@@ -976,6 +1197,14 @@ int main(void)
 
     printf("\nReady message (features.toolchains):\n");
     RUN_TEST(ready_lists_detected_toolchains);
+
+    printf("\nMemory peek/poke wire dispatch:\n");
+    RUN_TEST(mem_ready_carries_tier);
+    RUN_TEST(mem_spawn_retain_uncatalogued_refused);
+    RUN_TEST(mem_poke_unarmed_refused);
+    RUN_TEST(mem_peek_bad_token_errors);
+    RUN_TEST(mem_process_tier_requires_token);
+    RUN_TEST(mem_wire_roundtrip);
 
     print_test_summary();
     return g_tests_failed;

@@ -187,6 +187,18 @@ int ParseCommandLine(const char *cmdLine, TransportConfig *config)
         copy_until_space(val, config->catalogPath, sizeof(config->catalogPath));
     }
 
+    /* Memory-write arm (spec: memory-ops.allium - the device /ALLOWMEMWRITE
+     * arm, the device half of PokeRequiresBothArmingLayers) + the audit-log
+     * path override. Off by default; parsed before the transport branches. */
+    val = find_flag_tok(cmdLine, "ALLOWMEMWRITE");
+    if (val != NULL) {
+        config->allowMemWrite = 1;
+    }
+    val = find_flag(cmdLine, "AUDIT");
+    if (val != NULL) {
+        copy_until_space(val, config->auditPath, sizeof(config->auditPath));
+    }
+
     val = find_flag(cmdLine, "SERIAL");
     if (val != NULL) {
         config->transport = TRANSPORT_SERIAL;

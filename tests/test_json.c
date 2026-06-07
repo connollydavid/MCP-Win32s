@@ -291,6 +291,26 @@ TEST_CASE(parse_just_whitespace) {
  * Response Building
  * ======================================================== */
 
+TEST_CASE(parse_mem_string_fields) {
+    /* spec: memory-ops.allium - mem_addr/mem_len/mem_token are STRING wire
+     * fields, NOT integers: a 32-bit address (e.g. 0x80000000 = 2147483648)
+     * overflows the signed-int JSON parser, so it must ride the string path
+     * verbatim. */
+    static JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand(
+        "{\"cmd\":\"peek\",\"id\":\"m1\",\"mem_token\":\"m3-1842\","
+        "\"mem_addr\":\"0x80000000\",\"mem_len\":\"4096\"}",
+        &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_STR_EQUAL("m3-1842", cmd.mem_token, "mem_token");
+    TEST_ASSERT_STR_EQUAL("0x80000000", cmd.mem_addr,
+                          "mem_addr verbatim (would overflow an int)");
+    TEST_ASSERT_STR_EQUAL("4096", cmd.mem_len, "mem_len as a string");
+    /* The string path leaves the int fields untouched. */
+    TEST_ASSERT_INT_EQUAL(0, cmd.timeout_ms, "no int field collateral");
+}
+
 TEST_CASE(build_ok_response) {
     char buf[512];
     int len;
@@ -575,6 +595,7 @@ int main(void)
     RUN_TEST(parse_exec_unknown_array_ignored);
     RUN_TEST(parse_exec_unknown_array_scalars_ignored);
     RUN_TEST(parse_exec_malformed_values);
+    RUN_TEST(parse_mem_string_fields);
 
     printf("\nResponse Building:\n");
     RUN_TEST(build_ok_response);
