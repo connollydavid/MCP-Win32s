@@ -19,6 +19,9 @@
 #include "test_framework.h"
 #include "charset_tables.h"
 #include "encoding.h"
+#ifndef ENCODING_HOST_PURE
+#include "feat.h"      /* the tier tests drive g_features via FeatInit */
+#endif
 
 static const int SBCS_PAGES[] = {
     1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 874,
@@ -461,6 +464,176 @@ TEST_CASE(codec_truncation_boundary_clean)
     }
 }
 
+#ifndef ENCODING_HOST_PURE
+/* ========================================================
+ * The TIER surface (Win32 only). These drive g_features via
+ * FeatInit and exercise EncTierCurrent / EncOpenPath /
+ * EncBytesToWire / EncWideToWire. On the dev host + CI (NT,
+ * GetACP() != 65001 since the test binary has no UTF-8
+ * manifest) the live tier is `wide`; FEAT_FORCE_NO_WIDE_FILEAPI
+ * forces the `codepage` tier so the strict narrowing is
+ * exercisable. The `manifest` runtime effect needs real Win10
+ * (Phase 6) - asserted only via EncManifestUtf8Active here.
+ * ======================================================== */
+
+/* enum-comparable.ConversionStatus / ConversionDirection. */
+TEST_CASE(status_direction_comparable) {
+    TEST_ASSERT(ENC_OK != ENC_LOSSY, "status values are distinct");
+    TEST_ASSERT(ENC_REJECTED != ENC_TRUNCATED, "status values are distinct");
+    TEST_ASSERT(ENC_INBOUND != ENC_OUTBOUND, "directions are distinct");
+}
+
+/* os_family_maps_to_tier: the OS family + manifest state select the tier, and
+ * the provenance tag / manifest predicate track it. */
+TEST_CASE(os_family_maps_to_tier) {
+    FeatInit();
+    /* NT host, no UTF-8 manifest in this test binary -> wide. */
+    TEST_ASSERT_INT_EQUAL(ENC_TIER_WIDE, EncTierCurrent(),
+        "NT + -W uplift -> wide tier");
+    TEST_ASSERT(strcmp(EncTierName(EncTierCurrent()), "wide") == 0,
+        "tier name 'wide'");
+    TEST_ASSERT(strcmp(EncProvenanceTag(), "utf8_via_w") == 0,
+        "provenance utf8_via_w");
+    TEST_ASSERT_INT_EQUAL((unsigned int)GetACP(), EncActiveCodePage(),
+        "EncActiveCodePage == GetACP()");
+    TEST_ASSERT_INT_EQUAL(GetACP() == 65001, EncManifestUtf8Active(),
+        "manifest-active iff ACP 65001");
+
+    /* Force the -W uplift off -> the codepage tier (our own tables). */
+    FeatForceFallback(FEAT_FORCE_NO_WIDE_FILEAPI);
+    TEST_ASSERT_INT_EQUAL(ENC_TIER_CODEPAGE, EncTierCurrent(),
+        "NT + forced no -W -> codepage tier");
+    TEST_ASSERT(strcmp(EncProvenanceTag(), "utf8_from_cp") == 0,
+        "provenance utf8_from_cp when narrowing");
+    FeatInit();   /* restore */
+}
+
+/* rule-success.PathConverted (inbound, wide tier): an agent UTF-8 path widens
+ * to UTF-16 for a -W API; never rejected on this tier. */
+TEST_CASE(inbound_path_conversion_wide) {
+    EncPathForm form;
+    /* "x/\xE4\xB8\xAD" - 'x', '/', then U+4E2D (中). */
+    static const char path[] = { 'x', '/', (char)0xE4, (char)0xB8, (char)0xAD, '\0' };
+    FeatInit();
+    TEST_ASSERT_INT_EQUAL(ENC_TIER_WIDE, EncTierCurrent(), "wide tier precondition");
+    EncOpenPath(path, &form);
+    TEST_ASSERT_INT_EQUAL(1, form.useWide, "wide tier -> useWide");
+    TEST_ASSERT(form.status == ENC_OK, "well-formed path converts OK");
+    TEST_ASSERT_INT_EQUAL((unsigned short)'x', form.wOut[0], "wOut[0]=='x'");
+    TEST_ASSERT_INT_EQUAL((unsigned short)'/', form.wOut[1], "wOut[1]=='/'");
+    TEST_ASSERT_INT_EQUAL((unsigned short)0x4E2D, form.wOut[2], "wOut[2]==U+4E2D");
+    TEST_ASSERT_INT_EQUAL(0, form.wOut[3], "wOut NUL-terminated");
+}
+
+/* invariant.StrictNarrowingRejectsUnrepresentable: on the codepage tier an
+ * unrepresentable code point REJECTS (no '?'/no file); the wide tier never
+ * rejects for this reason (the negative case). U+1F600 is in NO baked page, so
+ * the reject is host-ACP-independent. */
+TEST_CASE(strict_narrowing_rejects) {
+    EncPathForm form;
+    /* "a\xF0\x9F\x98\x80" - 'a' then U+1F600 (astral, in no codepage). */
+    static const char astral[] = { 'a', (char)0xF0, (char)0x9F, (char)0x98, (char)0x80, '\0' };
+
+    /* Codepage tier: must REJECT, with no usable output. */
+    FeatInit();
+    FeatForceFallback(FEAT_FORCE_NO_WIDE_FILEAPI);
+    TEST_ASSERT_INT_EQUAL(ENC_TIER_CODEPAGE, EncTierCurrent(), "codepage precondition");
+    EncOpenPath(astral, &form);
+    TEST_ASSERT_INT_EQUAL(ENC_REJECTED, form.status, "unrepresentable -> rejected");
+    TEST_ASSERT(form.rejectAt >= 0, "rejectAt reports the offending unit");
+    TEST_ASSERT_INT_EQUAL('\0', form.mbOut[0], "no '?' substitution, no output");
+
+    /* A fully representable ASCII path narrows cleanly. */
+    EncOpenPath("ok.txt", &form);
+    TEST_ASSERT(form.status == ENC_OK, "ASCII path narrows OK");
+    TEST_ASSERT(strcmp(form.mbOut, "ok.txt") == 0, "narrowed bytes correct");
+
+    /* Negative case: the wide tier reaches full Unicode and never rejects. */
+    FeatInit();
+    TEST_ASSERT_INT_EQUAL(ENC_TIER_WIDE, EncTierCurrent(), "wide precondition");
+    EncOpenPath(astral, &form);
+    TEST_ASSERT(form.status != ENC_REJECTED, "wide tier never rejects to narrow");
+    TEST_ASSERT_INT_EQUAL(1, form.useWide, "wide tier -> useWide");
+}
+
+/* rule-success.OutputConverted (outbound): OS bytes -> the UTF-8 wire, always
+ * well-formed; an undefined/garbage source byte -> U+FFFD (lossy), never a
+ * failure. Covers EncBytesToWire (utf8-validate + table-decode). */
+TEST_CASE(outbound_bytes_to_wire) {
+    char out[64];
+    EncStatus st;
+    int n;
+    /* (a) srcCp 65001: already-UTF-8 bytes pass through validated. */
+    {
+        static const unsigned char zhong[] = { 0xE4, 0xB8, 0xAD };   /* 中 */
+        st = (EncStatus)999;
+        n = EncBytesToWire(65001u, zhong, 3, out, (int)sizeof(out), &st);
+        TEST_ASSERT_INT_EQUAL(3, n, "valid UTF-8 passes through 1:1");
+        TEST_ASSERT(st == ENC_OK, "valid UTF-8 is clean");
+        TEST_ASSERT((unsigned char)out[0] == 0xE4 &&
+                    (unsigned char)out[1] == 0xB8 &&
+                    (unsigned char)out[2] == 0xAD, "bytes preserved");
+    }
+    /* (b) srcCp 65001 with a malformed byte -> U+FFFD, lossy. */
+    {
+        static const unsigned char bad[] = { 0xFF };
+        st = (EncStatus)999;
+        n = EncBytesToWire(65001u, bad, 1, out, (int)sizeof(out), &st);
+        TEST_ASSERT_INT_EQUAL(3, n, "one U+FFFD emitted (EF BF BD)");
+        TEST_ASSERT(st == ENC_LOSSY, "malformed source is lossy");
+        TEST_ASSERT((unsigned char)out[0] == 0xEF &&
+                    (unsigned char)out[1] == 0xBF &&
+                    (unsigned char)out[2] == 0xBD, "U+FFFD on the wire");
+    }
+    /* (c) srcCp 1252 table-decode: 0x80 -> U+20AC (Euro) -> UTF-8 E2 82 AC. */
+    {
+        static const unsigned char euro[] = { 0x80 };
+        st = (EncStatus)999;
+        n = EncBytesToWire(1252u, euro, 1, out, (int)sizeof(out), &st);
+        TEST_ASSERT_INT_EQUAL(3, n, "cp1252 0x80 -> 3 UTF-8 bytes");
+        TEST_ASSERT(st == ENC_OK, "defined cp1252 byte is clean");
+        TEST_ASSERT((unsigned char)out[0] == 0xE2 &&
+                    (unsigned char)out[1] == 0x82 &&
+                    (unsigned char)out[2] == 0xAC, "Euro on the wire");
+    }
+    /* (d) srcCp 1252 undefined byte 0x81 -> U+FFFD, lossy. */
+    {
+        static const unsigned char undef[] = { 0x81 };
+        st = (EncStatus)999;
+        n = EncBytesToWire(1252u, undef, 1, out, (int)sizeof(out), &st);
+        TEST_ASSERT_INT_EQUAL(3, n, "undefined cp1252 byte -> U+FFFD");
+        TEST_ASSERT(st == ENC_LOSSY, "undefined source byte is lossy");
+        TEST_ASSERT((unsigned char)out[0] == 0xEF, "U+FFFD on the wire");
+    }
+}
+
+/* OutputConverted via EncWideToWire (an OS -W result -> the wire), with the
+ * NeverEmitInvalidUtf8 pin on the outbound path (a lone surrogate -> U+FFFD). */
+TEST_CASE(outbound_wide_to_wire) {
+    char out[16];
+    EncStatus st;
+    int n;
+    {
+        static const unsigned short u[] = { 0x4E2D };   /* 中 */
+        st = (EncStatus)999;
+        n = EncWideToWire(u, 1, out, (int)sizeof(out), &st);
+        TEST_ASSERT_INT_EQUAL(3, n, "U+4E2D -> 3 UTF-8 bytes");
+        TEST_ASSERT(st == ENC_OK, "BMP scalar is clean");
+        TEST_ASSERT((unsigned char)out[0] == 0xE4, "first byte E4");
+    }
+    {
+        static const unsigned short lone[] = { 0xD800 };   /* lone high surrogate */
+        st = (EncStatus)999;
+        n = EncWideToWire(lone, 1, out, (int)sizeof(out), &st);
+        TEST_ASSERT_INT_EQUAL(3, n, "lone surrogate -> U+FFFD (3 bytes)");
+        TEST_ASSERT(st == ENC_LOSSY, "lone surrogate is lossy");
+        TEST_ASSERT((unsigned char)out[0] == 0xEF &&
+                    (unsigned char)out[1] == 0xBF &&
+                    (unsigned char)out[2] == 0xBD, "never invalid UTF-8 on the wire");
+    }
+}
+#endif /* !ENCODING_HOST_PURE */
+
 /* ========================================================
  * PathSeparatorScanIsDbcsSafe: EncFindSeparators counts true
  * separators on the UTF-8 form. U+2015 is cp932 0x815C (a
@@ -519,6 +692,14 @@ int main(void)
     RUN_TEST(codec_lone_surrogate_becomes_replacement);
     RUN_TEST(codec_decode_total_on_garbage);
     RUN_TEST(codec_truncation_boundary_clean);
+#ifndef ENCODING_HOST_PURE
+    RUN_TEST(status_direction_comparable);
+    RUN_TEST(os_family_maps_to_tier);
+    RUN_TEST(inbound_path_conversion_wide);
+    RUN_TEST(strict_narrowing_rejects);
+    RUN_TEST(outbound_bytes_to_wire);
+    RUN_TEST(outbound_wide_to_wire);
+#endif
     RUN_TEST(dbcs_safe_scan);
     RUN_TEST(find_separators_caps_output);
     print_test_summary();

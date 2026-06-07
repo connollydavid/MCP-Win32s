@@ -287,3 +287,271 @@ int EncFindSeparators(const unsigned char *utf8Path, int len,
     }
     return n;
 }
+
+#ifndef ENCODING_HOST_PURE
+/* ================================================================== */
+/* TIER surface (Win32 only): the OS-family conversion tier + the      */
+/* compound call-site helpers. Reads g_features (feat.h) and our own   */
+/* codepage tables (charset_tables.h) - never the OS's MBTWC/WCTMB.    */
+/* ================================================================== */
+#include "feat.h"      /* g_features for the tier decision */
+
+#define CP_UTF8_ID      65001u
+
+/* EncBytesToWire processes the source in batches through this stack-local
+ * UTF-16 window, so no buffer is sized to the (possibly large) input. A window
+ * of at most ENC_WIRE_BYTES source bytes yields at most ENC_WIRE_UNITS UTF-16
+ * units (worst case all-ASCII, one unit per byte), so the window never
+ * truncates a decode batch. */
+#define ENC_WIRE_BYTES  512
+#define ENC_WIRE_UNITS  512
+
+EncTier EncTierCurrent(void)
+{
+    if (g_features.is_nt && GetACP() == (UINT)CP_UTF8_ID) {
+        return ENC_TIER_MANIFEST;
+    }
+    if (g_features.is_nt && g_features.has_wide_fileapi) {
+        return ENC_TIER_WIDE;
+    }
+    return ENC_TIER_CODEPAGE;
+}
+
+const char *EncTierName(EncTier t)
+{
+    switch (t) {
+    case ENC_TIER_MANIFEST:
+        return "manifest";
+    case ENC_TIER_WIDE:
+        return "wide";
+    default:
+        return "codepage";
+    }
+}
+
+const char *EncProvenanceTag(void)
+{
+    switch (EncTierCurrent()) {
+    case ENC_TIER_MANIFEST:
+        return "utf8_manifest";
+    case ENC_TIER_WIDE:
+        return "utf8_via_w";
+    default:
+        return "utf8_from_cp";
+    }
+}
+
+unsigned int EncActiveCodePage(void)
+{
+    return (unsigned int)GetACP();
+}
+
+unsigned int EncConsoleOutputCp(void)
+{
+    HMODULE  hKernel;
+    FARPROC  proc;
+    UINT   (WINAPI *pGetConsoleOutputCP)(void);
+    UINT     cp;
+
+    /* GetConsoleOutputCP is resolved at run time, never statically imported,
+     * so the binary still loads on Win32s (where console support is partial).
+     * The OEM page is the lowest-common-denominator fallback. */
+    pGetConsoleOutputCP = NULL;
+    hKernel = GetModuleHandleA("kernel32");
+    if (hKernel != NULL) {
+        proc = GetProcAddress(hKernel, "GetConsoleOutputCP");
+        if (proc != NULL) {
+            pGetConsoleOutputCP = (UINT (WINAPI *)(void))proc;
+        }
+    }
+    if (pGetConsoleOutputCP != NULL) {
+        cp = pGetConsoleOutputCP();
+        if (cp != 0) {
+            return (unsigned int)cp;
+        }
+    }
+    return (unsigned int)GetOEMCP();
+}
+
+int EncManifestUtf8Active(void)
+{
+    return (GetACP() == (UINT)CP_UTF8_ID) ? 1 : 0;
+}
+
+void EncOpenPath(const char *utf8Path, EncPathForm *out)
+{
+    int            len;
+    int            i;
+    EncTier        tier;
+    unsigned short wide[ENC_PATH_WIDE];
+    int            nWide;
+    EncStatus      st;
+
+    /* Clean result. */
+    out->useWide = 0;
+    out->status = ENC_OK;
+    out->rejectAt = -1;
+    out->wOut[0] = 0;
+    out->mbOut[0] = '\0';
+
+    len = lstrlenA(utf8Path);
+    tier = EncTierCurrent();
+
+    if (tier == ENC_TIER_MANIFEST) {
+        /* The -A APIs already speak UTF-8: pass the bytes through unchanged. */
+        if (len > ENC_PATH_MB - 1) {
+            len = ENC_PATH_MB - 1;
+            out->status = ENC_TRUNCATED;
+        }
+        for (i = 0; i < len; i++) {
+            out->mbOut[i] = utf8Path[i];
+        }
+        out->mbOut[len] = '\0';
+        out->useWide = 0;
+        return;
+    }
+
+    /* The wide and codepage tiers both widen to UTF-16 first (reserve the NUL
+     * unit). */
+    st = ENC_OK;
+    nWide = Utf8ToUtf16((const unsigned char *)utf8Path, len,
+                        wide, ENC_PATH_WIDE - 1, &st);
+
+    if (tier == ENC_TIER_WIDE) {
+        /* Full Unicode: hand UTF-16 to the -W API. Never narrows, never rejects
+         * for unrepresentability (a lossy widen of a malformed source path just
+         * fails to open). */
+        for (i = 0; i < nWide; i++) {
+            out->wOut[i] = (WCHAR)wide[i];
+        }
+        out->wOut[nWide] = 0;
+        out->useWide = 1;
+        out->status = st;
+        return;
+    }
+
+    /* Codepage tier: narrow the widened UTF-16 to the ANSI page. STRICT -
+     * StrictNarrowingRejectsUnrepresentable: a code point the page cannot
+     * represent REJECTS (no '?' substitution, no usable output), so the caller
+     * touches no file. */
+    {
+        int rejectAt;
+        int nb;
+        rejectAt = -1;
+        nb = CpEncode((int)GetACP(), wide, nWide,
+                      (unsigned char *)out->mbOut, ENC_PATH_MB - 1, &rejectAt);
+        if (nb == -1) {
+            out->status = ENC_REJECTED;
+            out->rejectAt = rejectAt;
+            out->mbOut[0] = '\0';
+            out->useWide = 0;
+            return;
+        }
+        if (nb < 0) {
+            /* -2: the narrowed path overflows the buffer. No partial path - a
+             * path op must not act on a truncated name. */
+            out->status = ENC_TRUNCATED;
+            out->mbOut[0] = '\0';
+            out->useWide = 0;
+            return;
+        }
+        out->mbOut[nb] = '\0';
+        out->useWide = 0;
+        out->status = (st == ENC_LOSSY) ? ENC_LOSSY : ENC_OK;
+        return;
+    }
+}
+
+int EncBytesToWire(unsigned int srcCp, const unsigned char *mb, int len,
+                   char *out, int outCap, EncStatus *status)
+{
+    unsigned short wide[ENC_WIRE_UNITS];
+    int i;
+    int nOut;
+    int lossyAny;
+    int truncated;
+    int supported;
+
+    i = 0;
+    nOut = 0;
+    lossyAny = 0;
+    truncated = 0;
+    supported = (srcCp != CP_UTF8_ID) ? CpSupported((int)srcCp) : 0;
+
+    while (i < len && !truncated) {
+        int       nWide;
+        int       ce;
+        EncStatus es;
+
+        nWide = 0;
+        if (srcCp == CP_UTF8_ID) {
+            /* Already UTF-8: validate through the codec (decode then re-encode)
+             * so a malformed byte becomes U+FFFD. Decode a window that ends on a
+             * code-point boundary, so a multi-byte sequence is never split. */
+            int       win;
+            EncStatus ds;
+            win = len - i;
+            if (win > ENC_WIRE_BYTES) {
+                win = ENC_WIRE_BYTES;
+                while (win > 0 && (mb[i + win] & 0xC0) == 0x80) {
+                    win--;          /* back off a continuation byte */
+                }
+                if (win == 0) {
+                    win = len - i;  /* degenerate single oversize sequence */
+                }
+            }
+            ds = ENC_OK;
+            nWide = Utf8ToUtf16(mb + i, win, wide, ENC_WIRE_UNITS, &ds);
+            if (ds == ENC_LOSSY) {
+                lossyAny = 1;
+            }
+            i += win;
+        } else if (supported) {
+            int lz;
+            int cons;
+            lz = 0;
+            cons = 0;
+            nWide = CpDecode((int)srcCp, mb + i, len - i,
+                             wide, ENC_WIRE_UNITS, &lz, &cons);
+            if (lz) {
+                lossyAny = 1;
+            }
+            if (cons <= 0) {
+                cons = 1;           /* defensive: always make progress */
+            }
+            i += cons;
+        } else {
+            /* Unknown code page: ISO-8859-1 passthrough (byte == code point), so
+             * the wire stays valid UTF-8 and the scan is total. */
+            int k;
+            k = 0;
+            while (k < ENC_WIRE_UNITS && i < len) {
+                wide[k] = (unsigned short)mb[i];
+                k++;
+                i++;
+            }
+            nWide = k;
+        }
+
+        es = ENC_OK;
+        ce = Utf16ToUtf8(wide, nWide, (unsigned char *)out + nOut,
+                         outCap - nOut, &es);
+        nOut += ce;
+        if (es == ENC_TRUNCATED) {
+            truncated = 1;
+        }
+    }
+
+    if (status != 0) {
+        *status = truncated ? ENC_TRUNCATED : (lossyAny ? ENC_LOSSY : ENC_OK);
+    }
+    return nOut;
+}
+
+int EncWideToWire(const unsigned short *units, int n,
+                  char *out, int outCap, EncStatus *status)
+{
+    return Utf16ToUtf8(units, n, (unsigned char *)out, outCap, status);
+}
+
+#endif /* !ENCODING_HOST_PURE */

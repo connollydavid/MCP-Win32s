@@ -174,14 +174,16 @@ target_link_libraries(test_audit PRIVATE kernel32 user32)
 # (encoding.c). Pure - links only the table + codec sources.
 add_executable(test_encoding
   tests/test_encoding.c src/encoding.c
-  src/charset_tables.c src/charset_tables_data.c)
-target_link_libraries(test_encoding PRIVATE kernel32)
+  src/charset_tables.c src/charset_tables_data.c src/feat.c)
+target_link_libraries(test_encoding PRIVATE kernel32 user32)
 
 # test_pbt_encoding: the prop.h on-target mirror of the four codec properties
 # (round-trip / lossy-total / never-invalid / truncation-clean), proving they
 # hold on the shipped C89/i386 codec path. The deep 50k-trial theft host run
 # lives in tests/host/theft_encoding.c (built by build.sh host-pbt).
 add_executable(test_pbt_encoding tests/test_pbt_encoding.c src/encoding.c)
+# Codec-only: exclude the Win32 tier surface so this links without feat/tables.
+target_compile_definitions(test_pbt_encoding PRIVATE ENCODING_HOST_PURE)
 target_link_libraries(test_pbt_encoding PRIVATE kernel32)
 
 # wire_client: the 4.0b wire-contract smoke client. A test tool, so a
