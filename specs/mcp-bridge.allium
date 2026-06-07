@@ -93,6 +93,10 @@ entity DeviceCapabilities {
     -- Operator opt-in for runtime toolchain registration (the hybrid
     -- authoring model's dangerous half). Off by default; only when enabled is
     -- win32_register_toolchain advertised - see RegistrationRequiresOptIn.
+    -- This is a BRIDGE-OPERATOR opt-in set at bridge startup (a CLI flag), NOT a
+    -- device-reported capability resolved from the ready message; it gates
+    -- win32_register_toolchain via the same advertise-iff-capable mechanism as
+    -- the other capability-gated tools (AdvertisedToolsAreCapable).
     -- The detected toolchains themselves arrive in the ready message's
     -- `toolchains` array and are modelled as toolchains/DetectedToolchain.
     toolchain_registration: Boolean

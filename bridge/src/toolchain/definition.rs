@@ -730,4 +730,32 @@ mod tests {
         assert!(!empty.supports("12.00.8804"));
         assert!(!empty.supports(""));
     }
+
+    /// invariant.DefinitionCommandsAreCatalogued (the version_probe_command
+    /// clause): the floor covers the probe command too, not only role commands.
+    /// A definition whose roles are all catalogued but whose `version_probe`
+    /// command is NOT is still rejected — `commands()` includes the probe
+    /// command, so authorship can introduce neither a role command nor an
+    /// uncatalogued probe binary.
+    #[test]
+    fn version_probe_command_must_be_catalogued() {
+        let mut def = builtin_msvc();
+        /* Roles stay catalogued (cl/link/lib/ml); only the probe is rogue. */
+        def.version_probe.command = "evil_probe".to_string();
+        /* commands() surfaces the probe command alongside the role commands. */
+        assert!(
+            def.commands().contains(&"evil_probe"),
+            "commands() must include the version-probe command"
+        );
+
+        let mut registry = Registry::with_builtins();
+        registry.add(def);
+        let err = registry
+            .validate_catalogued(builtin_commands_catalogued)
+            .expect_err("an uncatalogued version-probe command must be refused");
+        assert!(
+            err.to_string().contains("evil_probe"),
+            "error must name the offending probe command: {err}"
+        );
+    }
 }
