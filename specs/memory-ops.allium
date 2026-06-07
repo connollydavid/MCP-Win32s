@@ -1,0 +1,354 @@
+-- allium: 3
+-- memory-ops.allium
+
+-- Scope: Device-side tiered memory peek/poke for the MCP-Win32s
+--        introspection subsystem.
+-- Includes: the three memory-reach TIERS (process / arena / shared_vm),
+--           the spawn-retain process-target model (RetainedProcess
+--           lifecycle), the bounded peek/poke results, the durable write
+--           audit record, and the safety floors that make arbitrary
+--           ring-3 memory access bounded, consented and logged:
+--           well-formed addresses, overflow-safe ranges, pre-NT region
+--           guarding, token validity, catalog-bound spawn, two-layer
+--           write arming, and fail-closed write auditing.
+-- Excludes:
+--   - The bridge tool surface (the five win32_* memory tools, their
+--     advertisement and the mem/mem_write capability gate) - mcp-bridge.allium
+--   - The command-catalog gate itself (catalog.allium, consumed here as the
+--     spawn-retain precondition)
+--   - The wire envelope and ready handshake (wire-contract.allium)
+-- Dependencies: catalog.allium
+
+use "./catalog.allium" as catalog
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- How much of the address space ring-3 loads/stores reach, per OS family.
+-- This is a DEVICE-SIDE concept (it describes the device's own memory
+-- reachability), so the enum is defined here and the bridge references it as
+-- memops/MemTier on DeviceCapabilities.mem (mcp-bridge.allium). none = no
+-- memory capability. process = NT+: ReadProcessMemory/WriteProcessMemory,
+-- reaching only a child WE launched and retain (a per-process token).
+-- arena = Win9x: direct guarded loads/stores into the reachable Private+Shared
+-- arenas. shared_vm = Win32s: direct guarded loads/stores into the single
+-- shared VM. On the two pre-NT tiers there is no per-process token - the
+-- address is into the shared address space directly (PeekResult.process /
+-- PokeResult.process is null).
+enum MemTier { none | process | arena | shared_vm }
+
+-- The lifecycle of a spawn-retained process target. retained: launched by us
+-- and held (its token names a live ReadProcessMemory/WriteProcessMemory
+-- target). released: the handle was relinquished without killing the child.
+-- terminated: we killed the child. A released or terminated token is never
+-- valid for peek/poke again, and tokens are never reused (RetainedTokenValid).
+enum RetainStatus { retained | released | terminated }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- A spawn-retain table entry: a child the bridge launched on the NT+ process
+-- tier and holds open so its memory can be peeked/poked by token. The
+-- bounded table (at most 8 entries, no heap) is an implementation detail - the
+-- lifecycle is modelled, not the array. The token is the bridge's opaque
+-- handle: a never-reused monotonic id concatenated with a non-cryptographic
+-- integer-LCG random suffix for guess-resistance (no FP, no crypto on the
+-- i386/Win32s floor - it is hardening, not a security boundary; the security
+-- boundary is RetainedTokenValid plus the device arm). Modelled as an opaque
+-- String. The launch command is pinned catalogued (SpawnRetainCommandIsCatalogued).
+entity RetainedProcess {
+    token: String
+    pid: Integer
+    command: String
+    status: RetainStatus
+
+    transitions status {
+        retained -> released
+        retained -> terminated
+        terminal: released, terminated
+    }
+}
+
+-- The result of a memory READ. process is the retained target on the NT+
+-- process tier; it is null on the pre-NT arena/shared_vm tiers, which read the
+-- shared VM at the address directly (no per-process token). length is the
+-- requested byte count; bytes_read is what was actually returned. truncated is
+-- true when a pre-NT range ran into a non-accessible region and the read was
+-- CLAMPED to the accessible prefix (PreNtAccessGuarded) - a peek never reads a
+-- non-committed region.
+entity PeekResult {
+    process: RetainedProcess?
+    address: String
+    length: Integer
+    bytes_read: Integer
+    truncated: Boolean
+}
+
+-- The result of a memory WRITE. process is the retained target on the NT+
+-- process tier; null on the pre-NT tiers (shared VM written directly). length
+-- is the requested byte count; bytes_written is what was actually committed.
+-- partial is true only on the NT+ process tier, where WriteProcessMemory may
+-- commit a prefix across a page boundary; on the pre-NT tiers a range spanning
+-- into a non-writable region is REJECTED whole (no partial pre-NT writes -
+-- PreNtAccessGuarded), so partial is false there. Every PokeResult has a
+-- matching AuditRecord (PokeIsAuditedFailClosed).
+entity PokeResult {
+    process: RetainedProcess?
+    address: String
+    length: Integer
+    bytes_written: Integer
+    partial: Boolean
+}
+
+-- The durable consent/tamper record written for every memory WRITE, before
+-- the PokeResult is produced. Its existence is what makes the write
+-- subsystem auditable: a poke that cannot be recorded here produces no
+-- PokeResult at all (PokeIsAuditedFailClosed - fail closed, never an
+-- unlogged mutation). command is the operator/agent identity or request
+-- context the bridge attributes the write to.
+entity AuditRecord {
+    result: PokeResult
+    command: String
+    address: String
+    length: Integer
+    bytes_written: Integer
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- The maximum byte count any single peek/poke may touch. The range guard
+    -- (MemoryAccessRangeBounded) rejects a request whose length exceeds this,
+    -- so one access can never name an unbounded span. Sized to fit a
+    -- base64-encoded read inside the wire response budget alongside the
+    -- envelope (process-ops.allium's output_cap is the sibling bound).
+    max_access_length: Integer = 65536
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- The memory lifecycle is driven by wire requests that cross the device
+-- boundary. Like catalog.allium's ExecGateRequested and toolchains.allium's
+-- ToolchainProbed, these triggers are raised by the device host runtime when
+-- it receives the bridge's spawnRetain/peek/poke/terminate/release commands;
+-- they have no local surface-producer the analyser can track because they
+-- originate outside this module (the bridge, over the wire).
+
+-- Spawn-retain: launch a process and retain it as a memory target. The launch
+-- command MUST be catalogued (catalog/CatalogEntry{name: argv0}); without this
+-- precondition spawnRetain would be a launch-anything bypass of the device's
+-- whitelist gate. This is the load-bearing safety precondition, restated as
+-- SpawnRetainCommandIsCatalogued.
+rule ProcessRetained {
+    when: SpawnRetainRequested(token, pid, argv0, command)
+    requires: exists catalog/CatalogEntry{name: argv0}
+    ensures: RetainedProcess.created(
+        token: token,
+        pid: pid,
+        command: command,
+        status: retained
+    )
+}
+
+-- Release: relinquish the retained handle without killing the child. The
+-- token is consumed - it is no longer valid for peek/poke (RetainedTokenValid).
+rule ProcessReleased {
+    when: ReleaseRequested(p)
+    requires: p.status = retained
+    ensures: p.status = released
+}
+
+-- Terminate: kill the retained child. The token is consumed.
+rule ProcessTerminated {
+    when: TerminateRequested(p)
+    requires: p.status = retained
+    ensures: p.status = terminated
+}
+
+-- Peek: read memory. mem_access_valid is the access black box gating the read:
+-- the range is overflow-safe and within the length cap (MemoryAccessRangeBounded),
+-- the address parses to a 32-bit value (AddressIsWellFormed), and - when a
+-- token names a process target - the token references a live retained process
+-- (RetainedTokenValid); on the pre-NT tiers the region is accessible or the
+-- read clamps (PreNtAccessGuarded). A read needs no arming - only writes do.
+rule MemoryPeeked {
+    when: PeekRequested(target, address, length, bytes_read, truncated)
+    requires: mem_access_valid(target, address, length)
+    ensures: PeekResult.created(
+        process: target,
+        address: address,
+        length: length,
+        bytes_read: bytes_read,
+        truncated: truncated
+    )
+}
+
+-- Poke: write memory. This is the most dangerous operation in the system, so
+-- the precondition carries every write floor at once:
+--   - memory_write_armed: the device-side wire arm (/ALLOWMEMWRITE) is set -
+--     the device honours poke only when armed, regardless of which client sent
+--     it (PokeRequiresBothArmingLayers; the bridge mem_write advertisement gate
+--     is the other layer, enforced in mcp-bridge.allium).
+--   - mem_access_valid: the same range/address/token/region floor peek uses,
+--     here using the write predicate (a non-writable pre-NT region is rejected
+--     whole, no partial pre-NT write - PreNtAccessGuarded).
+--   - audit_writable: the durable audit sink can be written.
+-- The AuditRecord is created in the SAME ensures as the PokeResult: a poke that
+-- cannot be audited (audit_writable false) does not satisfy the requires, so NO
+-- PokeResult is produced (fail closed - PokeIsAuditedFailClosed).
+rule MemoryPoked {
+    when: PokeRequested(target, address, length, bytes_written, partial, command)
+    requires: memory_write_armed
+    requires: mem_access_valid(target, address, length)
+    requires: audit_writable
+    ensures:
+        let result = PokeResult.created(
+            process: target,
+            address: address,
+            length: length,
+            bytes_written: bytes_written,
+            partial: partial
+        )
+        AuditRecord.created(
+            result: result,
+            command: command,
+            address: address,
+            length: length,
+            bytes_written: bytes_written
+        )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- SAFETY TRANSFORM (AddressIsWellFormed): every peek/poke address parses to a
+-- 32-bit value in [0, 0xFFFFFFFF]. mem_parse_u32 is the parse-and-bound black
+-- box (the address arrives as a String, not an Integer, precisely because the
+-- wire's JSON integer field cannot hold a full 32-bit address without sign or
+-- range loss). A request whose address does not parse to a 32-bit value never
+-- satisfies mem_access_valid, so it produces no PeekResult/PokeResult.
+invariant AddressIsWellFormed {
+    for r in PeekResults:
+        mem_parse_u32(r.address) != null
+    and for w in PokeResults:
+        mem_parse_u32(w.address) != null
+}
+
+-- SAFETY TRANSFORM (MemoryAccessRangeBounded): the single most critical
+-- arithmetic guard. Every access touches [address, address+length) only, and
+-- only when length is within the cap AND address+length does not wrap past
+-- 0xFFFFFFFF. range_in_bounds is the overflow-safe black box (it computes the
+-- end without 32-bit wraparound, the classic off-by-overflow that turns a
+-- bounded read into an out-of-bounds one). length is also capped at
+-- config.max_access_length so no single access names an unbounded span.
+invariant MemoryAccessRangeBounded {
+    for r in PeekResults:
+        r.length <= config.max_access_length
+        and range_in_bounds(r.address, r.length)
+    and for w in PokeResults:
+        w.length <= config.max_access_length
+        and range_in_bounds(w.address, w.length)
+}
+
+-- SAFETY TRANSFORM (PreNtAccessGuarded): on the arena/shared_vm tiers (no
+-- per-process token, so process = null), no read of a non-committed region and
+-- no write of a non-writable region. region_accessible is the black box over
+-- VirtualQuery / IsBadReadPtr. A range that spans into a non-accessible region
+-- CLAMPS a peek (the read returns the accessible prefix with truncated = true)
+-- and REJECTS a poke (a pre-NT poke is whole-or-nothing - never a partial write
+-- into a guarded region, so a pre-NT PokeResult is never partial). The NT+
+-- process tier delegates region validity to WriteProcessMemory itself, which
+-- may legitimately report a partial write; the pre-NT tiers never do.
+invariant PreNtAccessGuarded {
+    for r in PeekResults:
+        r.process = null and r.truncated
+            implies not region_accessible(r.address, r.length)
+    and for w in PokeResults:
+        w.process = null implies not w.partial
+}
+
+-- SAFETY TRANSFORM (RetainedTokenValid): every memory operation that names a
+-- process target references a live retained process - status = retained.
+-- Released, terminated, forged and never-issued tokens are rejected (they do
+-- not resolve to a retained RetainedProcess, so mem_access_valid is false and
+-- no result is produced). Combined with the never-reused token generation, a
+-- token can never be aimed at a different process than the one it was issued
+-- for.
+invariant RetainedTokenValid {
+    for r in PeekResults:
+        r.process != null implies r.process.status = retained
+    and for w in PokeResults:
+        w.process != null implies w.process.status = retained
+}
+
+-- SAFETY TRANSFORM (SpawnRetainCommandIsCatalogued): every retained process's
+-- launch command is a device-catalogued command. This is the ProcessRetained
+-- precondition stated as an invariant (mirrors toolchains.allium's
+-- DefinitionCommandsAreCatalogued): spawnRetain can never launch an
+-- uncatalogued program, so it cannot be used to bypass the exec whitelist gate
+-- by routing a launch through the memory subsystem.
+invariant SpawnRetainCommandIsCatalogued {
+    for p in RetainedProcesses:
+        exists catalog/CatalogEntry{name: p.command}
+}
+
+-- SAFETY TRANSFORM (PokeIsAuditedFailClosed): every PokeResult (every real
+-- memory mutation) has exactly one corresponding AuditRecord, and a poke that
+-- cannot be audited produces NO PokeResult. The MemoryPoked rule creates both
+-- in one ensures, guarded by audit_writable, so the mutation and its durable
+-- record are inseparable - there is never an unlogged write, and never a
+-- logged-but-not-performed phantom.
+invariant PokeIsAuditedFailClosed {
+    for w in PokeResults:
+        exists AuditRecord{result: w}
+    and for a in AuditRecords:
+        a.result.bytes_written = a.bytes_written
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The device-runtime boundary: the bridge's spawnRetain/peek/poke/terminate/
+-- release wire commands arrive here as host-runtime stimuli. These cross the
+-- device boundary from the bridge (the analyser cannot track that cross-module
+-- flow), so this surface is the entry point that makes the memory rules
+-- reachable. mem_access_valid, memory_write_armed and audit_writable are
+-- resolved device-side at the moment each request is admitted.
+surface MemoryRuntime {
+    facing p: RetainedProcess
+
+    provides:
+        SpawnRetainRequested(token, pid, argv0, command)
+        ReleaseRequested(p)
+            when p.status = retained
+        TerminateRequested(p)
+            when p.status = retained
+        PeekRequested(target, address, length, bytes_read, truncated)
+        PokeRequested(target, address, length, bytes_written, partial, command)
+
+    -- SAFETY TRANSFORM (PokeRequiresBothArmingLayers): a memory WRITE requires
+    -- BOTH arming layers. memory_write_armed is the DEVICE-side wire arm
+    -- (/ALLOWMEMWRITE, a server command-line flag, enforced as the MemoryPoked
+    -- requires); the BRIDGE advertisement gate (the mem_write capability,
+    -- mcp-bridge.allium's MemoryWriteToolRequiresOptIn) is the other. This is a
+    -- boundary @guarantee because the device arm is an ambient command-line
+    -- condition (a black box over server startup), not a field on any entity
+    -- here. The two layers are independent on purpose: defence in depth -
+    -- either layer off means no write.
+    @guarantee PokeRequiresBothArmingLayers
+        -- Every poke the device honours (every PokeResult produced) was
+        -- admitted only because memory_write_armed held at MemoryPoked time
+        -- (the device /ALLOWMEMWRITE arm), AND the originating tool was
+        -- advertised only because the bridge operator opted into the mem_write
+        -- capability (mcp-bridge.allium). The device arm binds every client -
+        -- including a direct wire client that never went through the bridge, so
+        -- a bridge-only gate could never substitute for it.
+}
