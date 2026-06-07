@@ -20,6 +20,7 @@ fn caps() -> Capabilities {
         version: "test".to_string(),
         toolchains: vec![],
         toolchain_registration: false,
+        allow_memory_write: false,
     }
 }
 

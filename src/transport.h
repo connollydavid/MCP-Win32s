@@ -48,6 +48,8 @@ typedef struct {
     char  bindAddr[16];     /* TCP bind address (dotted quad); "" = INADDR_ANY */
     int   unsafeMode;       /* 1 = /UNSAFE: whitelist enforcement disabled */
     char  catalogPath[260]; /* /CATALOG:<path> override; "" = default */
+    int   allowMemWrite;    /* 1 = /ALLOWMEMWRITE: arm memory poke (off by default) */
+    char  auditPath[260];   /* /AUDIT:<path> override for the poke log; "" = default */
 } TransportConfig;
 
 /*

@@ -18,7 +18,7 @@ fn enc_strat() -> impl Strategy<Value = EncodingMode> {
     prop_oneof![Just(EncodingMode::Codepage), Just(EncodingMode::Utf8Native)]
 }
 
-fn caps(pty: bool, mem: MemTier, enc: EncodingMode) -> Capabilities {
+fn caps(pty: bool, mem: MemTier, enc: EncodingMode, allow_memory_write: bool) -> Capabilities {
     Capabilities {
         has_pty: pty,
         mem,
@@ -27,20 +27,34 @@ fn caps(pty: bool, mem: MemTier, enc: EncodingMode) -> Capabilities {
         version: "t".to_string(),
         toolchains: vec![],
         toolchain_registration: false,
+        allow_memory_write,
     }
 }
 
 proptest! {
     /// capability_satisfied (rule-success.ToolAdvertised, invariant.
-    /// AdvertisedToolsAreCapable): each named capability matches the
-    /// device exactly; an unknown capability is never satisfied.
+    /// AdvertisedToolsAreCapable; 5.3 capability_satisfied_mem): each named
+    /// capability matches the device exactly; an unknown capability is never
+    /// satisfied. The two-factor mem_write gate holds iff BOTH the tier is
+    /// non-none AND the operator opted in (MemoryWriteToolRequiresOptIn).
     #[test]
-    fn satisfies_matches_capabilities(pty in any::<bool>(), mem in mem_strat(), enc in enc_strat()) {
-        let c = caps(pty, mem, enc);
+    fn satisfies_matches_capabilities(
+        pty in any::<bool>(),
+        mem in mem_strat(),
+        enc in enc_strat(),
+        amw in any::<bool>(),
+    ) {
+        let c = caps(pty, mem, enc, amw);
         prop_assert_eq!(c.satisfies("pty"), pty);
         prop_assert_eq!(c.satisfies("mem"), mem != MemTier::None);
+        prop_assert_eq!(c.satisfies("mem_write"), mem != MemTier::None && amw);
         prop_assert_eq!(c.satisfies("utf8"), enc == EncodingMode::Utf8Native);
         prop_assert!(!c.satisfies("unknown_capability_xyz"));
+        // mem_write is strictly stronger than mem: it never holds where mem
+        // does not (a poke can never advertise where peek cannot).
+        if c.satisfies("mem_write") {
+            prop_assert!(c.satisfies("mem"));
+        }
     }
 
     /// from_ready reads the mem/encoding tiers (rule-success.CapabilitiesResolved,
@@ -51,7 +65,7 @@ proptest! {
         let mut f = Features { pty, ..Default::default() };
         f.extra.insert("mem".to_string(), serde_json::Value::String(mem.clone()));
         f.extra.insert("encoding".to_string(), serde_json::Value::String(enc.clone()));
-        let c = Capabilities::from_ready(437, "t".to_string(), &f, false);
+        let c = Capabilities::from_ready(437, "t".to_string(), &f, false, false);
         prop_assert_eq!(c.has_pty, pty);
         let want_mem = match mem.as_str() {
             "process" => MemTier::Process, "arena" => MemTier::Arena,

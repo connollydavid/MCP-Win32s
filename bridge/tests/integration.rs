@@ -18,6 +18,7 @@ fn caps(pty: bool) -> Capabilities {
         version: "test".to_string(),
         toolchains: vec![],
         toolchain_registration: false,
+        allow_memory_write: false,
     }
 }
 
@@ -81,13 +82,28 @@ async fn transport_failure_maps_to_iserror() {
 }
 
 /// rule-success.ToolAdvertised, invariant.AdvertisedToolsAreCapable — the
-/// gate mechanism. 5.0 ships no gated tools, so the prune set is empty for
-/// any capability profile; the per-capability logic is property-tested in
-/// props.rs.
+/// gate mechanism. 5.3 wires the FIRST real gated tools (the five memory
+/// tools), closing the G1 gap that left this prune set empty since 5.0. The
+/// `caps()` helper here is a `mem: none` device, so every memory tool is
+/// pruned regardless of pty. (The per-capability logic is property-tested in
+/// props.rs; the tools/list effect in memory.rs.)
 #[test]
-fn gating_prune_set_is_empty_in_5_0() {
-    assert!(tools_to_prune(&caps(false)).is_empty());
-    assert!(tools_to_prune(&caps(true)).is_empty());
+fn memory_tools_pruned_when_uncapable() {
+    for pty in [false, true] {
+        let pruned = tools_to_prune(&caps(pty));
+        for name in [
+            "win32_spawn_retain",
+            "win32_peek",
+            "win32_poke",
+            "win32_terminate",
+            "win32_release",
+        ] {
+            assert!(
+                pruned.contains(&name),
+                "{name} is pruned on a mem:none device"
+            );
+        }
+    }
 }
 
 /// Full MCP lifecycle over an in-memory duplex (no spawn, no network):

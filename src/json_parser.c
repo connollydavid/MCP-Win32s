@@ -171,8 +171,17 @@ static void assign_field(JsonCommand *cmd,
         json_unescape(val, val_len, cmd->cwd, MCP_MAX_PATH_LEN);
     } else if (strcmp(key_buf, "stdin_b64") == 0) {
         json_unescape(val, val_len, cmd->stdin_b64, MCP_MAX_STDIN_B64);
+    } else if (strcmp(key_buf, "mem_token") == 0) {
+        json_unescape(val, val_len, cmd->mem_token, MCP_MAX_MEM_TOKEN);
+    } else if (strcmp(key_buf, "mem_addr") == 0) {
+        json_unescape(val, val_len, cmd->mem_addr, MCP_MAX_MEM_NUM);
+    } else if (strcmp(key_buf, "mem_len") == 0) {
+        json_unescape(val, val_len, cmd->mem_len, MCP_MAX_MEM_NUM);
     }
-    /* Unknown keys are silently ignored */
+    /* mem_addr/mem_len are STRINGS, not integers, so they live here and
+     * never on the assign_int_field path - a 32-bit address overflows the
+     * signed-int parser (spec: memory-ops.allium AddressIsWellFormed).
+     * Unknown keys are silently ignored. */
 }
 
 /*
