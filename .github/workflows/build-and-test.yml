@@ -104,3 +104,31 @@ jobs:
       with:
         name: test-binaries
         path: build/mingw/test_*.exe
+
+  # Phase 5.0: the Rust MCP bridge (bridge/) is a separate crate (rmcp, stdio).
+  # The merge gate requires OBSERVED CI for it, not just a local cargo run, so
+  # it builds + tests here with clippy and rustfmt as gates. The release build
+  # confirms the server-only/current-thread binary compiles (the client and
+  # rt-multi-thread features stay test-only via dev-dependencies).
+  bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Rust toolchain (stable + clippy + rustfmt)
+      run: rustup component add clippy rustfmt
+
+    - name: Format check
+      run: cargo fmt --check
+
+    - name: Clippy (warnings are errors)
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Build (release)
+      run: cargo build --release
+
+    - name: Test (integration + proptest)
+      run: cargo test
