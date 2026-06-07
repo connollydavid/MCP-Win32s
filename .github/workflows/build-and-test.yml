@@ -14,7 +14,8 @@ jobs:
       run: |
         sudo dpkg --add-architecture i386
         sudo apt-get update
-        sudo apt-get install -y mingw-w64 wine wine32 cmake ninja-build
+        # icoutils provides wrestool, used to assert the embedded UTF-8 manifest.
+        sudo apt-get install -y mingw-w64 wine wine32 cmake ninja-build icoutils
 
     # Phase 4: theft host-native PBT (gcc -std=c99 + ASan/UBSan on the
     # OS-independent modules) runs BEFORE the Wine suite - fail fast with
@@ -49,14 +50,47 @@ jobs:
     # Phase 4: the delay-loaded uplift APIs must never appear in the import
     # table - they are GetProcAddress-only, or the binary fails to load on
     # Win32s 1.25a (PHASE4 acceptance criterion 4).
+    #
+    # 5.4: the nine wide (-W) file/process APIs are the same way - resolved via
+    # GetProcAddress only when the host's *A codepage cannot represent a path,
+    # never statically imported (W variants are absent from Win32s 1.25a, so a
+    # static import would fail the load).
     - name: Verify no delay-loaded uplift API in the import table
       run: |
         if i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe | \
-           grep -E 'CreateJobObject|CreatePseudoConsole|IsWow64Process|GenerateConsoleCtrlEvent|QueryFullProcessImageName|SetProcessMitigationPolicy'; then
+           grep -E 'CreateJobObject|CreatePseudoConsole|IsWow64Process|GenerateConsoleCtrlEvent|QueryFullProcessImageName|SetProcessMitigationPolicy|CreateFileW|FindFirstFileW|FindNextFileW|DeleteFileW|CopyFileW|MoveFileW|CreateDirectoryW|RemoveDirectoryW|CreateProcessW'; then
           echo "ERROR: uplift API in the import table (must be runtime-loaded)!"
           exit 1
         fi
         echo "OK: uplift APIs are GetProcAddress-only."
+
+    # 5.4: mcp-w32s.exe must carry the Win10 1903+ UTF-8 opt-in as exactly one
+    # application manifest at RT_MANIFEST (type 24) / ID 1 - the resource ID
+    # CREATEPROCESS_MANIFEST_RESOURCE_ID. Two manifests (e.g. a MinGW default
+    # one alongside ours) would be a malformed resource directory; zero means
+    # the *A APIs never switch to UTF-8. wrestool (icoutils) lists and extracts
+    # the resource; --raw dumps the manifest bytes verbatim for the content grep.
+    - name: Verify exactly one UTF-8 activeCodePage manifest at RT_MANIFEST ID 1
+      run: |
+        N=$(wrestool -l build/mingw/mcp-w32s.exe | grep -c -- '--type=24 --name=1' || true)
+        if [ "$N" != "1" ]; then
+          echo "ERROR: expected exactly one RT_MANIFEST (type=24) at ID 1, found $N!"
+          wrestool -l build/mingw/mcp-w32s.exe
+          exit 1
+        fi
+        MANIFEST=$(wrestool -x --raw --type=24 --name=1 build/mingw/mcp-w32s.exe)
+        # Anchor on the element name and its value form. Note: a bare "UTF-8"
+        # grep would count 2 (the XML <?xml encoding="UTF-8"?> decl + the
+        # activeCodePage value), so match ">UTF-8<" - the element value only.
+        ACP=$(printf '%s' "$MANIFEST" | grep -c 'activeCodePage' || true)
+        VAL=$(printf '%s' "$MANIFEST" | grep -c '>UTF-8<' || true)
+        SMI=$(printf '%s' "$MANIFEST" | grep -c 'schemas.microsoft.com/SMI/2019/WindowsSettings' || true)
+        if [ "$ACP" != "1" ] || [ "$VAL" != "1" ] || [ "$SMI" != "1" ]; then
+          echo "ERROR: manifest must carry exactly one UTF-8 activeCodePage on the SMI/2019 schema (got activeCodePage=$ACP >UTF-8<=$VAL SMI=$SMI)!"
+          printf '%s\n' "$MANIFEST"
+          exit 1
+        fi
+        echo "OK: exactly one UTF-8 activeCodePage manifest at RT_MANIFEST ID 1."
 
     # Phase 4.0b: wire-contract smoke - real server over /TCP under Wine,
     # validated by the spec-driven smoke client (acceptance criteria 10, 21).
