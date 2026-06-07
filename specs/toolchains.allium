@@ -1,0 +1,111 @@
+-- allium: 3
+-- toolchains.allium
+
+-- Scope: Build-toolchain definitions and device-side detection for the
+--        MCP-Win32s build subsystem.
+-- Includes: the declarative ToolchainDefinition schema (operator- and
+--           agent-authorable), its per-role specs, the device's startup
+--           detection of installed toolchains, and the catalog-bound
+--           safety floor that makes authored definitions safe.
+-- Excludes:
+--   - The bridge tool surface generated from definitions, the diagnostic
+--     model, and the registration/discovery tools (mcp-bridge.allium)
+--   - The command-catalog gate itself (catalog.allium, consumed here)
+--   - The exec core the build steps route through (process-ops.allium)
+-- Dependencies: catalog.allium
+
+use "./catalog.allium" as catalog
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- The four build-pipeline steps a toolchain may provide. A definition
+-- supplies a RoleSpec for each role it implements; a missing role simply
+-- yields no tool for that (vendor, role).
+enum ToolRole { compile | link | lib | assemble }
+
+-- Where a ToolchainDefinition came from. built_in ships with the bridge
+-- (MSVC, Open Watcom); config is an operator-supplied definition loaded at
+-- startup; registered arrives at runtime via win32_register_toolchain
+-- (opt-in - see mcp-bridge.allium's RegistrationRequiresOptIn).
+enum DefinitionSource { built_in | config | registered }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- A declarative description of a build toolchain - the "schema" an operator
+-- or agent authors. Toolchains are DATA, not bridge code: MSVC and Open
+-- Watcom are merely the two built_in definitions, and a new toolchain needs
+-- a definition rather than a code change. version_probe_command is run (its
+-- banner) to read the installed version; version_regex extracts the version
+-- string from that banner.
+entity ToolchainDefinition {
+    name: String
+    vendor: String
+    source: DefinitionSource
+    version_probe_command: String
+    version_regex: String
+}
+
+-- One role within a definition: which catalogued program implements the
+-- role, and the regex that parses that program's diagnostics into the
+-- normalized Diagnostic shape (mcp-bridge.allium). The typed-parameter ->
+-- argv/directive mapping is a black-box transform whose safety property is
+-- pinned by mcp-bridge.allium's BuildArgvIsCatalogued; the precondition that
+-- makes it safe is that `command` is always a catalogued program (see
+-- DefinitionCommandsAreCatalogued below), so no authored definition can ever
+-- introduce an uncatalogued command.
+entity RoleSpec {
+    definition: ToolchainDefinition
+    role: ToolRole
+    command: String
+    diagnostic_regex: String
+}
+
+-- A toolchain the DEVICE found installed at startup: it ran each catalogued
+-- build command's version banner and matched the output. The FULL version
+-- string is retained (e.g. "12.00.8804") - the support set keys on the build
+-- number, since the major version alone cannot distinguish service packs
+-- (every VC6 service pack reports the same _MSC_VER). Advertised in the ready
+-- message's `toolchains` array (wire-contract.allium's ReadyShape).
+entity DetectedToolchain {
+    vendor: String
+    command: String
+    version: String
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Detection: the device probes each catalogued build command at startup and
+-- records what it found - one DetectedToolchain per installed (command,
+-- version) whose banner the version_regex matched. ToolchainProbed is raised
+-- by the device host runtime (it runs each catalogued build command's version
+-- banner); like catalog.allium's ExecGateRequested it has no local
+-- surface-producer the analyser can track - it crosses the host boundary.
+rule ToolchainDetected {
+    when: ToolchainProbed(vendor, command, version)
+    ensures: DetectedToolchain.created(
+        vendor: vendor,
+        command: command,
+        version: version
+    )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- The safety floor for authored definitions: every role's program is a
+-- device-catalogued command. A definition (built_in, config, or registered)
+-- can therefore only ever drive an already-allow-listed program - authorship
+-- can never introduce an uncatalogued command. This is what makes
+-- agent-authored toolchains safe, and it is the precondition the bridge's
+-- BuildArgvIsCatalogued builds on.
+invariant DefinitionCommandsAreCatalogued {
+    for rs in RoleSpecs:
+        exists catalog/CatalogEntry{name: rs.command}
+}
