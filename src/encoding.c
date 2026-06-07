@@ -256,3 +256,34 @@ int Utf8ToUtf16(const unsigned char *bytes, int nBytes,
     }
     return n;
 }
+
+/*
+ * EncFindSeparators - Write the byte offsets of true path separators ('\\' and
+ * '/') in a UTF-8 path (spec: find_separators / PathSeparatorScanIsDbcsSafe).
+ * See the header for the full contract.
+ *
+ * DBCS-safe by construction: this scans the self-synchronising UTF-8 form, where
+ * '\\' (0x5C) and '/' (0x2F) are single-byte ASCII code points that can never be
+ * a continuation byte (0x80..0xBF) or a lead byte (0xC2..0xF4). So a double-byte
+ * character whose codepage trail byte happens to be 0x5C carries no 0x5C in its
+ * UTF-8 encoding, and is never miscounted as a separator. A plain byte scan is
+ * therefore correct here - the DBCS hazard is what scanning the codepage form
+ * (not the UTF-8 form) would have caused.
+ */
+int EncFindSeparators(const unsigned char *utf8Path, int len,
+                      int *out, int outCap)
+{
+    int i;
+    int n;
+
+    n = 0;
+    for (i = 0; i < len; i++) {
+        if (utf8Path[i] == 0x5Cu || utf8Path[i] == 0x2Fu) {
+            if (n < outCap) {
+                out[n] = i;
+            }
+            n++;
+        }
+    }
+    return n;
+}

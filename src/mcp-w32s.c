@@ -967,11 +967,30 @@ static Catalog *LoadCatalogAtStartup(const TransportConfig *config)
         lstrcpynA(path, config->catalogPath, (int)sizeof(path));
     } else {
         int n;
+        char *p;
+        char *dirEnd;
         n = (int)GetModuleFileNameA(NULL, path, sizeof(path));
-        while (n > 0 && path[n - 1] != '\\' && path[n - 1] != '/') {
-            n--;
+        if (n >= (int)sizeof(path)) {
+            n = (int)sizeof(path) - 1;
         }
         path[n] = '\0';
+        /*
+         * Strip the file name to the trailing separator with a DBCS-safe
+         * FORWARD walk. A backward byte scan could mistake the 0x5C trail byte
+         * of a double-byte character (in a DBCS ANSI/OEM module path) for a
+         * '\\' and truncate mid-character. CharNextA advances a whole character
+         * per the system code page, so a '\\' or '/' it lands on is a true
+         * separator. Both CharNextA and IsDBCSLeadByte are Win32s-safe.
+         */
+        dirEnd = path;
+        p = path;
+        while (*p != '\0') {
+            if (*p == '\\' || *p == '/') {
+                dirEnd = p + 1;     /* keep the separator; cut just after it */
+            }
+            p = CharNextA(p);
+        }
+        *dirEnd = '\0';
         lstrcatA(path, "catalog\\win32-commands.json");
     }
 

@@ -461,6 +461,46 @@ TEST_CASE(codec_truncation_boundary_clean)
     }
 }
 
+/* ========================================================
+ * PathSeparatorScanIsDbcsSafe: EncFindSeparators counts true
+ * separators on the UTF-8 form. U+2015 is cp932 0x815C (a
+ * 0x5C trail byte); as UTF-8 it is E2 80 95 - no 0x5C - so it
+ * is never miscounted, which a scan of the cp932 bytes would.
+ * Obligation: dbcs_safe_scan (tests/OBLIGATIONS-5.4.md).
+ * ======================================================== */
+
+TEST_CASE(dbcs_safe_scan) {
+    /* "dir\<U+2015>/file" - a backslash, then the multi-byte U+2015, then a
+     * slash. The 0x5C-trail hazard of cp932 0x815C is absent in UTF-8. */
+    static const unsigned char utf8[] = {
+        'd', 'i', 'r', '\\', 0xE2, 0x80, 0x95, '/', 'f', 'i', 'l', 'e'
+    };
+    int off[8];
+    int n;
+    n = EncFindSeparators(utf8, (int)sizeof(utf8), off, 8);
+    TEST_ASSERT_INT_EQUAL(2, n, "only the two real separators counted");
+    TEST_ASSERT_INT_EQUAL(3, off[0], "first separator at the backslash");
+    TEST_ASSERT_INT_EQUAL(7, off[1], "second separator at the slash");
+    /* No offset lands inside E2 80 95 (bytes 4..6). */
+}
+
+/* ========================================================
+ * EncFindSeparators returns the TOTAL count but writes at most
+ * outCap offsets (no overflow of a caller's bounded buffer).
+ * Obligation: dbcs_safe_scan / find_separators (OBLIGATIONS-5.4).
+ * ======================================================== */
+
+TEST_CASE(find_separators_caps_output) {
+    static const unsigned char p[] = { '/', '/', '/', '/' };
+    int off[2];
+    int n;
+    off[0] = -1; off[1] = -1;
+    n = EncFindSeparators(p, (int)sizeof(p), off, 2);
+    TEST_ASSERT_INT_EQUAL(4, n, "returns the total count beyond outCap");
+    TEST_ASSERT_INT_EQUAL(0, off[0], "wrote the first offset within cap");
+    TEST_ASSERT_INT_EQUAL(1, off[1], "wrote the second offset within cap");
+}
+
 int main(void)
 {
     printf("test_encoding (charset tables - M2):\n");
@@ -479,6 +519,8 @@ int main(void)
     RUN_TEST(codec_lone_surrogate_becomes_replacement);
     RUN_TEST(codec_decode_total_on_garbage);
     RUN_TEST(codec_truncation_boundary_clean);
+    RUN_TEST(dbcs_safe_scan);
+    RUN_TEST(find_separators_caps_output);
     print_test_summary();
     return g_tests_failed;
 }
