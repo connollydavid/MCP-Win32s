@@ -28,6 +28,34 @@ pub struct EchoParams {
     pub text: String,
 }
 
+/// Parameters for the single-path file tools (read/list/delete/mkdir/rmdir).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PathParams {
+    /// Absolute or device-relative path on the Win32 host.
+    pub path: String,
+}
+
+/// Parameters for `win32_write_file`: a path and the base64-encoded bytes.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WriteParams {
+    /// Path to write on the Win32 host.
+    pub path: String,
+    /// File contents, base64-encoded (the wire is base64 for binary safety).
+    pub data: String,
+}
+
+/// Parameters for the two-path file tools (copy/move): source and dest.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SourceDestParams {
+    /// Existing source path on the Win32 host.
+    pub source: String,
+    /// Destination path on the Win32 host (must not already exist).
+    pub dest: String,
+}
+
 struct Inner {
     caps: Capabilities,
     device: Mutex<Box<dyn Device>>,
@@ -107,6 +135,131 @@ impl Bridge {
         Parameters(p): Parameters<EchoParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("echo", self.next_id()).with("line", Value::String(p.text));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Read a file from the Win32 host. 1:1 relay to the device `read`
+    /// command (path -> path).
+    #[tool(
+        name = "win32_read_file",
+        description = "Read a file from the Win32 host; returns its contents (base64 for binary safety).",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn win32_read_file(
+        &self,
+        Parameters(p): Parameters<PathParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("read", self.next_id()).with("path", Value::String(p.path));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Write a file on the Win32 host. 1:1 relay to the device `write`
+    /// command (path -> path, data -> data). `data` is base64.
+    #[tool(
+        name = "win32_write_file",
+        description = "Write a file on the Win32 host. `data` must be base64-encoded (the device wire is base64 for binary safety; pass the raw bytes encoded, not transcoded text).",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_write_file(
+        &self,
+        Parameters(p): Parameters<WriteParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("write", self.next_id())
+            .with("path", Value::String(p.path))
+            .with("data", Value::String(p.data));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// List a directory on the Win32 host. 1:1 relay to the device `list`
+    /// command (path -> path).
+    #[tool(
+        name = "win32_list_dir",
+        description = "List the entries of a directory on the Win32 host.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn win32_list_dir(
+        &self,
+        Parameters(p): Parameters<PathParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("list", self.next_id()).with("path", Value::String(p.path));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Delete a file on the Win32 host. 1:1 relay to the device `delete`
+    /// command (path -> path).
+    #[tool(
+        name = "win32_delete_file",
+        description = "Delete a file on the Win32 host.",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_delete_file(
+        &self,
+        Parameters(p): Parameters<PathParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("delete", self.next_id()).with("path", Value::String(p.path));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Copy a file on the Win32 host. 1:1 relay to the device `copy`
+    /// command (source -> path, dest -> dest). Never overwrites — it
+    /// carries no destructiveHint for that reason.
+    #[tool(
+        name = "win32_copy_file",
+        description = "Copy a file on the Win32 host. Fails if `dest` already exists — it never overwrites; to replace a file, delete it first then copy."
+    )]
+    pub async fn win32_copy_file(
+        &self,
+        Parameters(p): Parameters<SourceDestParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("copy", self.next_id())
+            .with("path", Value::String(p.source))
+            .with("dest", Value::String(p.dest));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Move/rename a file on the Win32 host. 1:1 relay to the device
+    /// `move` command (source -> path, dest -> dest).
+    #[tool(
+        name = "win32_move_file",
+        description = "Move or rename a file on the Win32 host. Fails if `dest` already exists.",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_move_file(
+        &self,
+        Parameters(p): Parameters<SourceDestParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("move", self.next_id())
+            .with("path", Value::String(p.source))
+            .with("dest", Value::String(p.dest));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Create a directory on the Win32 host. 1:1 relay to the device
+    /// `mkdir` command (path -> path).
+    #[tool(
+        name = "win32_make_dir",
+        description = "Create a single directory level on the Win32 host. Does not create missing parents — a missing parent errors \"path not found\"; create parents first."
+    )]
+    pub async fn win32_make_dir(
+        &self,
+        Parameters(p): Parameters<PathParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("mkdir", self.next_id()).with("path", Value::String(p.path));
+        Ok(self.round_trip(cmd).await)
+    }
+
+    /// Remove an empty directory on the Win32 host. 1:1 relay to the
+    /// device `rmdir` command (path -> path).
+    #[tool(
+        name = "win32_remove_dir",
+        description = "Remove a directory on the Win32 host. The directory must be empty — it does not delete recursively; a non-empty directory errors \"directory not empty\".",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_remove_dir(
+        &self,
+        Parameters(p): Parameters<PathParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("rmdir", self.next_id()).with("path", Value::String(p.path));
         Ok(self.round_trip(cmd).await)
     }
 }

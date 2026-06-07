@@ -2,7 +2,10 @@
 -- file-ops.allium
 
 -- Scope: File operations on the Win32 filesystem
--- Includes: File read, write, list, delete
+-- Includes: File read, write, list, delete, copy, move; directory
+--           create/remove (API-backed: CopyFileA / MoveFileA /
+--           CreateDirectoryA / RemoveDirectoryA -
+--           Win32s-1.25a-uniform A-APIs)
 -- Excludes:
 --   - Protocol transport (handled by mcp-protocol.allium)
 --   - Command execution (Phase 3)
@@ -22,6 +25,18 @@ entity File {
 
 entity Directory {
     path: String
+    status: present | deleted | missing
+    -- Whether the directory currently has no contents. An environmental
+    -- fact read from the host filesystem at remove time: files appear
+    -- under a directory outside this module's rules, so the environment
+    -- maintains this field. A freshly created directory is empty.
+    is_empty: Boolean
+
+    transitions status {
+        missing -> present
+        present -> deleted
+        terminal: deleted
+    }
 }
 
 entity FileReadResult {
@@ -74,9 +89,64 @@ entity FileDeleteResult {
     error_reason: String when status = error
 }
 
+entity FileCopyResult {
+    source: File
+    dest: File
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+entity FileMoveResult {
+    source: File
+    dest: File
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+entity MakeDirResult {
+    directory: Directory
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
+entity RemoveDirResult {
+    directory: Directory
+    status: ok | error
+    request_id: String
+
+    transitions status {
+        terminal: ok, error
+    }
+
+    error_reason: String when status = error
+}
+
 rule FileCreatedMissing {
     when: f: File.created
     ensures: f.status = missing
+}
+
+rule DirectoryCreatedMissing {
+    when: d: Directory.created
+    ensures: d.status = missing
 }
 
 rule FileReadSuccess {
@@ -152,6 +222,108 @@ rule FileWriteAfterDelete {
     ensures: result.status = error
 }
 
+-- Copy is deliberately non-destructive: the implementation calls
+-- CopyFileA with fail-if-exists, so a copy can never clobber existing
+-- data (which is why the bridge's win32_copy_file carries no
+-- destructiveHint - see mcp-bridge.allium FileToolHintsAreHonest).
+-- Overwriting is an explicit two-step: delete, then copy.
+
+rule FileCopySuccess {
+    when: result: FileCopyResult.created
+    requires: result.source.status = present
+    requires: result.dest.status = missing
+    ensures: result.dest.status = present
+    ensures: result.status = ok
+}
+
+rule FileCopySourceMissing {
+    when: result: FileCopyResult.created
+    requires: result.source.status = missing or result.source.status = deleted
+    ensures: result.status = error
+    ensures: result.error_reason = "file not found"
+}
+
+rule FileCopyDestExists {
+    when: result: FileCopyResult.created
+    requires: result.source.status = present
+    requires: result.dest.status = present
+    ensures: result.status = error
+    ensures: result.error_reason = "file exists"
+}
+
+-- MoveFileA fails when the destination exists (rename semantics,
+-- uniform across the range) - never an implicit overwrite.
+
+rule FileMoveSuccess {
+    when: result: FileMoveResult.created
+    requires: result.source.status = present
+    requires: result.dest.status = missing
+    ensures: result.source.status = deleted
+    ensures: result.dest.status = present
+    ensures: result.status = ok
+}
+
+rule FileMoveSourceMissing {
+    when: result: FileMoveResult.created
+    requires: result.source.status = missing or result.source.status = deleted
+    ensures: result.status = error
+    ensures: result.error_reason = "file not found"
+}
+
+rule FileMoveDestExists {
+    when: result: FileMoveResult.created
+    requires: result.source.status = present
+    requires: result.dest.status = present
+    ensures: result.status = error
+    ensures: result.error_reason = "file exists"
+}
+
+-- CreateDirectoryA creates a single level only: no recursive (mkdir -p)
+-- creation. A missing parent surfaces as an implementation-reported
+-- error ("path not found" - actionable: the agent composes mkdir calls).
+
+rule MakeDirSuccess {
+    when: result: MakeDirResult.created
+    requires: result.directory.status = missing
+    ensures: result.directory.status = present
+    ensures: result.directory.is_empty = true
+    ensures: result.status = ok
+}
+
+rule MakeDirAlreadyExists {
+    when: result: MakeDirResult.created
+    requires: result.directory.status = present
+    ensures: result.status = error
+    ensures: result.error_reason = "directory exists"
+}
+
+-- RemoveDirectoryA refuses a non-empty directory; there is deliberately
+-- no recursive delete (default-deny: bulk destruction is not a single
+-- device command).
+
+rule RemoveDirSuccess {
+    when: result: RemoveDirResult.created
+    requires: result.directory.status = present
+    requires: result.directory.is_empty
+    ensures: result.directory.status = deleted
+    ensures: result.status = ok
+}
+
+rule RemoveDirNotEmpty {
+    when: result: RemoveDirResult.created
+    requires: result.directory.status = present
+    requires: not result.directory.is_empty
+    ensures: result.status = error
+    ensures: result.error_reason = "directory not empty"
+}
+
+rule RemoveDirNotFound {
+    when: result: RemoveDirResult.created
+    requires: result.directory.status = missing or result.directory.status = deleted
+    ensures: result.status = error
+    ensures: result.error_reason = "directory not found"
+}
+
 invariant ReadResultHasData {
     for result in FileReadResults:
         result.status = ok implies result.data.size >= 0
@@ -169,6 +341,19 @@ invariant ListResultHasEntries {
 -- "buffer overflow", "null parameter"). The spec models only the
 -- externally meaningful reasons; finer-grained I/O failure detail is
 -- implementation-defined and may vary without spec change.
+
+-- Recorded intentional gaps (copy/move/mkdir/rmdir):
+--   1. Re-used paths after delete. copy/move/mkdir onto a path whose
+--      bound entity is deleted are not modelled: deleted is terminal in
+--      this model, but on the host the path is simply free again and
+--      the operation succeeds. Source-side deleted IS modelled (the
+--      host path is gone, so "file not found" is faithful).
+--   2. Host-condition error detail rides the implementation-defined
+--      vocabulary above: mkdir with a missing parent ("path not
+--      found"), copy/move where the path names a directory,
+--      access-denied, cross-volume move failures.
+--   3. move follows MoveFileA: a same-volume directory rename succeeds
+--      even though the tool surface presents move as a file operation.
 
 open question "Should write operations preserve existing file permissions or set defaults?"
 open question "Should list operations include hidden files?"

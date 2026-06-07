@@ -675,6 +675,46 @@ void ProcessCommand(const char *line, Transport *t)
                                             errMsg, response,
                                             sizeof(response));
         }
+    } else if (strcmp(cmd.cmd, "copy") == 0) {
+        if (FileOpCopy(cmd.path, cmd.dest, errMsg, sizeof(errMsg))) {
+            responseLen = BuildJsonResponse(cmd.id, "ok", "message",
+                                            "copied",
+                                            response, sizeof(response));
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
+    } else if (strcmp(cmd.cmd, "move") == 0) {
+        if (FileOpMove(cmd.path, cmd.dest, errMsg, sizeof(errMsg))) {
+            responseLen = BuildJsonResponse(cmd.id, "ok", "message",
+                                            "moved",
+                                            response, sizeof(response));
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
+    } else if (strcmp(cmd.cmd, "mkdir") == 0) {
+        if (FileOpMakeDir(cmd.path, errMsg, sizeof(errMsg))) {
+            responseLen = BuildJsonResponse(cmd.id, "ok", "message",
+                                            "created",
+                                            response, sizeof(response));
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
+    } else if (strcmp(cmd.cmd, "rmdir") == 0) {
+        if (FileOpRemoveDir(cmd.path, errMsg, sizeof(errMsg))) {
+            responseLen = BuildJsonResponse(cmd.id, "ok", "message",
+                                            "removed",
+                                            response, sizeof(response));
+        } else {
+            responseLen = BuildJsonResponse(cmd.id, "error", "error",
+                                            errMsg, response,
+                                            sizeof(response));
+        }
     } else if (strcmp(cmd.cmd, "exec") == 0) {
         HandleExec(&cmd, t, 0);
         return;

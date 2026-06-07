@@ -44,4 +44,42 @@ int FileOpList(const char *path, char *out, int outSize,
  */
 int FileOpDelete(const char *path, char *errMsg, int errSize);
 
+/*
+ * FileOpCopy - Copy a file, never overwriting (CopyFileA fail-if-exists).
+ *
+ * Deliberately non-destructive: overwriting is an explicit
+ * delete-then-copy (spec: file-ops.allium FileCopyDestExists).
+ * errMsg: "file not found" (source missing), "file exists" (destination
+ * present); other host failures get a short implementation-defined reason.
+ */
+int FileOpCopy(const char *src, const char *dest, char *errMsg, int errSize);
+
+/*
+ * FileOpMove - Rename/move a file (MoveFileA; fails if dest exists).
+ *
+ * errMsg: "file not found" (source missing), "file exists" (destination
+ * present); other host failures get a short implementation-defined reason.
+ */
+int FileOpMove(const char *src, const char *dest, char *errMsg, int errSize);
+
+/*
+ * FileOpMakeDir - Create one directory level (CreateDirectoryA).
+ *
+ * Single level only - no recursive (mkdir -p) creation; a missing parent
+ * fails with "path not found".
+ * errMsg: "directory exists" (already present), "path not found"
+ * (parent missing); other host failures implementation-defined.
+ */
+int FileOpMakeDir(const char *path, char *errMsg, int errSize);
+
+/*
+ * FileOpRemoveDir - Remove an empty directory (RemoveDirectoryA).
+ *
+ * Refuses non-empty directories; there is deliberately no recursive
+ * delete.
+ * errMsg: "directory not found" (missing), "directory not empty";
+ * other host failures implementation-defined.
+ */
+int FileOpRemoveDir(const char *path, char *errMsg, int errSize);
+
 #endif /* FILE_OPS_H */
