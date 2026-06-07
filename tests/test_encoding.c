@@ -18,6 +18,7 @@
  */
 #include "test_framework.h"
 #include "charset_tables.h"
+#include "encoding.h"
 
 static const int SBCS_PAGES[] = {
     1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 874,
@@ -284,6 +285,182 @@ TEST_CASE(representable_predicate)
     TEST_ASSERT(CpRepresentable(437, u, 1) == 0, "Euro not representable in cp437");
 }
 
+/* ------------------------------------------------------------------ */
+/* The pure UTF-8 <-> UTF-16 codec (encoding.h Utf8Codec contract).    */
+/* ------------------------------------------------------------------ */
+
+/* utf8_valid - 1 iff buf[0..n) is entirely well-formed UTF-8 (Table 3-7),
+ * checked independently of the codec, used to confirm an encode's output. */
+static int utf8_valid(const unsigned char *buf, int n)
+{
+    int i = 0;
+    while (i < n) {
+        unsigned int b0 = buf[i];
+        int          seqLen, k;
+        unsigned int lo2, hi2;
+        if (b0 <= 0x7Fu) { i += 1; continue; }
+        seqLen = 0; lo2 = 0x80u; hi2 = 0xBFu;
+        if (b0 >= 0xC2u && b0 <= 0xDFu) { seqLen = 2; }
+        else if (b0 == 0xE0u) { seqLen = 3; lo2 = 0xA0u; }
+        else if (b0 >= 0xE1u && b0 <= 0xECu) { seqLen = 3; }
+        else if (b0 == 0xEDu) { seqLen = 3; hi2 = 0x9Fu; }
+        else if (b0 >= 0xEEu && b0 <= 0xEFu) { seqLen = 3; }
+        else if (b0 == 0xF0u) { seqLen = 4; lo2 = 0x90u; }
+        else if (b0 >= 0xF1u && b0 <= 0xF3u) { seqLen = 4; }
+        else if (b0 == 0xF4u) { seqLen = 4; hi2 = 0x8Fu; }
+        if (seqLen == 0) { return 0; }
+        for (k = 1; k < seqLen; k++) {
+            unsigned int lo = (k == 1) ? lo2 : 0x80u;
+            unsigned int hi = (k == 1) ? hi2 : 0xBFu;
+            unsigned int bc;
+            if (i + k >= n) { return 0; }
+            bc = buf[i + k];
+            if (bc < lo || bc > hi) { return 0; }
+        }
+        i += seqLen;
+    }
+    return 1;
+}
+
+TEST_CASE(codec_round_trip_ascii_bmp_astral)
+{
+    /* 'A' (1 byte), U+00E9 e-acute (2), U+4E2D (3), U+1F600 (astral, the pair
+     * D83D DE00) all round-trip identically through encode then decode. */
+    unsigned short u[5];
+    unsigned char out8[16];
+    unsigned short back[8];
+    EncStatus s;
+    int nb, nu, i;
+
+    u[0] = 0x0041;          /* 'A' */
+    u[1] = 0x00E9;          /* e-acute */
+    u[2] = 0x4E2D;          /* CJK */
+    u[3] = 0xD83D;          /* astral high surrogate */
+    u[4] = 0xDE00;          /* astral low surrogate */
+
+    s = (EncStatus)999;
+    nb = Utf16ToUtf8(u, 5, out8, (int)sizeof(out8), &s);
+    TEST_ASSERT_INT_EQUAL(ENC_OK, s, "encode status OK");
+    TEST_ASSERT_INT_EQUAL(1 + 2 + 3 + 4, nb, "encoded byte count 1+2+3+4");
+    TEST_ASSERT(utf8_valid(out8, nb), "encoded output is well-formed UTF-8");
+
+    s = (EncStatus)999;
+    nu = Utf8ToUtf16(out8, nb, back, 8, &s);
+    TEST_ASSERT_INT_EQUAL(ENC_OK, s, "decode status OK");
+    TEST_ASSERT_INT_EQUAL(5, nu, "round-trips to 5 units");
+    for (i = 0; i < 5; i++) {
+        TEST_ASSERT(back[i] == u[i], "unit round-trips identically");
+    }
+}
+
+TEST_CASE(codec_lone_surrogate_becomes_replacement)
+{
+    /* A lone high surrogate (0xD800) and a lone low surrogate (0xDC00) each
+     * encode to EF BF BD (U+FFFD), status ENC_LOSSY; output is valid UTF-8. */
+    unsigned short u[1];
+    unsigned char out8[8];
+    EncStatus s;
+    int nb;
+
+    u[0] = 0xD800;          /* lone high surrogate */
+    s = (EncStatus)999;
+    nb = Utf16ToUtf8(u, 1, out8, (int)sizeof(out8), &s);
+    TEST_ASSERT_INT_EQUAL(ENC_LOSSY, s, "lone high surrogate is lossy");
+    TEST_ASSERT_INT_EQUAL(3, nb, "U+FFFD is 3 bytes");
+    TEST_ASSERT(out8[0] == 0xEF && out8[1] == 0xBF && out8[2] == 0xBD,
+                "lone high surrogate -> EF BF BD");
+    TEST_ASSERT(utf8_valid(out8, nb), "output is well-formed UTF-8");
+
+    u[0] = 0xDC00;          /* lone low surrogate */
+    s = (EncStatus)999;
+    nb = Utf16ToUtf8(u, 1, out8, (int)sizeof(out8), &s);
+    TEST_ASSERT_INT_EQUAL(ENC_LOSSY, s, "lone low surrogate is lossy");
+    TEST_ASSERT_INT_EQUAL(3, nb, "U+FFFD is 3 bytes");
+    TEST_ASSERT(out8[0] == 0xEF && out8[1] == 0xBF && out8[2] == 0xBD,
+                "lone low surrogate -> EF BF BD");
+    TEST_ASSERT(utf8_valid(out8, nb), "output is well-formed UTF-8");
+}
+
+TEST_CASE(codec_decode_total_on_garbage)
+{
+    /* Maximal-subpart fixtures: an ill-formed sequence emits ONE U+FFFD for its
+     * maximal valid subpart, then resyncs AT the first non-permitted byte. */
+    unsigned char in[8];
+    unsigned short out[8];
+    EncStatus s;
+    int nu;
+
+    /* {E0,41}: E0 needs A0..BF next; 0x41 is not -> E0 alone is the maximal
+     * subpart (one U+FFFD), resync AT 0x41 -> 'A'. */
+    in[0] = 0xE0; in[1] = 0x41;
+    s = (EncStatus)999;
+    nu = Utf8ToUtf16(in, 2, out, 8, &s);
+    TEST_ASSERT_INT_EQUAL(ENC_LOSSY, s, "{E0,41} is lossy");
+    TEST_ASSERT_INT_EQUAL(2, nu, "{E0,41} -> two units");
+    TEST_ASSERT(out[0] == 0xFFFD && out[1] == 0x0041, "{E0,41} -> FFFD,'A'");
+
+    /* {ED,A0,80} (a CESU surrogate): ED permits only 80..9F next; A0 stops it
+     * -> one U+FFFD at ED; then A0 is a stray continuation -> U+FFFD; then 80
+     * is a stray continuation -> U+FFFD. */
+    in[0] = 0xED; in[1] = 0xA0; in[2] = 0x80;
+    s = (EncStatus)999;
+    nu = Utf8ToUtf16(in, 3, out, 8, &s);
+    TEST_ASSERT_INT_EQUAL(ENC_LOSSY, s, "{ED,A0,80} is lossy");
+    TEST_ASSERT_INT_EQUAL(3, nu, "{ED,A0,80} -> three units");
+    TEST_ASSERT(out[0] == 0xFFFD && out[1] == 0xFFFD && out[2] == 0xFFFD,
+                "{ED,A0,80} -> FFFD,FFFD,FFFD");
+
+    /* {80}: a lone continuation byte -> one U+FFFD. */
+    in[0] = 0x80;
+    s = (EncStatus)999;
+    nu = Utf8ToUtf16(in, 1, out, 8, &s);
+    TEST_ASSERT_INT_EQUAL(ENC_LOSSY, s, "{80} is lossy");
+    TEST_ASSERT_INT_EQUAL(1, nu, "{80} -> one unit");
+    TEST_ASSERT(out[0] == 0xFFFD, "{80} -> FFFD");
+
+    /* {F0,28,8C,28}: F0 needs 90..BF next; 0x28 is not -> F0 alone (one U+FFFD),
+     * resync AT 0x28 -> '('; then 8C stray -> U+FFFD; then 0x28 -> '('. */
+    in[0] = 0xF0; in[1] = 0x28; in[2] = 0x8C; in[3] = 0x28;
+    s = (EncStatus)999;
+    nu = Utf8ToUtf16(in, 4, out, 8, &s);
+    TEST_ASSERT_INT_EQUAL(ENC_LOSSY, s, "{F0,28,8C,28} is lossy");
+    TEST_ASSERT_INT_EQUAL(4, nu, "{F0,28,8C,28} -> four units");
+    TEST_ASSERT(out[0] == 0xFFFD && out[1] == 0x0028 &&
+                out[2] == 0xFFFD && out[3] == 0x0028,
+                "{F0,28,8C,28} -> FFFD,'(',FFFD,'('");
+}
+
+TEST_CASE(codec_truncation_boundary_clean)
+{
+    /* Encode two U+4E2D (3 bytes each) into a 4-byte buffer: only the first
+     * char fits, the encode stops on a code-point boundary (ENC_TRUNCATED). */
+    unsigned short u[2];
+    unsigned char out8[4];
+    EncStatus s;
+    int nb;
+
+    u[0] = 0x4E2D; u[1] = 0x4E2D;
+    s = (EncStatus)999;
+    nb = Utf16ToUtf8(u, 2, out8, 4, &s);
+    TEST_ASSERT_INT_EQUAL(ENC_TRUNCATED, s, "encode hits the 4-byte bound");
+    TEST_ASSERT_INT_EQUAL(3, nb, "writes one whole 3-byte char, not four");
+    TEST_ASSERT(utf8_valid(out8, nb), "truncated prefix is whole valid UTF-8");
+
+    /* Decode a 4-byte astral char (U+1F600 -> F0 9F 98 80) into a 1-unit
+     * buffer: the surrogate pair will not fit, so 0 units are written and the
+     * decode stops cleanly (never a lone high surrogate). */
+    {
+        unsigned char astral[4];
+        unsigned short dec[2];
+        int nu;
+        astral[0] = 0xF0; astral[1] = 0x9F; astral[2] = 0x98; astral[3] = 0x80;
+        s = (EncStatus)999;
+        nu = Utf8ToUtf16(astral, 4, dec, 1, &s);
+        TEST_ASSERT_INT_EQUAL(ENC_TRUNCATED, s, "decode won't split the pair");
+        TEST_ASSERT_INT_EQUAL(0, nu, "no lone high surrogate written");
+    }
+}
+
 int main(void)
 {
     printf("test_encoding (charset tables - M2):\n");
@@ -298,6 +475,10 @@ int main(void)
     RUN_TEST(strict_narrowing_rejects_unrepresentable);
     RUN_TEST(lone_surrogate_rejected);
     RUN_TEST(representable_predicate);
+    RUN_TEST(codec_round_trip_ascii_bmp_astral);
+    RUN_TEST(codec_lone_surrogate_becomes_replacement);
+    RUN_TEST(codec_decode_total_on_garbage);
+    RUN_TEST(codec_truncation_boundary_clean);
     print_test_summary();
     return g_tests_failed;
 }
