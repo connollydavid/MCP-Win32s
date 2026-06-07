@@ -351,4 +351,22 @@ surface MemoryRuntime {
         -- capability (mcp-bridge.allium). The device arm binds every client -
         -- including a direct wire client that never went through the bridge, so
         -- a bridge-only gate could never substitute for it.
+
+    -- SAFETY TRANSFORM (ProcessTierTargetIsRetained): on the NT+ process tier -
+    -- the only tier where a per-process token exists - mem_access_valid REQUIRES
+    -- a live retained token; a token-less peek/poke is REFUSED. It must never
+    -- fall through to the device's OWN address space: the spawn-retain table is
+    -- the SOLE process-tier target boundary (no OpenProcess-by-PID, no self-read
+    -- or self-write of mcp-w32s.exe). This is the contrapositive of the pre-NT
+    -- framing - process = null arises ONLY on the arena/shared_vm tiers
+    -- (PreNtAccessGuarded), never from a token-less process-tier request - so the
+    -- two are never confused. A boundary @guarantee because the tier is an
+    -- ambient device condition (MemTier from the OS family), not a field on
+    -- PeekResult/PokeResult; it names the property mem_access_valid guarantees so
+    -- the token boundary is auditable, not hidden inside the black box.
+    @guarantee ProcessTierTargetIsRetained
+        -- Every process-tier PeekResult/PokeResult (the NT+ tier) has a non-null
+        -- process naming a retained child resolved through the token table; a
+        -- request without a live token produces no result. The device never
+        -- reads or writes its own memory through the memory subsystem.
 }

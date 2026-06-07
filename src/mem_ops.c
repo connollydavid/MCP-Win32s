@@ -708,8 +708,20 @@ void MemPoke(const char *token, unsigned long addr,
     if (auditCmd[0] == '\0') {
         auditCmd = MemTierName(tier);
     }
-    AuditWritePoke(MemTierName(tier), auditTok, auditPid, auditCmd,
-                   addr, len, res->bytes_written, res->partial);
+    /* Fail LOUD if the record could not be written (elicit decision 4): the
+     * AuditIsWritable pre-check makes this near-impossible (the sink was
+     * writable a moment ago), but a genuine post-check failure (disk full,
+     * permission change) must never be silent. The mutation already happened;
+     * surface it as an error so the write is never reported as a clean,
+     * unlogged success. */
+    if (!AuditWritePoke(MemTierName(tier), auditTok, auditPid, auditCmd,
+                        addr, len, res->bytes_written, res->partial)) {
+        lstrcpynA(res->reason,
+                  "audit write failed after the memory was modified - "
+                  "investigate the audit log",
+                  (int)sizeof(res->reason));
+        return;             /* res->ok stays 0: a write is never silently unlogged */
+    }
 
     res->ok = 1;
 }
