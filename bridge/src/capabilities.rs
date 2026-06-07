@@ -3,7 +3,7 @@
 //! names a required capability is advertised iff the device provides it.
 //! The concrete capability tools arrive in 5.1-5.4; 5.0 fixes the gate.
 
-use crate::wire::Features;
+use crate::wire::{DetectedToolchain, Features};
 
 /// How far the device permits memory access (the Capabilities tier from
 /// its ready message; the peek/poke tools arrive in 5.3).
@@ -31,13 +31,31 @@ pub struct Capabilities {
     pub encoding: EncodingMode,
     pub codepage: i64,
     pub version: String,
+    /// Build toolchains the device detected at startup (the ready message's
+    /// `features.toolchains` array). The bridge generates one
+    /// `win32_<name>_<role>` tool per supported (definition, role) — see
+    /// `server::Bridge::new`.
+    pub toolchains: Vec<DetectedToolchain>,
+    /// Operator opt-in for runtime `win32_register_toolchain` (the hybrid
+    /// authoring model's dangerous half). This is a BRIDGE-operator flag, not a
+    /// device wire field — registration exposes a new tool surface, so the
+    /// operator running the bridge consents to it, not the device. Off by
+    /// default (`RegistrationRequiresOptIn`).
+    pub toolchain_registration: bool,
 }
 
 impl Capabilities {
     /// Resolve from the ready message. `mem`/`encoding` tier strings land
     /// with the 5.3/5.4 device work; until then they default
     /// conservatively (no memory access, codepage encoding).
-    pub fn from_ready(codepage: i64, version: String, f: &Features) -> Self {
+    /// `allow_registration` is the bridge-operator opt-in (a CLI flag), not a
+    /// device-reported capability.
+    pub fn from_ready(
+        codepage: i64,
+        version: String,
+        f: &Features,
+        allow_registration: bool,
+    ) -> Self {
         let mem = match f.extra.get("mem").and_then(|v| v.as_str()) {
             Some("process") => MemTier::Process,
             Some("arena") => MemTier::Arena,
@@ -48,12 +66,21 @@ impl Capabilities {
             Some("utf8_native") => EncodingMode::Utf8Native,
             _ => EncodingMode::Codepage,
         };
+        // `features.toolchains` is an unknown key, so it rides `extra`. A
+        // malformed entry is dropped (an empty array, not a hard failure).
+        let toolchains = f
+            .extra
+            .get("toolchains")
+            .and_then(|v| serde_json::from_value::<Vec<DetectedToolchain>>(v.clone()).ok())
+            .unwrap_or_default();
         Capabilities {
             has_pty: f.pty,
             mem,
             encoding,
             codepage,
             version,
+            toolchains,
+            toolchain_registration: allow_registration,
         }
     }
 
@@ -66,6 +93,9 @@ impl Capabilities {
             "pty" => self.has_pty,
             "mem" => self.mem != MemTier::None,
             "utf8" => self.encoding == EncodingMode::Utf8Native,
+            // The runtime-registration opt-in gates win32_register_toolchain
+            // (RegistrationRequiresOptIn).
+            "toolchain_registration" => self.toolchain_registration,
             _ => false,
         }
     }

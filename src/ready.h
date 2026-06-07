@@ -14,12 +14,17 @@
 #ifndef READY_H
 #define READY_H
 
+#include "toolchain_probe.h"
+
 /*
  * BuildReadyMessage - Build the newline-terminated ready JSON line.
  *
  * transportName - active backend name (e.g. "tcp", "serial")
  * warning       - optional warning string (e.g. "catalog not loaded");
  *                 NULL or "" omits the key
+ * toolchains    - detected build toolchains for the features.toolchains
+ *                 array (spec: wire-contract.allium ReadyShape); NULL or an
+ *                 empty set emits "toolchains":[]
  * json/jsonSize - output buffer
  *
  * Returns: bytes written (excluding null terminator), 0 if buffer too
@@ -29,6 +34,7 @@
  * decode OEM pipe output per Q6.)
  */
 int BuildReadyMessage(const char *transportName, const char *warning,
+                      const ToolchainSet *toolchains,
                       char *json, int jsonSize);
 
 #endif /* READY_H */

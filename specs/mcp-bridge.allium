@@ -24,6 +24,7 @@
 -- Dependencies: wire-contract.allium
 
 use "./wire-contract.allium" as wire
+use "./toolchains.allium" as toolchains
 
 ------------------------------------------------------------
 -- Enumerations
@@ -42,6 +43,11 @@ enum EncodingMode { codepage | utf8_native }
 -- (unknown/unadvertised tool, malformed arguments) is a JSON-RPC error
 -- and never reaches the device.
 enum FailureKind { recoverable | protocol }
+
+-- Normalized diagnostic severity. Each toolchain definition's regex maps the
+-- toolchain's own keyword (MSVC "error"/"warning"/"fatal error"; Open Watcom
+-- "Error!"/"Warning!") onto these. info covers note-level lines.
+enum Severity { error | warning | fatal | info }
 
 ------------------------------------------------------------
 -- Config
@@ -84,6 +90,16 @@ entity DeviceCapabilities {
     has_pty: Boolean
     mem: MemTier
     encoding: EncodingMode
+    -- Operator opt-in for runtime toolchain registration (the hybrid
+    -- authoring model's dangerous half). Off by default; only when enabled is
+    -- win32_register_toolchain advertised - see RegistrationRequiresOptIn.
+    -- This is a BRIDGE-OPERATOR opt-in set at bridge startup (a CLI flag), NOT a
+    -- device-reported capability resolved from the ready message; it gates
+    -- win32_register_toolchain via the same advertise-iff-capable mechanism as
+    -- the other capability-gated tools (AdvertisedToolsAreCapable).
+    -- The detected toolchains themselves arrive in the ready message's
+    -- `toolchains` array and are modelled as toolchains/DetectedToolchain.
+    toolchain_registration: Boolean
 }
 
 -- A tool the bridge may expose. Concrete tools are introduced in
@@ -138,6 +154,34 @@ entity ToolResult {
     -- the actionable failure message. Not a separate human-authored summary.
     text: String
     has_structured: Boolean
+}
+
+-- The structured result of a build-tool call: produced once the toolchain
+-- has RUN (regardless of compile pass/fail), so it always rides an
+-- is_error:false ToolResult (SuccessResultsAreStructured forbids structured
+-- content on an error). success reflects exit_code = 0; the toolchain failing
+-- to run is the only is_error:true case (the generic recoverable path).
+-- dialect names the parser the bridge used (the role's diagnostic_regex,
+-- e.g. msvc_cc, watcom_link). Carried as the call's structuredContent.
+entity BuildResult {
+    call: ToolCall
+    success: Boolean
+    exit_code: Integer
+    dialect: String
+}
+
+-- One parsed diagnostic line. line/column are absent for link-level errors
+-- (no source position) and on toolchains whose format omits a column (VC6,
+-- Open Watcom, and modern cl by default). code is the toolchain's code
+-- (Cxxxx/LNKxxxx/Axxxx/Exxxx/Wxxxx).
+entity Diagnostic {
+    result: BuildResult
+    file: String
+    line: Integer?
+    column: Integer?
+    severity: Severity
+    code: String
+    message: String
 }
 
 ------------------------------------------------------------
@@ -289,6 +333,89 @@ rule ToolCallRecoverableError {
     )
 }
 
+-- Build tools are GENERATED from toolchain definitions, not hardcoded: when
+-- the device reports a detected toolchain (toolchains/DetectedToolchain) whose
+-- version the support matrix accepts, the RoleSpec for that command yields one
+-- win32_<vendor>_<role> tool. device_cmd is null (a build tool is composed of a
+-- catalogued exec plus diagnostic parsing, not a 1:1 relay); destructive is
+-- true (it writes/overwrites .obj/.exe/.lib). build_tool_name and
+-- build_required_capability are black boxes over the role spec/detection;
+-- toolchain_supported is the enumerated, build-number-granular matrix.
+rule BuildToolGenerated {
+    when: detected: toolchains/DetectedToolchain.created
+    let session = McpSession{status: ready}
+    let rs = toolchains/RoleSpec{command: detected.command}
+    requires: exists session and exists rs
+    requires: toolchain_supported(detected)
+    ensures: Tool.created(
+        session: session,
+        name: build_tool_name(rs),
+        required_capability: build_required_capability(detected),
+        device_cmd: null,
+        destructive: true,
+        read_only: false
+    )
+}
+
+-- The two bridge-native meta tools. The discovery tool (win32_list_toolchains)
+-- is always advertised and read-only - it returns the schema, the available
+-- definitions, and the authoring guide. The registration tool
+-- (win32_register_toolchain) names the toolchain_registration capability, so
+-- it is advertised only under the operator opt-in (RegistrationRequiresOptIn).
+rule MetaToolsRegistered {
+    when: caps: DeviceCapabilities.created
+    ensures:
+        Tool.created(session: caps.session, name: "win32_list_toolchains", device_cmd: null, destructive: false, read_only: true)
+        Tool.created(session: caps.session, name: "win32_register_toolchain", required_capability: "toolchain_registration", device_cmd: null, destructive: false, read_only: false)
+}
+
+-- Runtime registration (the hybrid model's dangerous half): an agent submits a
+-- definition through the opt-in tool, creating a `registered` definition that
+-- generates further build tools. DefinitionCommandsAreCatalogued
+-- (toolchains.allium) still binds it - a registered definition can only drive
+-- catalogued commands, so authorship never escapes the device gate.
+rule ToolchainRegistered {
+    when: ToolchainRegistrationRequested(name, vendor, version_probe_command, version_regex)
+    requires: exists Tool{name: "win32_register_toolchain", advertised: true}
+    ensures: toolchains/ToolchainDefinition.created(
+        name: name,
+        vendor: vendor,
+        source: registered,
+        version_probe_command: version_probe_command,
+        version_regex: version_regex
+    )
+}
+
+-- A build tool's device exec has run and the bridge parsed its output: the
+-- call already succeeded (ToolCallSucceeded, is_error:false), and the parse
+-- yields the structured BuildResult. success = (exit_code = 0); a nonzero
+-- compiler exit is still NOT a tool error - the diagnostics ride the
+-- structuredContent of the successful call.
+rule BuildResultProduced {
+    when: BuildOutputParsed(call, success, exit_code, dialect)
+    requires: call.status = ok
+    ensures: BuildResult.created(
+        call: call,
+        success: success,
+        exit_code: exit_code,
+        dialect: dialect
+    )
+}
+
+-- Each diagnostic line the parser extracted becomes a Diagnostic on the result.
+rule BuildDiagnosticRecorded {
+    when: DiagnosticParsed(result, file, line, column, severity, code, message)
+    ensures: Diagnostic.created(
+        result: result,
+        file: file,
+        line: line,
+        column: column,
+        severity: severity,
+        code: code,
+        message: message
+    )
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
@@ -372,6 +499,35 @@ invariant FileToolsAreDirectRelays {
             implies t.device_cmd != null
 }
 
+-- SECURITY INVARIANT (BuildArgvIsCatalogued): every build tool reaches the
+-- device only through a catalogued exec whose argv[0] is the role's `command`,
+-- with all flags / Open Watcom directives drawn solely from the typed-parameter
+-- mapping (a fixed per-definition template). No string an agent supplies - a
+-- call-time parameter value OR an authored definition's template - can
+-- introduce a flag, a wlink directive, or a second command beyond the
+-- catalogued one: the command is pinned catalogued by
+-- DefinitionCommandsAreCatalogued (toolchains.allium), and the user tail is
+-- neutralised by the device's CatalogValidateArgs + ShellTailNeutralised gate
+-- (catalog.allium). This is the build subsystem's safety boundary; it is
+-- injection-only and enforces NO instruction-set policy - which CPU/FP/SIMD a
+-- user targets is their choice (the project's i386/no-FP constraints bind only
+-- mcp-w32s.exe's own source, never user builds).
+
+-- Runtime toolchain registration is gated: win32_register_toolchain always
+-- names a required capability, so (with AdvertisedToolsAreCapable) it is
+-- advertised only when the operator opted in
+-- (DeviceCapabilities.toolchain_registration via capability_satisfied).
+invariant RegistrationRequiresOptIn {
+    for t in Tools:
+        t.name = "win32_register_toolchain" implies t.required_capability != null
+}
+
+-- The discovery tool only reports; it never mutates.
+invariant DiscoveryToolIsReadOnly {
+    for t in Tools:
+        t.name = "win32_list_toolchains" implies t.read_only
+}
+
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
@@ -389,6 +545,8 @@ surface McpClient {
             when s.status = ready
         ToolCalled(s, tool, args_valid)
             when s.status = ready
+        ToolchainRegistrationRequested(name, vendor, version_probe_command, version_regex)
+            when s.status = ready
 }
 
 -- The device boundary: the device's wire reply to a dispatched call
@@ -403,4 +561,23 @@ surface DeviceRuntime {
             when c.status = dispatched
         DeviceReplyError(c, reason)
             when c.status = dispatched
+}
+
+-- The bridge's build-output parser boundary: once a build tool's device exec
+-- has returned (the call is ok), the bridge decodes stdout+stderr and parses
+-- them with the role's diagnostic dialect, yielding the structured outcome.
+surface BuildRuntime {
+    facing c: ToolCall
+
+    provides:
+        BuildOutputParsed(c, success, exit_code, dialect)
+            when c.status = ok
+}
+
+-- Each diagnostic the parser extracts from a build result.
+surface DiagnosticRuntime {
+    facing r: BuildResult
+
+    provides:
+        DiagnosticParsed(r, file, line, column, severity, code, message)
 }

@@ -94,11 +94,25 @@ where
 ///
 /// Argument forms: `--tcp HOST:PORT` | `--serial PATH[:BAUD]`.
 pub async fn connect(
-    mut args: impl Iterator<Item = String>,
+    args: impl Iterator<Item = String>,
 ) -> Result<(Capabilities, Box<dyn Device>)> {
-    let kind = args.next().unwrap_or_else(|| "--tcp".to_string());
-    let target = args.next().ok_or_else(|| {
-        anyhow!("usage: mcp-w32s-bridge (--tcp HOST:PORT | --serial PATH[:BAUD])")
+    // `--allow-toolchain-registration` is the operator opt-in for the runtime
+    // win32_register_toolchain tool (RegistrationRequiresOptIn); it may appear
+    // anywhere in the argument list. The transport flag + target are the
+    // remaining positional arguments.
+    let mut positional = Vec::new();
+    let mut allow_registration = false;
+    for arg in args {
+        if arg == "--allow-toolchain-registration" {
+            allow_registration = true;
+        } else {
+            positional.push(arg);
+        }
+    }
+    let mut positional = positional.into_iter();
+    let kind = positional.next().unwrap_or_else(|| "--tcp".to_string());
+    let target = positional.next().ok_or_else(|| {
+        anyhow!("usage: mcp-w32s-bridge (--tcp HOST:PORT | --serial PATH[:BAUD]) [--allow-toolchain-registration]")
     })?;
 
     match kind.as_str() {
@@ -108,8 +122,12 @@ pub async fn connect(
                 .with_context(|| format!("connecting TCP {target}"))?;
             let mut dev = StreamDevice::new(stream);
             let ready = dev.read_ready().await?;
-            let caps =
-                Capabilities::from_ready(ready.codepage, ready.version.clone(), &ready.features);
+            let caps = Capabilities::from_ready(
+                ready.codepage,
+                ready.version.clone(),
+                &ready.features,
+                allow_registration,
+            );
             Ok((caps, Box::new(dev)))
         }
         "--serial" => {
@@ -123,8 +141,12 @@ pub async fn connect(
                 .with_context(|| format!("opening serial {path} @ {baud}"))?;
             let mut dev = StreamDevice::new(stream);
             let ready = dev.read_ready().await?;
-            let caps =
-                Capabilities::from_ready(ready.codepage, ready.version.clone(), &ready.features);
+            let caps = Capabilities::from_ready(
+                ready.codepage,
+                ready.version.clone(),
+                &ready.features,
+                allow_registration,
+            );
             Ok((caps, Box::new(dev)))
         }
         other => bail!("unknown transport flag {other} (expected --tcp or --serial)"),

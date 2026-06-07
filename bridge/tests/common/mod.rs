@@ -8,6 +8,7 @@
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use mcp_w32s_bridge::device::Device;
 use mcp_w32s_bridge::wire::{Command, Response};
 use serde_json::json;
@@ -90,6 +91,73 @@ impl Device for RecordingDevice {
         let reply = match &self.reply_error {
             Some(reason) => json!({"id": cmd.id, "status": "error", "error": reason}),
             None => json!({"id": cmd.id, "status": "ok", "message": self.ok_message}),
+        };
+        Ok(serde_json::from_value(reply)?)
+    }
+}
+
+/// A mock device that answers `exec` with a scripted compiler result —
+/// `{status:"ok", exit_code, stdout_b64, stderr_b64}`, the device exec reply
+/// shape (`src/mcp-w32s.c`). The build tools are the bridge's first `exec`
+/// user; this lets a test drive the full build pipeline (argv emission →
+/// catalogued exec → base64 decode → diagnostic parse) and inspect the argv
+/// that reached the wire. Any non-`exec` command replies a recoverable error.
+#[derive(Clone)]
+pub struct BuildDevice {
+    pub received: Arc<Mutex<Vec<Received>>>,
+    exit_code: i64,
+    stdout: String,
+    stderr: String,
+}
+
+impl BuildDevice {
+    /// A mock whose `exec` returns the given exit code and output streams.
+    pub fn new(exit_code: i64, stdout: &str, stderr: &str) -> Self {
+        BuildDevice {
+            received: Arc::new(Mutex::new(Vec::new())),
+            exit_code,
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+        }
+    }
+
+    /// The argv of the single `exec` the bridge sent (panics if none yet).
+    pub fn exec_argv(&self) -> Vec<String> {
+        let log = self.received.lock().unwrap();
+        let exec = log
+            .iter()
+            .find(|r| r.cmd == "exec")
+            .expect("an exec command was sent");
+        exec.args
+            .get("argv")
+            .and_then(|v| v.as_array())
+            .expect("exec carries an argv array")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl Device for BuildDevice {
+    async fn call(&mut self, cmd: &Command) -> Result<Response> {
+        self.received.lock().unwrap().push(Received {
+            cmd: cmd.cmd.clone(),
+            args: cmd.args.clone(),
+        });
+        let reply = if cmd.cmd == "exec" {
+            let engine = base64::engine::general_purpose::STANDARD;
+            json!({
+                "id": cmd.id,
+                "status": "ok",
+                "exit_code": self.exit_code,
+                "stdout_b64": engine.encode(self.stdout.as_bytes()),
+                "stderr_b64": engine.encode(self.stderr.as_bytes()),
+                "stdout_truncated": false,
+                "stderr_truncated": false,
+            })
+        } else {
+            json!({"id": cmd.id, "status": "error", "error": "unknown command"})
         };
         Ok(serde_json::from_value(reply)?)
     }
