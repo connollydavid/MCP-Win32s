@@ -38,6 +38,11 @@ contract ReadyHandshake {
         -- version banner string), consumed by the bridge to gate and
         -- generate the build tools (toolchains.allium DetectedToolchain).
         -- The array is empty when no build toolchain is installed.
+        -- The features object also carries a `mem` field: the memory tier
+        -- string ("process" | "arena" | "shared_vm"), absent or "none" when
+        -- the device exposes no memory capability. The bridge consumes it to
+        -- gate the five memory tools - win32_spawn_retain/peek/poke/terminate/
+        -- release (memory-ops.allium tiers, mcp-bridge.allium MemTier).
 
     @guidance
         -- Clients must tolerate additional keys in the ready message:
@@ -56,6 +61,16 @@ contract RequestResponse {
 
     @invariant IdCorrelation
         -- Every response carries the id of the request it answers.
+
+    @invariant CommandsAreAdditive
+        -- New command verbs accrete onto the wire; they never change the
+        -- shape of an existing command's request or response. The memory
+        -- subsystem (memory-ops.allium) adds five such additive commands -
+        -- spawnRetain, peek, poke, terminate, release - alongside the
+        -- existing file-ops and exec commands, with no change to any frozen
+        -- shape. peek/poke carry the address as a STRING (a full 32-bit
+        -- address does not fit a JSON integer field without range loss -
+        -- memory-ops.allium AddressIsWellFormed).
 
     @guidance
         -- Clients must ignore unknown response keys, and a malformed

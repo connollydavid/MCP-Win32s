@@ -96,15 +96,18 @@ where
 pub async fn connect(
     args: impl Iterator<Item = String>,
 ) -> Result<(Capabilities, Box<dyn Device>)> {
-    // `--allow-toolchain-registration` is the operator opt-in for the runtime
-    // win32_register_toolchain tool (RegistrationRequiresOptIn); it may appear
-    // anywhere in the argument list. The transport flag + target are the
-    // remaining positional arguments.
+    // `--allow-toolchain-registration` and `--allow-memory-write` are operator
+    // opt-ins (RegistrationRequiresOptIn / MemoryWriteToolRequiresOptIn); they
+    // may appear anywhere in the argument list. The transport flag + target are
+    // the remaining positional arguments.
     let mut positional = Vec::new();
     let mut allow_registration = false;
+    let mut allow_memory_write = false;
     for arg in args {
         if arg == "--allow-toolchain-registration" {
             allow_registration = true;
+        } else if arg == "--allow-memory-write" {
+            allow_memory_write = true;
         } else {
             positional.push(arg);
         }
@@ -112,7 +115,7 @@ pub async fn connect(
     let mut positional = positional.into_iter();
     let kind = positional.next().unwrap_or_else(|| "--tcp".to_string());
     let target = positional.next().ok_or_else(|| {
-        anyhow!("usage: mcp-w32s-bridge (--tcp HOST:PORT | --serial PATH[:BAUD]) [--allow-toolchain-registration]")
+        anyhow!("usage: mcp-w32s-bridge (--tcp HOST:PORT | --serial PATH[:BAUD]) [--allow-toolchain-registration] [--allow-memory-write]")
     })?;
 
     match kind.as_str() {
@@ -127,6 +130,7 @@ pub async fn connect(
                 ready.version.clone(),
                 &ready.features,
                 allow_registration,
+                allow_memory_write,
             );
             Ok((caps, Box::new(dev)))
         }
@@ -146,6 +150,7 @@ pub async fn connect(
                 ready.version.clone(),
                 &ready.features,
                 allow_registration,
+                allow_memory_write,
             );
             Ok((caps, Box::new(dev)))
         }

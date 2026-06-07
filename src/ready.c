@@ -13,6 +13,7 @@
 #include "feat.h"
 #include "ready.h"
 #include "toolchain_probe.h"
+#include "mem_ops.h"
 
 /*
  * append_str - Bounds-checked append; returns 1 on success.
@@ -97,6 +98,13 @@ int BuildReadyMessage(const char *transportName, const char *warning,
 
     if (!append_bool_field(json, jsonSize, &pos, "process_mitigation",
                            g_features.has_set_process_mitigation, 1)) goto fail;
+
+    /* The memory-reach tier (spec: memory-ops.allium MemTier; wire-contract
+     * ReadyShape features.mem). Always present; gates the bridge's five memory
+     * tools (none -> all pruned). Derived from the OS family. */
+    if (!append_str(json, jsonSize, &pos, "\"mem\":\"")) goto fail;
+    if (!append_str(json, jsonSize, &pos, MemTierName(MemTierCurrent()))) goto fail;
+    if (!append_str(json, jsonSize, &pos, "\",")) goto fail;
 
     /* The detected build toolchains (spec: wire-contract.allium ReadyShape).
      * Always present inside features; empty when none was detected. */

@@ -25,14 +25,17 @@
 
 use "./wire-contract.allium" as wire
 use "./toolchains.allium" as toolchains
+use "./memory-ops.allium" as memops
 
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
 
 -- How far the device permits memory access (the Capabilities tier from
--- its ready message; the concrete peek/poke tools arrive in 5.3).
-enum MemTier { none | process | arena | shared_vm }
+-- its ready message) is the device-side MemTier, defined in
+-- memory-ops.allium where the tiers and their peek/poke behaviour live; the
+-- bridge references it as memops/MemTier on DeviceCapabilities.mem and gates
+-- the five memory tools against it.
 
 -- The device's active text encoding for its own (path) surfaces.
 enum EncodingMode { codepage | utf8_native }
@@ -88,7 +91,7 @@ entity McpSession {
 entity DeviceCapabilities {
     session: McpSession
     has_pty: Boolean
-    mem: MemTier
+    mem: memops/MemTier
     encoding: EncodingMode
     -- Operator opt-in for runtime toolchain registration (the hybrid
     -- authoring model's dangerous half). Off by default; only when enabled is
@@ -100,13 +103,29 @@ entity DeviceCapabilities {
     -- The detected toolchains themselves arrive in the ready message's
     -- `toolchains` array and are modelled as toolchains/DetectedToolchain.
     toolchain_registration: Boolean
+    -- Operator opt-in for memory WRITES (the poke tool). Off by default; only
+    -- when enabled is win32_poke advertised - see MemoryWriteToolRequiresOptIn.
+    -- This is a BRIDGE-OPERATOR opt-in set at bridge startup (a CLI flag), NOT a
+    -- device-reported capability resolved from the ready message; it gates
+    -- win32_poke ADVERTISEMENT via the "mem_write" capability through the same
+    -- advertise-iff-capable mechanism as the other capability-gated tools
+    -- (AdvertisedToolsAreCapable). It is DISTINCT from, and additional to, the
+    -- device-side wire arming (/ALLOWMEMWRITE): both must hold for a poke to
+    -- succeed (memory-ops.allium PokeRequiresBothArmingLayers). The peek/spawn/
+    -- terminate/release tools need only "mem" (mem != none), never this flag.
+    allow_memory_write: Boolean
 }
 
 -- A tool the bridge may expose. Concrete tools are introduced in
 -- 5.1-5.4; 5.0 fixes the advertisement contract: a tool that names a
 -- required capability is advertised only when the device provides it,
 -- via the capability_satisfied black box (which knows how each named
--- capability - "pty", "mem", "utf8" - maps onto DeviceCapabilities).
+-- capability maps onto DeviceCapabilities). The named capabilities and
+-- their satisfaction conditions: "pty" (has_pty), "utf8" (encoding =
+-- utf8_native), "toolchain_registration" (toolchain_registration), and -
+-- for the memory tools (5.3) - "mem" (mem != none, any memory tier) and
+-- "mem_write" (mem != none AND allow_memory_write - the TWO-FACTOR poke
+-- gate, both the tier and the operator opt-in).
 entity Tool {
     session: McpSession
     name: String
@@ -231,14 +250,20 @@ rule SessionClosed {
 -- Capability gating: on ready, the bridge resolves the device features
 -- it will gate the tool set against. capability values are read from the
 -- device's ready message (a wire/WireSession) via black boxes, since
--- wire-contract abstracts the features payload.
+-- wire-contract abstracts the features payload. allow_memory_write is
+-- resolved differently: it is the BRIDGE-OPERATOR opt-in (a CLI flag), not a
+-- device feature, so it comes from bridge_allows_memory_write (a black box
+-- over bridge startup), not the ready message. (toolchain_registration is the
+-- sibling operator opt-in; it is NOT set here - a pre-existing 5.2 gap left as
+-- it stands, since closing it is out of this work-item's scope.)
 rule CapabilitiesResolved {
     when: session: McpSession.status becomes ready
     ensures: DeviceCapabilities.created(
         session: session,
         has_pty: device_has_pty(session.device),
         mem: device_mem_tier(session.device),
-        encoding: device_encoding(session.device)
+        encoding: device_encoding(session.device),
+        allow_memory_write: bridge_allows_memory_write
     )
 }
 
@@ -367,6 +392,24 @@ rule MetaToolsRegistered {
     ensures:
         Tool.created(session: caps.session, name: "win32_list_toolchains", device_cmd: null, destructive: false, read_only: true)
         Tool.created(session: caps.session, name: "win32_register_toolchain", required_capability: "toolchain_registration", device_cmd: null, destructive: false, read_only: false)
+}
+
+-- The five memory tools (5.3, memory-ops.allium). All name a memory
+-- capability so they advertise only on a memory-capable device: the four
+-- read/control tools require "mem" (any tier); win32_poke requires "mem_write"
+-- (the tier AND the operator opt-in - MemoryWriteToolRequiresOptIn). Each is a
+-- 1:1 relay to a device wire command. Honest hints: spawn_retain/poke/terminate
+-- are destructive (they launch, mutate memory, or kill a process); peek is the
+-- only read-only tool; release relinquishes a handle without destroying state,
+-- so it is neither read-only nor destructive (MemoryToolHintsAreHonest).
+rule MemoryToolsRegistered {
+    when: caps: DeviceCapabilities.created
+    ensures:
+        Tool.created(session: caps.session, name: "win32_spawn_retain", required_capability: "mem", device_cmd: "spawnRetain", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_peek", required_capability: "mem", device_cmd: "peek", destructive: false, read_only: true)
+        Tool.created(session: caps.session, name: "win32_poke", required_capability: "mem_write", device_cmd: "poke", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_terminate", required_capability: "mem", device_cmd: "terminate", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_release", required_capability: "mem", device_cmd: "release", destructive: false, read_only: false)
 }
 
 -- Runtime registration (the hybrid model's dangerous half): an agent submits a
@@ -526,6 +569,29 @@ invariant RegistrationRequiresOptIn {
 invariant DiscoveryToolIsReadOnly {
     for t in Tools:
         t.name = "win32_list_toolchains" implies t.read_only
+}
+
+-- The memory-write tool is gated: win32_poke always names a required capability
+-- ("mem_write"), so (with AdvertisedToolsAreCapable) it is advertised only when
+-- the device has a memory tier AND the operator opted in
+-- (DeviceCapabilities.allow_memory_write via capability_satisfied). This is the
+-- BRIDGE half of memory-ops.allium's PokeRequiresBothArmingLayers; the device
+-- /ALLOWMEMWRITE arm is the independent device half. Mirrors
+-- RegistrationRequiresOptIn.
+invariant MemoryWriteToolRequiresOptIn {
+    for t in Tools:
+        t.name = "win32_poke" implies t.required_capability != null
+}
+
+-- Honesty pin for the memory tools' advisory annotations: spawn_retain (it
+-- launches a process), poke (it mutates memory) and terminate (it kills a
+-- process) are destructive; peek is the only one that is read-only; and
+-- read-only excludes destructive. Mirrors FileToolHintsAreHonest.
+invariant MemoryToolHintsAreHonest {
+    for t in Tools:
+        (t.name in {"win32_spawn_retain", "win32_poke", "win32_terminate"} implies t.destructive)
+        and (t.name = "win32_peek" implies t.read_only)
+        and (t.read_only implies not t.destructive)
 }
 
 ------------------------------------------------------------

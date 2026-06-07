@@ -24,6 +24,7 @@ fn caps(toolchains: Vec<DetectedToolchain>, registration: bool) -> Capabilities 
         version: "test".to_string(),
         toolchains,
         toolchain_registration: registration,
+        allow_memory_write: false,
     }
 }
 
@@ -185,7 +186,7 @@ fn capabilities_carry_toolchain_registration() {
         "toolchains".to_string(),
         json!([{"vendor":"Microsoft","command":"cl","version":"12.00.8804"}]),
     );
-    let c = Capabilities::from_ready(437, "t".to_string(), &f, true);
+    let c = Capabilities::from_ready(437, "t".to_string(), &f, true, false);
     assert_eq!(c.toolchains.len(), 1);
     assert_eq!(c.toolchains[0].command, "cl");
     assert_eq!(c.toolchains[0].version, "12.00.8804");
@@ -195,7 +196,7 @@ fn capabilities_carry_toolchain_registration() {
     );
 
     // Absent array -> no toolchains; opt-in off -> registration off.
-    let c2 = Capabilities::from_ready(437, "t".to_string(), &Features::default(), false);
+    let c2 = Capabilities::from_ready(437, "t".to_string(), &Features::default(), false, false);
     assert!(c2.toolchains.is_empty());
     assert!(!c2.toolchain_registration);
 }

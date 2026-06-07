@@ -28,6 +28,9 @@ if [ "$1" = "host-pbt" ]; then
     gcc $HFLAGS tests/host/theft_json.c    src/json_parser.c build/host/theft/*.o -lm -o build/host/theft_json
     gcc $HFLAGS tests/host/theft_argv.c    src/argv.c        build/host/theft/*.o -lm -o build/host/theft_argv
     gcc $HFLAGS tests/host/theft_catalog.c src/catalog.c     build/host/theft/*.o -lm -o build/host/theft_catalog
+    # mem_ops: only the two pure arithmetic guards compile natively
+    # (MEM_OPS_HOST_PURE excludes the Win32 surface) - the off-by-overflow pin.
+    gcc $HFLAGS -DMEM_OPS_HOST_PURE tests/host/theft_mem.c src/mem_ops.c build/host/theft/*.o -lm -o build/host/theft_mem
     # UBSan runs in recover mode: theft's own PRNG prints one benign
     # shift diagnostic (vendored, not patched). The modules under test
     # are expected to stay diagnostic-free - see tests/host/README.md.
@@ -35,6 +38,7 @@ if [ "$1" = "host-pbt" ]; then
     build/host/theft_json
     build/host/theft_argv
     build/host/theft_catalog
+    build/host/theft_mem
     echo "host-pbt: all properties passed"
     exit 0
 fi

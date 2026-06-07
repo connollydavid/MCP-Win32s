@@ -30,6 +30,8 @@
 #include "exec_ops.h"
 #include "pty_exec.h"
 #include "toolchain_probe.h"
+#include "mem_ops.h"
+#include "audit.h"
 
 /* Protocol constants */
 #define CMD_BUF_SIZE    8192
@@ -542,6 +544,170 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
 }
 
 /*
+ * HandleMem - The memory peek/poke dispatcher (spec: memory-ops.allium).
+ * Routes the five wire verbs (spawnRetain/peek/poke/terminate/release) to
+ * the mem_ops module and builds their rich JSON responses. The module owns
+ * the catalog gate (spawnRetain), the address/range/region floor, the
+ * /ALLOWMEMWRITE arm and the fail-closed audit; the dispatcher only parses
+ * the wire fields and shapes the reply. Errors are recoverable (the bridge
+ * maps a status:error to an isError tool result).
+ */
+static void HandleMem(JsonCommand *cmd, Transport *t)
+{
+    /* Static: single-threaded server (Win32s); these are large. */
+    static unsigned char memBuf[MEM_MAX_ACCESS];
+    static char b64[(MEM_MAX_ACCESS / 3 + 1) * 4 + 8];
+    static char response[MCP_MAX_RESPONSE];
+    const char *argvPtrs[MCP_MAX_ARGV];
+    const char *token;
+    unsigned long addr;
+    unsigned long len;
+    int pos;
+    int i;
+
+    token = (cmd->mem_token[0] != '\0') ? cmd->mem_token : NULL;
+
+    if (strcmp(cmd->cmd, "spawnRetain") == 0) {
+        MemSpawnResult sr;
+        for (i = 0; i < cmd->argv_count && i < MCP_MAX_ARGV; i++) {
+            argvPtrs[i] = cmd->argv[i];
+        }
+        MemSpawnRetain(g_catalog, g_unsafeMode, argvPtrs, cmd->argv_count, &sr);
+        if (!sr.ok) {
+            send_exec_error(cmd->id, sr.reason, t);
+            return;
+        }
+        pos = 0;
+        if (!resp_append(response, sizeof(response), &pos, "{\"id\":\"") ||
+            !resp_append(response, sizeof(response), &pos, cmd->id) ||
+            !resp_append(response, sizeof(response), &pos,
+                         "\",\"status\":\"ok\",\"token\":\"") ||
+            !resp_append(response, sizeof(response), &pos, sr.token) ||
+            !resp_append(response, sizeof(response), &pos, "\",\"pid\":") ||
+            !resp_append_int(response, sizeof(response), &pos, (long)sr.pid) ||
+            !resp_append(response, sizeof(response), &pos, "}\n")) {
+            return;
+        }
+        if (t != NULL) {
+            TransportWriteAll(t, response, pos);
+        }
+        return;
+    }
+
+    if (strcmp(cmd->cmd, "peek") == 0) {
+        MemPeekResult pr;
+        int b64Len;
+        if (!MemParseU32(cmd->mem_addr, &addr)) {
+            send_exec_error(cmd->id, "invalid address", t);
+            return;
+        }
+        if (!MemParseU32(cmd->mem_len, &len)) {
+            send_exec_error(cmd->id, "invalid length", t);
+            return;
+        }
+        MemPeek(token, addr, len, memBuf, &pr);
+        if (!pr.ok) {
+            send_exec_error(cmd->id, pr.reason, t);
+            return;
+        }
+        b64Len = Base64Encode(memBuf, (int)pr.bytes_read, b64, (int)sizeof(b64));
+        if (b64Len < 0) {
+            send_exec_error(cmd->id, "encode error", t);
+            return;
+        }
+        pos = 0;
+        if (!resp_append(response, sizeof(response), &pos, "{\"id\":\"") ||
+            !resp_append(response, sizeof(response), &pos, cmd->id) ||
+            !resp_append(response, sizeof(response), &pos,
+                         "\",\"status\":\"ok\",\"data_b64\":\"") ||
+            !resp_append(response, sizeof(response), &pos, b64) ||
+            !resp_append(response, sizeof(response), &pos,
+                         "\",\"bytes_read\":") ||
+            !resp_append_int(response, sizeof(response), &pos,
+                             (long)pr.bytes_read) ||
+            !resp_append(response, sizeof(response), &pos,
+                         ",\"truncated\":") ||
+            !resp_append(response, sizeof(response), &pos,
+                         pr.truncated ? "true" : "false") ||
+            !resp_append(response, sizeof(response), &pos, "}\n")) {
+            return;
+        }
+        if (t != NULL) {
+            TransportWriteAll(t, response, pos);
+        }
+        return;
+    }
+
+    if (strcmp(cmd->cmd, "poke") == 0) {
+        MemPokeResult pr;
+        int decoded;
+        if (!MemParseU32(cmd->mem_addr, &addr)) {
+            send_exec_error(cmd->id, "invalid address", t);
+            return;
+        }
+        decoded = Base64Decode(cmd->data, memBuf, (int)sizeof(memBuf));
+        if (decoded < 0) {
+            send_exec_error(cmd->id, "invalid base64", t);
+            return;
+        }
+        MemPoke(token, addr, memBuf, (unsigned long)decoded, &pr);
+        if (!pr.ok) {
+            send_exec_error(cmd->id, pr.reason, t);
+            return;
+        }
+        pos = 0;
+        if (!resp_append(response, sizeof(response), &pos, "{\"id\":\"") ||
+            !resp_append(response, sizeof(response), &pos, cmd->id) ||
+            !resp_append(response, sizeof(response), &pos,
+                         "\",\"status\":\"ok\",\"bytes_written\":") ||
+            !resp_append_int(response, sizeof(response), &pos,
+                             (long)pr.bytes_written) ||
+            !resp_append(response, sizeof(response), &pos, ",\"partial\":") ||
+            !resp_append(response, sizeof(response), &pos,
+                         pr.partial ? "true" : "false") ||
+            !resp_append(response, sizeof(response), &pos, "}\n")) {
+            return;
+        }
+        if (t != NULL) {
+            TransportWriteAll(t, response, pos);
+        }
+        return;
+    }
+
+    if (strcmp(cmd->cmd, "terminate") == 0) {
+        if (!MemTerminate(cmd->mem_token)) {
+            send_exec_error(cmd->id, "invalid or consumed token", t);
+            return;
+        }
+        pos = 0;
+        if (resp_append(response, sizeof(response), &pos, "{\"id\":\"") &&
+            resp_append(response, sizeof(response), &pos, cmd->id) &&
+            resp_append(response, sizeof(response), &pos,
+                        "\",\"status\":\"ok\",\"terminated\":true}\n") &&
+            t != NULL) {
+            TransportWriteAll(t, response, pos);
+        }
+        return;
+    }
+
+    if (strcmp(cmd->cmd, "release") == 0) {
+        if (!MemRelease(cmd->mem_token)) {
+            send_exec_error(cmd->id, "invalid or consumed token", t);
+            return;
+        }
+        pos = 0;
+        if (resp_append(response, sizeof(response), &pos, "{\"id\":\"") &&
+            resp_append(response, sizeof(response), &pos, cmd->id) &&
+            resp_append(response, sizeof(response), &pos,
+                        "\",\"status\":\"ok\",\"released\":true}\n") &&
+            t != NULL) {
+            TransportWriteAll(t, response, pos);
+        }
+        return;
+    }
+}
+
+/*
  * LineBuffer - Accumulates characters and splits on newline boundaries.
  */
 typedef struct {
@@ -722,6 +888,13 @@ void ProcessCommand(const char *line, Transport *t)
     } else if (strcmp(cmd.cmd, "ptyExec") == 0) {
         HandleExec(&cmd, t, 1);
         return;
+    } else if (strcmp(cmd.cmd, "spawnRetain") == 0 ||
+               strcmp(cmd.cmd, "peek") == 0 ||
+               strcmp(cmd.cmd, "poke") == 0 ||
+               strcmp(cmd.cmd, "terminate") == 0 ||
+               strcmp(cmd.cmd, "release") == 0) {
+        HandleMem(&cmd, t);
+        return;
     } else {
         responseLen = BuildJsonResponse(cmd.id, "error", "error",
                                         "unknown command",
@@ -839,6 +1012,12 @@ int main(void)
     cat = LoadCatalogAtStartup(&config);
     ExecConfigure(cat, config.unsafeMode);
 
+    /* Arm the memory-write path + audit sink (spec: memory-ops.allium - the
+     * device /ALLOWMEMWRITE arm + fail-closed audit; off by default). If the
+     * arm is requested but the audit log is not writable, AuditConfigure drops
+     * the arm (a poke that cannot be logged is never armable). */
+    AuditConfigure(config.allowMemWrite, config.auditPath);
+
     /* Detect installed build toolchains once (spec: toolchains.allium
      * ToolchainDetected): run each catalogued probe command's version banner.
      * Reported in every ready message's features.toolchains array. */
@@ -861,6 +1040,10 @@ int main(void)
         }
         SendReady(conn);
         Serve(conn);
+        /* Release any spawn-retained memory targets the client held, so a
+         * disconnect never leaks a process handle (spec: memory-ops.allium -
+         * MemReleaseAll on connection close). */
+        MemReleaseAll();
         if (conn != &listener && conn->close != NULL) {
             conn->close(conn);
         }

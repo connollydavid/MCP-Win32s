@@ -58,7 +58,9 @@ set(CORE_SOURCES
   src/catalog.c
   src/exec_ops.c
   src/pty_exec.c
-  src/toolchain_probe.c)
+  src/toolchain_probe.c
+  src/mem_ops.c
+  src/audit.c)
 
 # --- main executable -------------------------------------------------------
 # The TCP backend is runtime-loaded (LoadLibraryA), so we deliberately do NOT
@@ -129,6 +131,24 @@ add_executable(test_toolchain_probe
   src/exec_ops.c src/catalog.c src/feat.c src/binfmt.c)
 target_link_libraries(test_toolchain_probe PRIVATE kernel32)
 
+# --- 5.3 memory peek/poke test targets -------------------------------------
+# test_mem_ops drives the spawn-retain table + the process-tier RPM/WPM
+# round-trip, so it needs TEST_BUILD (MemResetForTest) and the mem_target
+# helper child next to it. audit.c is linked because MemPoke audits.
+add_executable(test_mem_ops
+  tests/test_mem_ops.c src/mem_ops.c src/audit.c
+  src/feat.c src/catalog.c src/argv.c)
+target_compile_definitions(test_mem_ops PRIVATE TEST_BUILD)
+target_link_libraries(test_mem_ops PRIVATE kernel32 user32)
+
+# mem_target: a long-sleeping helper child for the process-tier round-trip.
+add_executable(mem_target tests/mem_target.c)
+target_link_libraries(mem_target PRIVATE kernel32)
+add_dependencies(test_mem_ops mem_target)
+
+add_executable(test_audit tests/test_audit.c src/audit.c)
+target_link_libraries(test_audit PRIVATE kernel32 user32)
+
 # wire_client: the 4.0b wire-contract smoke client. A test tool, so a
 # static wsock32 link is fine here (the SERVER stays runtime-loaded).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/smoke/wire_client.c)
@@ -152,7 +172,8 @@ add_custom_command(TARGET test_catalog POST_BUILD
 foreach(t test_json test_transport test_tcp test_serial
           test_base64 test_file_ops test_pbt_base64
           test_feat test_argv test_binfmt test_catalog
-          test_exec_ops test_pty_exec test_toolchain_probe)
+          test_exec_ops test_pty_exec test_toolchain_probe
+          test_mem_ops test_audit)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
