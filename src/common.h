@@ -18,6 +18,8 @@
 #define MCP_MAX_ARGV     64     /* Max exec argv elements */
 #define MCP_MAX_ARG_LEN  512    /* Max bytes per exec argv element */
 #define MCP_MAX_STDIN_B64 8192  /* Base64 of the 4096-byte stdin cap + slack */
+#define MCP_MAX_MEM_TOKEN 40    /* spawn-retain token "m<seq>-<rand>" + slack */
+#define MCP_MAX_MEM_NUM   24    /* address/length wire string (hex or decimal) */
 
 /*
  * JsonCommand - Parsed representation of an incoming JSON command.
@@ -32,11 +34,19 @@
  *   {"cmd":"move","id":"901","path":"C:\\a.txt","dest":"C:\\b.txt"}
  *   {"cmd":"mkdir","id":"234","path":"C:\\NEWDIR"}
  *   {"cmd":"rmdir","id":"567","path":"C:\\OLDDIR"}
+ *   {"cmd":"spawnRetain","id":"a","argv":["cl"],"cwd":"C:\\"}
+ *   {"cmd":"peek","id":"b","mem_token":"m1-742","mem_addr":"0x401000","mem_len":"64"}
+ *   {"cmd":"poke","id":"c","mem_token":"m1-742","mem_addr":"0x401000","data":"<base64>"}
+ *   {"cmd":"terminate","id":"d","mem_token":"m1-742"}
+ *   {"cmd":"release","id":"e","mem_token":"m1-742"}
  *
  * Fields not present in the JSON are left zeroed. The exec-only fields
  * (argv..rows) are parsed for every command but only consumed by the
  * exec/ptyExec path (spec: mcp-protocol.allium entity Command); dest is
- * consumed only by the copy/move path (the source rides in path).
+ * consumed only by the copy/move path (the source rides in path). The
+ * mem_* fields (spec: memory-ops.allium) carry the spawnRetain/peek/poke/
+ * terminate/release wire args; mem_addr/mem_len are STRINGS (a 32-bit
+ * address overflows the signed-int JSON parser), parsed via MemParseU32.
  */
 typedef struct {
     char cmd[MCP_MAX_CMD];           /* Command: "exec","read","write","list","delete" */
@@ -59,6 +69,11 @@ typedef struct {
     int  cpu_time_ms;               /* 0 = no cap; job objects only */
     int  cols;                      /* ptyExec console width */
     int  rows;                      /* ptyExec console height */
+
+    /* memory peek/poke fields (spec: memory-ops.allium) */
+    char mem_token[MCP_MAX_MEM_TOKEN];  /* spawn-retain token (process tier) */
+    char mem_addr[MCP_MAX_MEM_NUM];     /* address string; parsed by MemParseU32 */
+    char mem_len[MCP_MAX_MEM_NUM];      /* length string; parsed by MemParseU32 */
 } JsonCommand;
 
 #endif /* COMMON_H */
