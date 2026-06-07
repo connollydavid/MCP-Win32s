@@ -22,6 +22,7 @@
 #include "base64.h"
 #include "ready.h"
 #include "mem_ops.h"
+#include "encoding.h"
 #include "audit.h"
 
 /* ========================================================
@@ -949,6 +950,23 @@ TEST_CASE(mem_ready_carries_tier) {
     TEST_ASSERT(strstr(json, want) != NULL, "features.mem carries the tier");
 }
 
+TEST_CASE(encoding_ready_carries_tag) {
+    char json[2048];
+    char want[48];
+    ToolchainSet set;
+    int len;
+
+    FeatInit();
+    memset(&set, 0, sizeof(set));
+    len = BuildReadyMessage("tcp", NULL, &set, json, (int)sizeof(json));
+    TEST_ASSERT(len > 0, "ready built");
+    /* features.encoding is always present and is the OS-family provenance tag
+     * (host-tolerant: the exact value follows the tier, "utf8_via_w" on the NT
+     * dev host/CI where the -W uplift is live). Informational only. */
+    wsprintfA(want, "\"encoding\":\"%s\"", EncProvenanceTag());
+    TEST_ASSERT(strstr(json, want) != NULL, "features.encoding carries the tag");
+}
+
 TEST_CASE(mem_spawn_retain_uncatalogued_refused) {
     /* SAFETY PIN #5 at the wire: an enforced catalog + an uncatalogued
      * command -> spawnRetain refused (no launch-anything bypass). */
@@ -1200,6 +1218,7 @@ int main(void)
 
     printf("\nMemory peek/poke wire dispatch:\n");
     RUN_TEST(mem_ready_carries_tier);
+    RUN_TEST(encoding_ready_carries_tag);
     RUN_TEST(mem_spawn_retain_uncatalogued_refused);
     RUN_TEST(mem_poke_unarmed_refused);
     RUN_TEST(mem_peek_bad_token_errors);

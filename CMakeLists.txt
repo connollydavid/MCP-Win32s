@@ -54,6 +54,7 @@ set(CORE_SOURCES
   src/base64.c
   src/charset_tables.c
   src/charset_tables_data.c
+  src/encoding.c
   src/file_ops.c
   src/serial.c
   src/transport.c
