@@ -1,14 +1,16 @@
 -- allium: 3
 -- mcp-bridge.allium
 
--- Scope: MCP bridge core (Phase 5, work-item 5.0) - the Rust bridge's
---        MCP-server skeleton fronting the Win32s device over stdio.
+-- Scope: MCP bridge - the Rust bridge's MCP-server skeleton fronting
+--        the Win32s device over stdio.
 -- Includes: the MCP session lifecycle + lenient version negotiation
 --           (target 2025-11-25); capability gating of the advertised
---           tool set from the device's features; and the generic
+--           tool set from the device's features; the generic
 --           tool-call -> device round-trip -> result mapping, incl. the
 --           isError (recoverable) vs protocol-error (unknown/malformed)
---           translation.
+--           translation; and the API-first file tool surface (the eight
+--           win32_* file tools: registration, honest annotations, 1:1
+--           device-command relay).
 -- Realized by rmcp: the session lifecycle, version negotiation, and
 --   protocol-level rejection are provided by the rmcp library (modelled
 --   here for completeness). The bridge itself implements the device link,
@@ -16,9 +18,9 @@
 -- Excludes:
 --   - The device wire protocol + ready handshake (wire-contract.allium,
 --     consumed here as the device side)
---   - The concrete capability tools: file-ops (5.1), build (5.2),
---     memory (5.3), encoding (5.4) - 5.0 is the generic contract only
---   - Streamable HTTP, OAuth, resources/prompts/sampling (later phases)
+--   - The remaining concrete capability tools: build steps, memory
+--     peek/poke, encoding tiers (each arrives with its work-item)
+--   - Streamable HTTP, OAuth, resources/prompts/sampling (deferred)
 -- Dependencies: wire-contract.allium
 
 use "./wire-contract.allium" as wire
@@ -94,6 +96,15 @@ entity Tool {
     name: String
     required_capability: String?
     advertised: Boolean
+    -- The device wire command this tool relays to 1:1, when it is a
+    -- direct relay (every file tool is); null for tools composed of
+    -- multiple device commands (the build steps).
+    device_cmd: String?
+    -- MCP annotations (destructiveHint/readOnlyHint), honest by
+    -- construction - see FileToolHintsAreHonest. Advisory only: safety
+    -- is enforced device-side, never by these.
+    destructive: Boolean
+    read_only: Boolean
 }
 
 -- One tools/call from the client. An unadvertised/unknown tool or
@@ -185,6 +196,29 @@ rule CapabilitiesResolved {
         mem: device_mem_tier(session.device),
         encoding: device_encoding(session.device)
     )
+}
+
+-- The API-first file tool surface: registered once the device
+-- capabilities are resolved (so advertisement always sees them). File
+-- ops are Win32s-uniform A-APIs - no required capability, so all eight
+-- are always advertised. Each is a 1:1 relay to a device wire command;
+-- tool arguments map by name onto the wire fields (path, dest, data).
+-- This surface supersedes the shell file builtins (dir/type/del/copy/
+-- ren/md/rd), which are not exposed as tools - see
+-- ShellFileBuiltinsNotExposed. copy_file is deliberately not
+-- destructive: the device copy is fail-if-exists (file-ops.allium
+-- FileCopyDestExists), so overwriting is an explicit delete-then-copy.
+rule FileToolsRegistered {
+    when: caps: DeviceCapabilities.created
+    ensures:
+        Tool.created(session: caps.session, name: "win32_read_file", device_cmd: "read", destructive: false, read_only: true)
+        Tool.created(session: caps.session, name: "win32_write_file", device_cmd: "write", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_list_dir", device_cmd: "list", destructive: false, read_only: true)
+        Tool.created(session: caps.session, name: "win32_delete_file", device_cmd: "delete", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_copy_file", device_cmd: "copy", destructive: false, read_only: false)
+        Tool.created(session: caps.session, name: "win32_move_file", device_cmd: "move", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_make_dir", device_cmd: "mkdir", destructive: false, read_only: false)
+        Tool.created(session: caps.session, name: "win32_remove_dir", device_cmd: "rmdir", destructive: true, read_only: false)
 }
 
 -- A tool is advertised iff it names no required capability, or the named
@@ -303,6 +337,39 @@ invariant AdvertisedToolsAreCapable {
 invariant SuccessResultsAreStructured {
     for r in ToolResults:
         r.has_structured implies not r.is_error
+}
+
+-- The supersession pin: the shell file builtins drop from the exposed
+-- surface (superseded by the API-backed win32_* tools - they drift
+-- across the 30-year range; the APIs do not). No tool is ever named
+-- after one; file manipulation is reachable only through the API-backed
+-- tools and the catalogued exec fallback.
+invariant ShellFileBuiltinsNotExposed {
+    for t in Tools:
+        t.name not in {"dir", "type", "del", "copy", "ren", "md", "rd"}
+}
+
+-- Honesty pin for the file tools' advisory annotations: the mutating
+-- four are destructive, the observing two are read-only, copy/make_dir
+-- destroy nothing (copy is fail-if-exists by design), and read-only
+-- excludes destructive.
+invariant FileToolHintsAreHonest {
+    for t in Tools:
+        (t.name in {"win32_write_file", "win32_delete_file", "win32_move_file", "win32_remove_dir"} implies t.destructive)
+        and (t.name in {"win32_read_file", "win32_list_dir", "win32_copy_file", "win32_make_dir"} implies not t.destructive)
+        and (t.name in {"win32_read_file", "win32_list_dir"} implies t.read_only)
+        and (t.read_only implies not t.destructive)
+}
+
+-- Every file tool is a pure 1:1 relay to a device wire command (unlike
+-- the composed build steps): its bridge logic is argument mapping and
+-- result mapping only.
+invariant FileToolsAreDirectRelays {
+    for t in Tools:
+        t.name in {"win32_read_file", "win32_write_file", "win32_list_dir",
+                   "win32_delete_file", "win32_copy_file", "win32_move_file",
+                   "win32_make_dir", "win32_remove_dir"}
+            implies t.device_cmd != null
 }
 
 ------------------------------------------------------------
