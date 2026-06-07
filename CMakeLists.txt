@@ -113,8 +113,12 @@ target_link_libraries(test_serial PRIVATE kernel32 user32)
 add_executable(test_base64 tests/test_base64.c src/base64.c)
 target_link_libraries(test_base64 PRIVATE kernel32)
 
-add_executable(test_file_ops tests/test_file_ops.c src/file_ops.c)
-target_link_libraries(test_file_ops PRIVATE kernel32)
+# test_file_ops drives the tier-aware path seam (file_ops.c over EncOpenPath),
+# so it links the encoding codec/tables + feat (the -W uplift + g_features).
+add_executable(test_file_ops
+  tests/test_file_ops.c src/file_ops.c src/encoding.c
+  src/charset_tables.c src/charset_tables_data.c src/feat.c)
+target_link_libraries(test_file_ops PRIVATE kernel32 user32)
 
 add_executable(test_pbt_base64 tests/test_pbt_base64.c src/base64.c)
 target_link_libraries(test_pbt_base64 PRIVATE kernel32)
@@ -137,8 +141,11 @@ target_link_libraries(test_binfmt PRIVATE kernel32)
 add_executable(test_catalog tests/test_catalog.c src/catalog.c)
 target_link_libraries(test_catalog PRIVATE kernel32)
 
+# exec_ops.c widens the cmdline for the -W spawn (encoding.c), so the
+# standalone exec target links the codec + tables too.
 add_executable(test_exec_ops
-  tests/test_exec_ops.c src/exec_ops.c src/feat.c src/binfmt.c)
+  tests/test_exec_ops.c src/exec_ops.c src/feat.c src/binfmt.c
+  src/encoding.c src/charset_tables.c src/charset_tables_data.c)
 target_link_libraries(test_exec_ops PRIVATE kernel32)
 
 add_executable(test_pty_exec tests/test_pty_exec.c src/pty_exec.c src/feat.c)
@@ -147,7 +154,8 @@ target_link_libraries(test_pty_exec PRIVATE kernel32)
 # --- 5.2 build-toolchain test targets --------------------------------------
 add_executable(test_toolchain_probe
   tests/test_toolchain_probe.c src/toolchain_probe.c
-  src/exec_ops.c src/catalog.c src/feat.c src/binfmt.c)
+  src/exec_ops.c src/catalog.c src/feat.c src/binfmt.c
+  src/encoding.c src/charset_tables.c src/charset_tables_data.c)
 target_link_libraries(test_toolchain_probe PRIVATE kernel32)
 
 # --- 5.3 memory peek/poke test targets -------------------------------------

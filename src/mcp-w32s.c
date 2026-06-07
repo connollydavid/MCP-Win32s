@@ -32,6 +32,7 @@
 #include "toolchain_probe.h"
 #include "mem_ops.h"
 #include "audit.h"
+#include "encoding.h"
 
 /* Protocol constants */
 #define CMD_BUF_SIZE    8192
@@ -198,6 +199,10 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
     static unsigned char stdinBuf[EXEC_STDIN_MAX + 2048];
     static unsigned char stdoutBuf[EXEC_OUTPUT_CAP];
     static unsigned char stderrBuf[EXEC_OUTPUT_CAP];
+    /* Exec output is console-CP text; it is transcoded to UTF-8 here (the wire
+     * is uniformly UTF-8 - NeverEmitInvalidUtf8) before base64. One reused
+     * buffer (stdout, then stderr); single-threaded server. */
+    static char utf8Buf[EXEC_OUTPUT_CAP];
     static char b64Out[(EXEC_OUTPUT_CAP / 3 + 1) * 4 + 8];
     static char b64Err[(EXEC_OUTPUT_CAP / 3 + 1) * 4 + 8];
     static char response[MCP_MAX_RESPONSE];
@@ -429,10 +434,22 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
             send_exec_error(cmd->id, "timed out", t);
             return;
         }
-        if (Base64Encode(stdoutBuf, pres.output_len, b64Out,
-                         (int)sizeof(b64Out)) < 0) {
-            send_exec_error(cmd->id, "encode error", t);
-            return;
+        {
+            /* Transcode the child's console-CP output to UTF-8 (cut on a
+             * code-point boundary if it would overflow the cap). */
+            EncStatus est;
+            int u8len;
+            u8len = EncBytesToWire(EncConsoleOutputCp(), stdoutBuf,
+                                   pres.output_len, utf8Buf,
+                                   (int)sizeof(utf8Buf), &est);
+            if (est == ENC_TRUNCATED) {
+                pres.output_truncated = 1;
+            }
+            if (Base64Encode((const unsigned char *)utf8Buf, u8len, b64Out,
+                             (int)sizeof(b64Out)) < 0) {
+                send_exec_error(cmd->id, "encode error", t);
+                return;
+            }
         }
         pos = 0;
         if (!resp_append(response, sizeof(response), &pos, "{\"id\":\"") ||
@@ -445,7 +462,7 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
                          ",\"output_b64\":\"") ||
             !resp_append(response, sizeof(response), &pos, b64Out) ||
             !resp_append(response, sizeof(response), &pos,
-                         "\",\"output_kind\":\"ansi\",\"output_truncated\":") ||
+                         "\",\"output_kind\":\"utf8\",\"output_truncated\":") ||
             !resp_append(response, sizeof(response), &pos,
                          pres.output_truncated ? "true" : "false") ||
             !resp_append(response, sizeof(response), &pos,
@@ -488,12 +505,37 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
         return;
     }
 
-    if (Base64Encode(stdoutBuf, res.stdout_len, b64Out,
-                     (int)sizeof(b64Out)) < 0 ||
-        Base64Encode(stderrBuf, res.stderr_len, b64Err,
-                     (int)sizeof(b64Err)) < 0) {
-        send_exec_error(cmd->id, "encode error", t);
-        return;
+    {
+        /* Transcode both console-CP streams to UTF-8 (child console CP -> wire;
+         * cut on a code-point boundary at the cap). utf8Buf is reused: stdout
+         * first, then stderr. */
+        EncStatus est;
+        unsigned int ccp;
+        int u8len;
+
+        ccp = EncConsoleOutputCp();
+
+        u8len = EncBytesToWire(ccp, stdoutBuf, res.stdout_len, utf8Buf,
+                               (int)sizeof(utf8Buf), &est);
+        if (est == ENC_TRUNCATED) {
+            res.stdout_truncated = 1;
+        }
+        if (Base64Encode((const unsigned char *)utf8Buf, u8len, b64Out,
+                         (int)sizeof(b64Out)) < 0) {
+            send_exec_error(cmd->id, "encode error", t);
+            return;
+        }
+
+        u8len = EncBytesToWire(ccp, stderrBuf, res.stderr_len, utf8Buf,
+                               (int)sizeof(utf8Buf), &est);
+        if (est == ENC_TRUNCATED) {
+            res.stderr_truncated = 1;
+        }
+        if (Base64Encode((const unsigned char *)utf8Buf, u8len, b64Err,
+                         (int)sizeof(b64Err)) < 0) {
+            send_exec_error(cmd->id, "encode error", t);
+            return;
+        }
     }
 
     pos = 0;

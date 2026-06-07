@@ -761,6 +761,86 @@ TEST_CASE(exec_builtin_positional_metachar_neutralised) {
     CatalogFree(cat);
 }
 
+/*
+ * wellformed_utf8 - Table 3-7 ("Well-Formed UTF-8 Byte Sequences") validator.
+ * Returns 1 iff every byte of b[0..n) belongs to a well-formed sequence (no
+ * lone/over-long/surrogate/truncated forms). Used to pin NeverEmitInvalidUtf8
+ * at the exec-output transcode seam.
+ */
+static int wellformed_utf8(const unsigned char *b, int n)
+{
+    int i;
+    i = 0;
+    while (i < n) {
+        unsigned char c;
+        int len;
+        int lo;
+        int hi;
+        int k;
+        c = b[i];
+        if (c < 0x80) { i++; continue; }
+        if (c >= 0xC2 && c <= 0xDF)      { len = 2; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xE0)              { len = 3; lo = 0xA0; hi = 0xBF; }
+        else if (c >= 0xE1 && c <= 0xEC) { len = 3; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xED)              { len = 3; lo = 0x80; hi = 0x9F; }
+        else if (c >= 0xEE && c <= 0xEF) { len = 3; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF0)              { len = 4; lo = 0x90; hi = 0xBF; }
+        else if (c >= 0xF1 && c <= 0xF3) { len = 4; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF4)              { len = 4; lo = 0x80; hi = 0x8F; }
+        else { return 0; }   /* C0/C1, F5-FF, or a stray continuation byte */
+        if (i + len > n) { return 0; }                 /* truncated tail */
+        if (b[i + 1] < lo || b[i + 1] > hi) { return 0; }
+        for (k = 2; k < len; k++) {
+            if (b[i + k] < 0x80 || b[i + k] > 0xBF) { return 0; }
+        }
+        i += len;
+    }
+    return 1;
+}
+
+/*
+ * Obligation: encoding.allium OutputConverted + NeverEmitInvalidUtf8, the
+ * exec-output transcode seam (OBLIGATIONS-5.4.md). A child emitting a non-ASCII
+ * byte comes back as WELL-FORMED UTF-8 on the wire. The exact glyph is
+ * host-dependent (the child's console code page), but UTF-8 well-formedness is
+ * the invariant: without the transcode the raw lone high byte would be invalid
+ * UTF-8 and this fails. Host-tolerant (runs under native WSL and Wine).
+ */
+TEST_CASE(exec_output_is_valid_utf8) {
+    MockTransport m;
+    const char *b64Start;
+    static unsigned char decoded[8192];
+    int dn;
+
+    ExecConfigure(NULL, 0);
+    MockTransportInit(&m, NULL, 0);
+    /* echo a UTF-8 U+00E9 (LATIN SMALL LETTER E WITH ACUTE). */
+    ProcessCommand("{\"cmd\":\"exec\",\"id\":\"u1\","
+                   "\"argv\":[\"cmd\",\"/c\",\"echo\",\"\xC3\xA9\"],"
+                   "\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL, "exec ran");
+
+    b64Start = strstr(m.out, "\"stdout_b64\":\"");
+    TEST_ASSERT(b64Start != NULL, "response carries stdout_b64");
+    if (b64Start != NULL) {
+        char b64[8192];
+        const char *p;
+        int n;
+        b64Start += lstrlenA("\"stdout_b64\":\"");
+        n = 0;
+        for (p = b64Start; *p != '\0' && *p != '"' && n < 8191; p++) {
+            b64[n++] = *p;
+        }
+        b64[n] = '\0';
+        dn = Base64Decode(b64, decoded, (int)sizeof(decoded));
+        if (dn < 0) {
+            dn = 0;
+        }
+        TEST_ASSERT(wellformed_utf8(decoded, dn),
+                    "exec stdout is well-formed UTF-8");
+    }
+}
+
 TEST_CASE(exec_busy_carries_detail_then_reaps) {
     /* still_active orphan blocks exec AND ptyExec with informative
      * busy; once the orphan exits the next request proceeds
@@ -861,6 +941,28 @@ TEST_CASE(ptyexec_capability_absent_error) {
     TEST_ASSERT(strstr(m.out, "pty not available on this Windows") != NULL,
                 "capability-absent error");
     FeatInit(); /* restore */
+}
+
+/*
+ * Obligation: mcp-protocol.allium output_kind = utf8, the ptyExec transcode
+ * seam (OBLIGATIONS-5.4.md). ConPTY output is transcoded to UTF-8, so the
+ * response declares output_kind:"utf8". ConPTY is Win10 1809+; skip-with-reason
+ * where absent (e.g. Wine CI) - runner-verified on a ConPTY host.
+ */
+TEST_CASE(ptyexec_output_kind_utf8) {
+    MockTransport m;
+
+    if (!g_features.has_create_pseudo_console) {
+        printf("    [skip] no ConPTY on this host\n");
+        return;
+    }
+    ExecConfigure(NULL, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"ptyExec\",\"id\":\"pk\","
+                   "\"argv\":[\"cmd\",\"/c\",\"echo\",\"hi\"],"
+                   "\"unsafe\":true}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"output_kind\":\"utf8\"") != NULL,
+                "ptyExec declares output_kind utf8");
 }
 
 /* ========================================================
@@ -1208,10 +1310,12 @@ int main(void)
     RUN_TEST(exec_unsafe_bypasses_catalog);
     RUN_TEST(exec_builtin_autoroutes_via_shell);
     RUN_TEST(exec_builtin_positional_metachar_neutralised);
+    RUN_TEST(exec_output_is_valid_utf8);
     RUN_TEST(exec_busy_carries_detail_then_reaps);
     RUN_TEST(exec_stdin_too_large_rejected);
     RUN_TEST(exec_invalid_stdin_b64_rejected);
     RUN_TEST(ptyexec_capability_absent_error);
+    RUN_TEST(ptyexec_output_kind_utf8);
 
     printf("\nReady message (features.toolchains):\n");
     RUN_TEST(ready_lists_detected_toolchains);

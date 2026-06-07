@@ -36,6 +36,7 @@
 #include "exec_ops.h"
 #include "feat.h"
 #include "binfmt.h"
+#include "encoding.h"   /* Utf8ToUtf16 for the -W spawn (wide tier) */
 
 /* ------------------------------------------------------------------
  * Job-object declarations. MinGW's C89 headers may lack these; declare
@@ -412,8 +413,49 @@ int ExecOpRun(
         oldErrMode = SetErrorMode(SEM_FAILCRITICALERRORS |
                                   SEM_NOGPFAULTERRORBOX |
                                   SEM_NOOPENFILEERRORBOX);
-        spawnOk = CreateProcessA(NULL, (LPSTR)cmdLine, NULL, NULL, TRUE,
-                                 creationFlags, NULL, cwd, &si, &pi);
+        if (g_features.has_wide_createprocess) {
+            /* Wide tier (NT family): the cmdLine + cwd are UTF-8; widen them
+             * and spawn through CreateProcessW so non-ASCII argv survives
+             * losslessly. lpCommandLine must be writable. The job/orphan
+             * machinery below is HANDLE-based and unchanged. The single
+             * threaded server makes the 64 KB widen buffer safe as static. */
+            static WCHAR wCmd[EXEC_MAX_CMDLINE + 2];
+            static WCHAR wCwd[MAX_PATH];
+            STARTUPINFOW siw;
+            EncStatus est;
+            LPCWSTR wCwdArg;
+            int nw;
+
+            nw = Utf8ToUtf16((const unsigned char *)cmdLine, lstrlenA(cmdLine),
+                             (unsigned short *)wCmd, EXEC_MAX_CMDLINE, &est);
+            wCmd[nw] = 0;
+
+            wCwdArg = NULL;
+            if (cwd != NULL && cwd[0] != '\0') {
+                int ncw;
+                ncw = Utf8ToUtf16((const unsigned char *)cwd, lstrlenA(cwd),
+                                  (unsigned short *)wCwd, MAX_PATH - 1, &est);
+                wCwd[ncw] = 0;
+                wCwdArg = wCwd;
+            }
+
+            memset(&siw, 0, sizeof(siw));
+            siw.cb = sizeof(siw);
+            siw.dwFlags = si.dwFlags;
+            siw.hStdInput = si.hStdInput;
+            siw.hStdOutput = si.hStdOutput;
+            siw.hStdError = si.hStdError;
+            siw.wShowWindow = si.wShowWindow;
+
+            spawnOk = g_features.pCreateProcessW(NULL, wCmd, NULL, NULL, TRUE,
+                                                 creationFlags, NULL, wCwdArg,
+                                                 &siw, &pi);
+        } else {
+            /* -A fallback (Win32s/9x, or the uplift forced off): pass the
+             * bytes through as today. */
+            spawnOk = CreateProcessA(NULL, (LPSTR)cmdLine, NULL, NULL, TRUE,
+                                     creationFlags, NULL, cwd, &si, &pi);
+        }
         SetErrorMode(oldErrMode);
     }
     if (!spawnOk) {
