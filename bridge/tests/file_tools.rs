@@ -7,7 +7,7 @@
 mod common;
 use common as mock;
 
-use mcp_w32s_bridge::capabilities::{Capabilities, EncodingMode, MemTier};
+use mcp_w32s_bridge::capabilities::{Capabilities, EncodingProvenance, MemTier};
 use mcp_w32s_bridge::server::{Bridge, PathParams, SourceDestParams, WriteParams};
 use rmcp::handler::server::wrapper::Parameters;
 
@@ -15,7 +15,7 @@ fn caps() -> Capabilities {
     Capabilities {
         has_pty: false,
         mem: MemTier::None,
-        encoding: EncodingMode::Codepage,
+        encoding: EncodingProvenance::FromCodepage,
         codepage: 437,
         version: "test".to_string(),
         toolchains: vec![],

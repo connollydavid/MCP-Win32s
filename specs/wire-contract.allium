@@ -43,6 +43,15 @@ contract ReadyHandshake {
         -- the device exposes no memory capability. The bridge consumes it to
         -- gate the five memory tools - win32_spawn_retain/peek/poke/terminate/
         -- release (memory-ops.allium tiers, mcp-bridge.allium MemTier).
+        -- The features object also carries an `encoding` provenance tag
+        -- ("utf8_manifest" | "utf8_via_w" | "utf8_from_cp"): the device emits
+        -- valid UTF-8 on every wire surface regardless (encoding.allium - the
+        -- device owns the whole text pipeline), so this tag is purely
+        -- INFORMATIONAL, naming which tier the device transcoded from
+        -- (Win10 activeCodePage manifest / the NT -W uplift / our own code-page
+        -- tables on Win32s+9x). The bridge does NOT transcode on it - all wire
+        -- text (paths, listings, exec output) is already UTF-8; file contents
+        -- remain raw base64.
 
     @guidance
         -- Clients must tolerate additional keys in the ready message:

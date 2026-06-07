@@ -15,6 +15,11 @@
 cmake_minimum_required(VERSION 3.21)
 project(mcp-w32s C)
 
+# RC compiles the application manifest (src/mcp-w32s.rc) into mcp-w32s.exe only.
+# windres on MinGW (CMAKE_RC_COMPILER, set by the toolchain) and rc.exe on MSVC
+# both drive a .rc through this language - no per-toolchain special-casing.
+enable_language(RC)
+
 # C89 strict, no GNU extensions (matches the historic -std=c89 -pedantic).
 set(CMAKE_C_STANDARD 90)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -47,6 +52,9 @@ include_directories(src tests)
 set(CORE_SOURCES
   src/json_parser.c
   src/base64.c
+  src/charset_tables.c
+  src/charset_tables_data.c
+  src/encoding.c
   src/file_ops.c
   src/serial.c
   src/transport.c
@@ -65,7 +73,18 @@ set(CORE_SOURCES
 # --- main executable -------------------------------------------------------
 # The TCP backend is runtime-loaded (LoadLibraryA), so we deliberately do NOT
 # link wsock32 - the binary must still load on bare Win32s without TCP/IP-32.
-add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES})
+#
+# src/mcp-w32s.rc embeds the UTF-8 activeCodePage manifest at RT_MANIFEST ID 1.
+# It is attached to THIS target only (never ${CORE_SOURCES}), so the test
+# binaries that share the core sources do not pick up a second manifest.
+#
+# Default-manifest collision: empirically verified that this MinGW-w64 ld does
+# NOT inject its own RT_MANIFEST at ID 1 (the default link yields exactly one
+# manifest - our own), and its ld does NOT recognise -Wl,--disable-default-manifest
+# (it errors out the link). So no suppression flag is added; doing so would
+# both be unnecessary and break the MinGW link. (Verified: build/m5 probe,
+# wrestool -l shows a single --type=24 --name=1.)
+add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} src/mcp-w32s.rc)
 target_link_libraries(mcp-w32s PRIVATE kernel32 user32)
 
 # --- tests -----------------------------------------------------------------
@@ -94,8 +113,12 @@ target_link_libraries(test_serial PRIVATE kernel32 user32)
 add_executable(test_base64 tests/test_base64.c src/base64.c)
 target_link_libraries(test_base64 PRIVATE kernel32)
 
-add_executable(test_file_ops tests/test_file_ops.c src/file_ops.c)
-target_link_libraries(test_file_ops PRIVATE kernel32)
+# test_file_ops drives the tier-aware path seam (file_ops.c over EncOpenPath),
+# so it links the encoding codec/tables + feat (the -W uplift + g_features).
+add_executable(test_file_ops
+  tests/test_file_ops.c src/file_ops.c src/encoding.c
+  src/charset_tables.c src/charset_tables_data.c src/feat.c)
+target_link_libraries(test_file_ops PRIVATE kernel32 user32)
 
 add_executable(test_pbt_base64 tests/test_pbt_base64.c src/base64.c)
 target_link_libraries(test_pbt_base64 PRIVATE kernel32)
@@ -118,8 +141,11 @@ target_link_libraries(test_binfmt PRIVATE kernel32)
 add_executable(test_catalog tests/test_catalog.c src/catalog.c)
 target_link_libraries(test_catalog PRIVATE kernel32)
 
+# exec_ops.c widens the cmdline for the -W spawn (encoding.c), so the
+# standalone exec target links the codec + tables too.
 add_executable(test_exec_ops
-  tests/test_exec_ops.c src/exec_ops.c src/feat.c src/binfmt.c)
+  tests/test_exec_ops.c src/exec_ops.c src/feat.c src/binfmt.c
+  src/encoding.c src/charset_tables.c src/charset_tables_data.c)
 target_link_libraries(test_exec_ops PRIVATE kernel32)
 
 add_executable(test_pty_exec tests/test_pty_exec.c src/pty_exec.c src/feat.c)
@@ -128,7 +154,8 @@ target_link_libraries(test_pty_exec PRIVATE kernel32)
 # --- 5.2 build-toolchain test targets --------------------------------------
 add_executable(test_toolchain_probe
   tests/test_toolchain_probe.c src/toolchain_probe.c
-  src/exec_ops.c src/catalog.c src/feat.c src/binfmt.c)
+  src/exec_ops.c src/catalog.c src/feat.c src/binfmt.c
+  src/encoding.c src/charset_tables.c src/charset_tables_data.c)
 target_link_libraries(test_toolchain_probe PRIVATE kernel32)
 
 # --- 5.3 memory peek/poke test targets -------------------------------------
@@ -148,6 +175,25 @@ add_dependencies(test_mem_ops mem_target)
 
 add_executable(test_audit tests/test_audit.c src/audit.c)
 target_link_libraries(test_audit PRIVATE kernel32 user32)
+
+# --- 5.4 text-encoding test targets ----------------------------------------
+# test_encoding exercises the OS-independent charset tables (the exhaustive
+# per-page round-trip on the bijective subset + the documented non-bijection
+# cases + strict narrowing) AND the pure UTF-8<->UTF-16 codec on-target mirror
+# (encoding.c). Pure - links only the table + codec sources.
+add_executable(test_encoding
+  tests/test_encoding.c src/encoding.c
+  src/charset_tables.c src/charset_tables_data.c src/feat.c)
+target_link_libraries(test_encoding PRIVATE kernel32 user32)
+
+# test_pbt_encoding: the prop.h on-target mirror of the four codec properties
+# (round-trip / lossy-total / never-invalid / truncation-clean), proving they
+# hold on the shipped C89/i386 codec path. The deep 50k-trial theft host run
+# lives in tests/host/theft_encoding.c (built by build.sh host-pbt).
+add_executable(test_pbt_encoding tests/test_pbt_encoding.c src/encoding.c)
+# Codec-only: exclude the Win32 tier surface so this links without feat/tables.
+target_compile_definitions(test_pbt_encoding PRIVATE ENCODING_HOST_PURE)
+target_link_libraries(test_pbt_encoding PRIVATE kernel32)
 
 # wire_client: the 4.0b wire-contract smoke client. A test tool, so a
 # static wsock32 link is fine here (the SERVER stays runtime-loaded).
@@ -173,7 +219,7 @@ foreach(t test_json test_transport test_tcp test_serial
           test_base64 test_file_ops test_pbt_base64
           test_feat test_argv test_binfmt test_catalog
           test_exec_ops test_pty_exec test_toolchain_probe
-          test_mem_ops test_audit)
+          test_mem_ops test_audit test_encoding test_pbt_encoding)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
 

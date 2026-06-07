@@ -1,0 +1,209 @@
+-- allium: 3
+-- encoding.allium
+
+-- Scope: Device-side full-range text encoding for MCP-Win32s (work-item 5.4).
+--        The device owns the ENTIRE text pipeline and emits valid UTF-8 on the
+--        wire across every Windows target (Win3.1+Win32s 1.25a -> Win11), using
+--        our OWN embedded C89 charset tables - we do not rely on the OS's
+--        MultiByteToWideChar/WideCharToMultiByte for codepage<->Unicode.
+-- Includes: the OS-family-derived conversion TIER; the pure UTF-8<->UTF-16
+--           codec and the codepage<->Unicode tables as pinned black-box
+--           transforms; the per-conversion result + status; the strict/lossy
+--           policy (decode is total -> U+FFFD; narrowing a path to a code page
+--           rejects rather than silently mis-targets a file); and the
+--           wire-safety floor (every wire-bound output is well-formed UTF-8).
+-- Excludes:
+--   - The Win10 activeCodePage=UTF-8 manifest + the delay-loaded -W file/process
+--     uplift (the IMPLEMENTATION of the tiers; observable here only as the tier
+--     and as the fact that the wire is always UTF-8)
+--   - The bridge passthrough (mcp-bridge.allium) and the wire envelope
+--     (wire-contract.allium, which gains an `encoding` provenance tag)
+--   - The per-codepage non-bijection matrix (docs/charset-bijection.md - the
+--     carved-out exceptions to CodepageRoundTripsOnBijectiveSubset)
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+-- The pure UTF-8 <-> UTF-16 codec: a hand-rolled, OS-independent transform
+-- (bytes and code units modelled as integer sequences). It is the wire-safety
+-- keystone - every byte the device puts on the UTF-8 wire flows out through
+-- utf16_to_utf8, and every inbound wire string in through utf8_to_utf16.
+contract Utf8Codec {
+    utf8_to_utf16: (bytes: List<Integer>) -> List<Integer>
+    utf16_to_utf8: (units: List<Integer>) -> List<Integer>
+
+    @invariant Utf8RoundTripFidelity
+        -- A well-formed UTF-16 code-unit sequence survives a round trip:
+        -- utf8_to_utf16(utf16_to_utf8(units)) is units. The codec is the
+        -- identity on the well-formed subset; malformed input is governed by
+        -- LossyDecodeIsTotal and the NeverEmitInvalidUtf8 result invariant.
+
+    @invariant LossyDecodeIsTotal
+        -- utf8_to_utf16 is TOTAL: it never fails or loops on ARBITRARY byte
+        -- input. A malformed maximal subpart yields exactly one U+FFFD and the
+        -- scanner advances to the next lead byte, so it always makes progress.
+
+    @invariant TruncationIsBoundaryClean
+        -- When an output buffer is exhausted, the emitted prefix is itself a
+        -- whole, well-formed sequence: the cut falls on a code-point boundary,
+        -- never inside a multi-byte UTF-8 sequence or a UTF-16 surrogate pair.
+}
+
+-- Our OWN embedded codepage <-> Unicode tables (the full single-byte inventory
+-- plus the four CJK DBCS pages), generated from the Unicode Consortium MICSFT
+-- mappings and committed as C89 data - deterministic and identical on every
+-- host, replacing the OS's MultiByteToWideChar/WideCharToMultiByte.
+contract CodepageTables {
+    codepage_to_unicode: (codepage: Integer, bytes: List<Integer>) -> List<Integer>
+    unicode_to_codepage: (codepage: Integer, units: List<Integer>) -> List<Integer>
+
+    @invariant CodepageRoundTripsOnBijectiveSubset
+        -- For the bijective subset of each baked code page,
+        -- unicode_to_codepage(cp, codepage_to_unicode(cp, bytes)) is bytes, and
+        -- codepage_to_unicode is TOTAL (an undefined byte position decodes to
+        -- U+FFFD, never a failure). The documented non-bijection cases -
+        -- undefined positions, vendor-divergent / duplicate rows (e.g. cp932's
+        -- wave-dash), and PUA mappings - are the carved-out exceptions
+        -- (docs/charset-bijection.md); an ambiguous encode resolves to the
+        -- Microsoft-canonical byte sequence, so an inbound path round-trips to
+        -- the bytes the OS itself would use.
+}
+
+-- The device's own byte-wise path parsing (finding separators to split a
+-- path). find_separators returns the separator byte offsets in a path.
+contract PathScanning {
+    find_separators: (path: List<Integer>) -> List<Integer>
+
+    @invariant PathSeparatorScanIsDbcsSafe
+        -- The device never mis-splits a DBCS character when scanning a path
+        -- for separators: the separator offsets find_separators returns equal
+        -- the true character-boundary separators, so a DBCS lead byte's
+        -- trailing 0x5C is never counted as a path separator. Achieved
+        -- structurally - every byte-wise separator scan runs on the
+        -- self-synchronising UTF-8 form BEFORE the single point where a path is
+        -- narrowed to a code page (a UTF-8 continuation byte 0x80-0xBF can never
+        -- be a 0x5C backslash); the one unavoidable backward scan (the device's
+        -- own module path from GetModuleFileName) uses a CharNext-correct
+        -- forward walk.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- The device's conversion tier, derived from the OS family. manifest: Win10
+-- 1903+, where the activeCodePage=UTF-8 manifest makes the -A APIs speak UTF-8
+-- directly (no table). wide: NT..Win8.1, where the delay-loaded -W APIs give
+-- full Unicode I/O. codepage: Win32s/Win9x, where our own tables widen/narrow
+-- the current ANSI/OEM code page. On EVERY tier the device emits valid UTF-8.
+enum EncodingTier { manifest | wide | codepage }
+
+-- The outcome of one conversion. ok: a clean, fully-representable conversion.
+-- lossy: a decode replaced malformed/undefined input with U+FFFD (a result was
+-- still produced). rejected: an inbound path could not be narrowed to the
+-- target code page (an unrepresentable code point) and the operation was
+-- refused - never a silent wrong-file (StrictNarrowingRejectsUnrepresentable).
+-- truncated: the output hit a buffer bound and was cut on a code-point boundary
+-- (TruncationIsBoundaryClean).
+enum ConversionStatus { ok | lossy | rejected | truncated }
+
+-- Which way text crosses the device boundary. inbound: an agent-supplied UTF-8
+-- wire string (a path) being prepared for a file/process API. outbound: an
+-- OS-sourced name / directory listing / child exec output being rendered to
+-- the UTF-8 wire.
+enum ConversionDirection { inbound | outbound }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- One text conversion the device performed at its boundary. The device owns
+-- the entire pipeline, so every path, listing and exec-output text that
+-- crosses the boundary is one of these. source/result are the byte / code-unit
+-- forms the codec and tables move between (integer sequences); the safety
+-- floors are pinned as invariants over the result.
+entity TextConversion {
+    direction: ConversionDirection
+    tier: EncodingTier
+    -- The code page the conversion targets (inbound) or sourced from
+    -- (outbound). Meaningful on the codepage tier; the manifest and wide tiers
+    -- reach full Unicode and never narrow, so representability never fails there.
+    codepage: Integer
+    source: List<Integer>
+    result: List<Integer>
+    status: ConversionStatus
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- The conversions are driven by the device runtime as it handles file and exec
+-- wire commands. Like catalog.allium's ExecGateRequested and
+-- memory-ops.allium's memory triggers, these stimuli originate in the host
+-- runtime, outside this module, so they have no local surface-producer the
+-- analyser can track.
+
+-- Inbound: an agent UTF-8 path is prepared for a file/process API on the
+-- device's tier. On the codepage tier a code point the target page cannot
+-- represent yields status rejected and no file is touched
+-- (StrictNarrowingRejectsUnrepresentable); otherwise ok (or lossy if the
+-- source itself carried a replacement).
+rule PathConverted {
+    when: InboundPathConverted(tier, codepage, source, result, status)
+    ensures: TextConversion.created(
+        direction: inbound,
+        tier: tier,
+        codepage: codepage,
+        source: source,
+        result: result,
+        status: status
+    )
+}
+
+-- Outbound: an OS-sourced name / listing / child exec-output is rendered to
+-- the UTF-8 wire. The result is always well-formed UTF-8 (NeverEmitInvalidUtf8);
+-- an undefined/garbage source byte decodes to U+FFFD (status lossy) rather than
+-- failing (LossyDecodeIsTotal / CodepageRoundTripsOnBijectiveSubset).
+rule OutputConverted {
+    when: OutboundTextConverted(tier, codepage, source, result, status)
+    ensures: TextConversion.created(
+        direction: outbound,
+        tier: tier,
+        codepage: codepage,
+        source: source,
+        result: result,
+        status: status
+    )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- SAFETY TRANSFORM (NeverEmitInvalidUtf8): the wire-safety floor. Every
+-- outbound conversion the device produces (everything it puts on the UTF-8
+-- wire) is well-formed UTF-8 - a lone surrogate or malformed source becomes
+-- U+FFFD, never a CESU-8 / WTF-8 sequence. well_formed_utf8 is the validity
+-- black box. A rejected conversion produced no wire output, so it is exempt.
+invariant NeverEmitInvalidUtf8 {
+    for c in TextConversions:
+        c.direction = outbound and c.status != rejected
+            implies well_formed_utf8(c.result)
+}
+
+-- SAFETY TRANSFORM (StrictNarrowingRejectsUnrepresentable): narrowing an
+-- inbound UTF-8 path to the target code page (only the codepage tier narrows)
+-- REJECTS when a code point is not representable - the device never silently
+-- substitutes '?' and touches the wrong file. representable is the table
+-- predicate. The manifest and wide tiers reach full Unicode, so they never
+-- narrow and never reject for this reason.
+invariant StrictNarrowingRejectsUnrepresentable {
+    for c in TextConversions:
+        c.direction = inbound
+        and c.tier = codepage
+        and not representable(c.codepage, c.source)
+            implies c.status = rejected
+}

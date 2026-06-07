@@ -14,6 +14,7 @@
 #include "ready.h"
 #include "toolchain_probe.h"
 #include "mem_ops.h"
+#include "encoding.h"
 
 /*
  * append_str - Bounds-checked append; returns 1 on success.
@@ -104,6 +105,14 @@ int BuildReadyMessage(const char *transportName, const char *warning,
      * tools (none -> all pruned). Derived from the OS family. */
     if (!append_str(json, jsonSize, &pos, "\"mem\":\"")) goto fail;
     if (!append_str(json, jsonSize, &pos, MemTierName(MemTierCurrent()))) goto fail;
+    if (!append_str(json, jsonSize, &pos, "\",")) goto fail;
+
+    /* The text-encoding provenance tag (spec: wire-contract.allium ReadyShape
+     * features.encoding) - which tier the device transcoded the wire text from
+     * (utf8_manifest|utf8_via_w|utf8_from_cp). INFORMATIONAL only: the device
+     * emits valid UTF-8 on every tier, so the bridge never switches on it. */
+    if (!append_str(json, jsonSize, &pos, "\"encoding\":\"")) goto fail;
+    if (!append_str(json, jsonSize, &pos, EncProvenanceTag())) goto fail;
     if (!append_str(json, jsonSize, &pos, "\",")) goto fail;
 
     /* The detected build toolchains (spec: wire-contract.allium ReadyShape).
