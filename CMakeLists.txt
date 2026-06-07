@@ -47,6 +47,8 @@ include_directories(src tests)
 set(CORE_SOURCES
   src/json_parser.c
   src/base64.c
+  src/charset_tables.c
+  src/charset_tables_data.c
   src/file_ops.c
   src/serial.c
   src/transport.c
