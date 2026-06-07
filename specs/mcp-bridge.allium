@@ -9,6 +9,10 @@
 --           tool-call -> device round-trip -> result mapping, incl. the
 --           isError (recoverable) vs protocol-error (unknown/malformed)
 --           translation.
+-- Realized by rmcp: the session lifecycle, version negotiation, and
+--   protocol-level rejection are provided by the rmcp library (modelled
+--   here for completeness). The bridge itself implements the device link,
+--   capability gating, and result mapping.
 -- Excludes:
 --   - The device wire protocol + ready handshake (wire-contract.allium,
 --     consumed here as the device side)
@@ -110,14 +114,17 @@ entity ToolCall {
     failure_kind: FailureKind when status = error | rejected
 }
 
--- The MCP result for a tool call. Always carries a human-readable text
--- block; `is_error` is MCP's isError flag (false = success, with a
+-- The MCP result for a tool call. Always carries a text block;
+-- `is_error` is MCP's isError flag (false = success, with a
 -- structuredContent mirror when has_structured; true = a tool-execution
 -- error whose text is the actionable message). Protocol-rejected calls
 -- produce a JSON-RPC error, not a ToolResult (see ToolCallRejected).
 entity ToolResult {
     call: ToolCall
     is_error: Boolean
+    -- On success, the text is the serialized structuredContent (rmcp
+    -- mirrors the structured result into the text block); on error, it is
+    -- the actionable failure message. Not a separate human-authored summary.
     text: String
     has_structured: Boolean
 }
@@ -127,8 +134,10 @@ entity ToolResult {
 ------------------------------------------------------------
 
 -- Lifecycle: the client initializes only once the device link is ready,
--- then the bridge negotiates leniently - echo the client's version if it
--- matches the bridge's, otherwise offer the bridge's.
+-- then the bridge negotiates DOWN to the lower of the client's and the
+-- bridge's versions - echoing an older supported client's version, and
+-- clamping a newer client down to the bridge's latest. (MCP versions are
+-- date-stamped YYYY-MM-DD, so lexicographic order is chronological order.)
 
 rule SessionInitialized {
     when: InitializeRequested(device, client_version)
@@ -144,7 +153,7 @@ rule VersionNegotiated {
     when: session: McpSession.status becomes initializing
     ensures: session.status = ready
     ensures: session.negotiated_version =
-        if session.client_version = config.bridge_protocol_version:
+        if session.client_version <= config.bridge_protocol_version:
             session.client_version
         else:
             config.bridge_protocol_version
@@ -222,13 +231,13 @@ rule ToolCallRejected {
 -- a recoverable device failure -> isError tool result.
 
 rule ToolCallSucceeded {
-    when: DeviceReplyOk(call, summary)
+    when: DeviceReplyOk(call, result_body)
     requires: call.status = dispatched
     ensures: call.status = ok
     ensures: ToolResult.created(
         call: call,
         is_error: false,
-        text: summary,
+        text: result_body,
         has_structured: true
     )
 }
@@ -254,6 +263,18 @@ rule ToolCallRecoverableError {
 invariant ReadySessionHasVersion {
     for s in McpSessions:
         s.status = ready implies s.negotiated_version.size > 0
+}
+
+-- Version negotiation is delegated to rmcp (a black-box, library-provided
+-- transform). Its observable property: the negotiated version is the
+-- common floor - never newer than the bridge's, never newer than the
+-- client's. (rmcp echoes an older supported client; clamps a newer client
+-- down to the bridge's latest. Date-stamped versions order lexically.)
+invariant NegotiatedVersionIsCommonFloor {
+    for s in McpSessions:
+        s.status in {ready, closed} implies
+            s.negotiated_version <= config.bridge_protocol_version
+            and s.negotiated_version <= s.client_version
 }
 
 -- The isError/protocol split: a dispatched call that fails is always a
@@ -304,13 +325,14 @@ surface McpClient {
 }
 
 -- The device boundary: the device's wire reply to a dispatched call
--- (consumed from wire-contract). ok carries a human summary; error
--- carries the recoverable reason string.
+-- (consumed from wire-contract). ok carries the serialized result fields
+-- (mirrored into the result text); error carries the recoverable reason
+-- string.
 surface DeviceRuntime {
     facing c: ToolCall
 
     provides:
-        DeviceReplyOk(c, summary)
+        DeviceReplyOk(c, result_body)
             when c.status = dispatched
         DeviceReplyError(c, reason)
             when c.status = dispatched

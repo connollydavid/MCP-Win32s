@@ -127,3 +127,71 @@ async fn full_mcp_lifecycle_over_duplex() {
 
     let _ = client.cancel().await;
 }
+
+/// rule.VersionNegotiated, invariant.{ReadySessionHasVersion,
+/// NegotiatedVersionIsCommonFloor} — the bridge delegates negotiation to
+/// rmcp, which down-negotiates to the LOWER (earlier) of {client, bridge}.
+/// A client requesting an older supported revision gets its OWN version
+/// echoed back (not clamped up to the bridge's latest); a client at the
+/// bridge's own version negotiates to that. This pins the corrected
+/// VersionNegotiated branch against the real library so a future rmcp bump
+/// that changes negotiation is caught.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn version_negotiation_is_down_to_the_common_floor() {
+    use rmcp::model::{ClientInfo, ProtocolVersion};
+    use rmcp::{ClientHandler, ServiceExt};
+
+    // A client whose advertised protocol version we control.
+    #[derive(Clone)]
+    struct VersionedClient(ProtocolVersion);
+    impl ClientHandler for VersionedClient {
+        fn get_info(&self) -> ClientInfo {
+            let mut info = ClientInfo::default();
+            info.protocol_version = self.0.clone();
+            info
+        }
+    }
+
+    // The negotiated version is the server's returned InitializeResult
+    // version (peer_info), which the bridge/rmcp set to the common floor.
+    async fn negotiate(client_version: Option<ProtocolVersion>) -> ProtocolVersion {
+        let (server_t, client_t) = tokio::io::duplex(8192);
+        let bridge = Bridge::new(caps(false), Box::new(mock::MockDevice));
+        tokio::spawn(async move {
+            if let Ok(s) = bridge.serve(server_t).await {
+                let _ = s.waiting().await;
+            }
+        });
+        let negotiated = match client_version {
+            Some(v) => {
+                let c = VersionedClient(v).serve(client_t).await.expect("client up");
+                let n = c.peer_info().expect("server info").protocol_version.clone();
+                let _ = c.cancel().await;
+                n
+            }
+            None => {
+                let c = ().serve(client_t).await.expect("client up");
+                let n = c.peer_info().expect("server info").protocol_version.clone();
+                let _ = c.cancel().await;
+                n
+            }
+        };
+        negotiated
+    }
+
+    // Older supported client -> echoed down to the client's own version,
+    // NOT the bridge's 2025-11-25 (the bug the spec's old else-branch had).
+    assert_eq!(
+        negotiate(Some(ProtocolVersion::V_2025_06_18)).await,
+        ProtocolVersion::V_2025_06_18,
+        "older client -> down-negotiated to the client's own version"
+    );
+
+    // Client at the bridge's latest (the default ClientInfo) -> negotiated
+    // stays at the bridge's version; non-empty (ReadySessionHasVersion).
+    assert_eq!(
+        negotiate(None).await,
+        ProtocolVersion::V_2025_11_25,
+        "equal client -> negotiated is the bridge's latest"
+    );
+}
