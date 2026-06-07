@@ -32,7 +32,12 @@ contract ReadyHandshake {
         -- booleans: is_win32s, is_win9x, is_nt, is_wow64, threads,
         -- job_objects, ctrl_events, pty, plus binary_classify and
         -- process_mitigation). The documented keys are always present;
-        -- their values vary by host.
+        -- their values vary by host. The features object additionally
+        -- carries a `toolchains` array: one object per build toolchain the
+        -- device detected at startup (vendor, command, version - the full
+        -- version banner string), consumed by the bridge to gate and
+        -- generate the build tools (toolchains.allium DetectedToolchain).
+        -- The array is empty when no build toolchain is installed.
 
     @guidance
         -- Clients must tolerate additional keys in the ready message:

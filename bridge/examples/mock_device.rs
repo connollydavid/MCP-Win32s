@@ -22,7 +22,10 @@ async fn main() -> std::io::Result<()> {
 
 async fn handle(sock: tokio::net::TcpStream) -> std::io::Result<()> {
     let (r, mut w) = sock.into_split();
-    let ready = r#"{"status":"ready","codepage":437,"version":"MockWindows 1.0 (NT)","transport":"tcp","features":{"is_win32s":false,"is_win9x":false,"is_nt":true,"is_wow64":false,"threads":true,"job_objects":true,"ctrl_events":true,"pty":false,"binary_classify":"GetBinaryTypeA","process_mitigation":false}}"#;
+    // The ready features carry a `toolchains` array (wire-contract ReadyShape):
+    // a detected MSVC (cl 12.00.8804) so the bridge generates the win32_msvc_*
+    // build tools for the Inspector conformance run.
+    let ready = r#"{"status":"ready","codepage":437,"version":"MockWindows 1.0 (NT)","transport":"tcp","features":{"is_win32s":false,"is_win9x":false,"is_nt":true,"is_wow64":false,"threads":true,"job_objects":true,"ctrl_events":true,"pty":false,"binary_classify":"GetBinaryTypeA","process_mitigation":false,"toolchains":[{"vendor":"Microsoft","command":"cl","version":"12.00.8804"}]}}"#;
     w.write_all(ready.as_bytes()).await?;
     w.write_all(b"\n").await?;
     w.flush().await?;
@@ -53,6 +56,14 @@ async fn handle(sock: tokio::net::TcpStream) -> std::io::Result<()> {
             "move" => serde_json::json!({"id": id, "status": "ok", "message": "moved"}),
             "mkdir" => serde_json::json!({"id": id, "status": "ok", "message": "created"}),
             "rmdir" => serde_json::json!({"id": id, "status": "ok", "message": "removed"}),
+            // The build tools compose `exec`; ack with a clean compile (exit 0,
+            // empty output) so a conformance tools/call on a build tool yields
+            // {structuredContent, isError:false}. "" base64-encodes to "".
+            "exec" => serde_json::json!({
+                "id": id, "status": "ok", "exit_code": 0,
+                "stdout_b64": "", "stderr_b64": "",
+                "stdout_truncated": false, "stderr_truncated": false
+            }),
             _ => serde_json::json!({"id": id, "status": "error", "error": "unknown command"}),
         };
         w.write_all(resp.to_string().as_bytes()).await?;

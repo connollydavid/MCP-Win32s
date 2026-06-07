@@ -10,4 +10,5 @@
 pub mod capabilities;
 pub mod device;
 pub mod server;
+pub mod toolchain;
 pub mod wire;

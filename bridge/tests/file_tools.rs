@@ -18,6 +18,8 @@ fn caps() -> Capabilities {
         encoding: EncodingMode::Codepage,
         codepage: 437,
         version: "test".to_string(),
+        toolchains: vec![],
+        toolchain_registration: false,
     }
 }
 
@@ -56,10 +58,17 @@ async fn file_tools_all_advertised() {
     let names: std::collections::BTreeSet<&str> =
         tools.tools.iter().map(|t| t.name.as_ref()).collect();
 
-    // The advertised set is exactly the eight file tools plus win32_echo.
+    // The advertised set is exactly the eight file tools, win32_echo, and the
+    // always-on read-only discovery tool (win32_list_toolchains). No build
+    // tools: this device reports no detected toolchains, and registration is
+    // off, so win32_register_toolchain is not advertised.
     let mut expected: std::collections::BTreeSet<&str> = FILE_TOOLS.iter().copied().collect();
     expected.insert("win32_echo");
-    assert_eq!(names, expected, "advertised tool set is the eight + echo");
+    expected.insert("win32_list_toolchains");
+    assert_eq!(
+        names, expected,
+        "advertised set is the eight file tools + echo + the discovery tool"
+    );
 
     // Every file tool carries a JSON Schema 2020-12 inputSchema that is a
     // closed object (additionalProperties:false) with its listed args

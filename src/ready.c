@@ -12,6 +12,7 @@
 #include <windows.h>
 #include "feat.h"
 #include "ready.h"
+#include "toolchain_probe.h"
 
 /*
  * append_str - Bounds-checked append; returns 1 on success.
@@ -58,6 +59,7 @@ static int append_bool_field(char *dst, int dstSize, int *pos,
 }
 
 int BuildReadyMessage(const char *transportName, const char *warning,
+                      const ToolchainSet *toolchains,
                       char *json, int jsonSize)
 {
     int pos;
@@ -94,7 +96,11 @@ int BuildReadyMessage(const char *transportName, const char *warning,
     if (!append_str(json, jsonSize, &pos, "\",")) goto fail;
 
     if (!append_bool_field(json, jsonSize, &pos, "process_mitigation",
-                           g_features.has_set_process_mitigation, 0)) goto fail;
+                           g_features.has_set_process_mitigation, 1)) goto fail;
+
+    /* The detected build toolchains (spec: wire-contract.allium ReadyShape).
+     * Always present inside features; empty when none was detected. */
+    if (!ToolchainAppendJson(toolchains, json, jsonSize, &pos)) goto fail;
 
     if (!append_str(json, jsonSize, &pos, "}")) goto fail;
 

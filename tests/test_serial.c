@@ -20,6 +20,7 @@
 #include "feat.h"
 #include "catalog.h"
 #include "base64.h"
+#include "ready.h"
 
 /* ========================================================
  * Forward declarations for functions in mcp-w32s.c
@@ -860,6 +861,48 @@ TEST_CASE(ptyexec_capability_absent_error) {
 }
 
 /* ========================================================
+ * Ready message: features.toolchains array
+ * (spec: wire-contract.allium ReadyShape; toolchains.allium
+ * ToolchainDetected). BuildReadyMessage embeds the detected set inside
+ * the features object as a `toolchains` array - empty when none.
+ * ======================================================== */
+
+TEST_CASE(ready_lists_detected_toolchains) {
+    char json[2048];
+    ToolchainSet set;
+    int len;
+
+    /* No toolchain installed -> the array is present and EMPTY (not absent,
+     * not null): the bridge always reads features.toolchains. */
+    memset(&set, 0, sizeof(set));
+    len = BuildReadyMessage("tcp", NULL, &set, json, (int)sizeof(json));
+    TEST_ASSERT(len > 0, "ready message built");
+    TEST_ASSERT(strstr(json, "\"toolchains\":[]") != NULL,
+                "empty set -> empty toolchains array inside features");
+
+    /* A NULL set is treated the same (defensive). */
+    len = BuildReadyMessage("tcp", NULL, NULL, json, (int)sizeof(json));
+    TEST_ASSERT(len > 0, "ready message built (null set)");
+    TEST_ASSERT(strstr(json, "\"toolchains\":[]") != NULL,
+                "null set -> empty toolchains array");
+
+    /* One detected toolchain -> one {vendor,command,version} object. */
+    memset(&set, 0, sizeof(set));
+    lstrcpyA(set.items[0].vendor, "Microsoft");
+    lstrcpyA(set.items[0].command, "cl");
+    lstrcpyA(set.items[0].version, "12.00.8804");
+    set.count = 1;
+    len = BuildReadyMessage("tcp", NULL, &set, json, (int)sizeof(json));
+    TEST_ASSERT(len > 0, "ready message built (one toolchain)");
+    TEST_ASSERT(strstr(json,
+        "\"toolchains\":[{\"vendor\":\"Microsoft\",\"command\":\"cl\","
+        "\"version\":\"12.00.8804\"}]") != NULL,
+        "detected toolchain appears as a features.toolchains entry");
+    /* The array sits inside the features object (before its closing brace). */
+    TEST_ASSERT(strstr(json, "\"features\":{") != NULL, "features object present");
+}
+
+/* ========================================================
  * Main - Run all tests
  * ======================================================== */
 
@@ -930,6 +973,9 @@ int main(void)
     RUN_TEST(exec_stdin_too_large_rejected);
     RUN_TEST(exec_invalid_stdin_b64_rejected);
     RUN_TEST(ptyexec_capability_absent_error);
+
+    printf("\nReady message (features.toolchains):\n");
+    RUN_TEST(ready_lists_detected_toolchains);
 
     print_test_summary();
     return g_tests_failed;
