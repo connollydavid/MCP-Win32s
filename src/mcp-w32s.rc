@@ -1,0 +1,24 @@
+/*
+ * mcp-w32s.rc - resource script for the main executable.
+ *
+ * Embeds the application/process manifest at CREATEPROCESS_MANIFEST_RESOURCE_ID
+ * (1) as RT_MANIFEST (24). The manifest carries the Win10 1903+ UTF-8 opt-in
+ * (activeCodePage=UTF-8), which makes the *A Win32 APIs operate on UTF-8 on a
+ * recent enough Windows.
+ *
+ * This resource is inert everywhere it is not understood: pre-1903 Windows and
+ * bare Win32s never parse activeCodePage (they ignore the unknown setting), so
+ * the SAME binary still loads and runs unchanged across the whole 30-year
+ * target range - the manifest is an additive opt-in, not a load requirement.
+ *
+ * windres compiles RT_MANIFEST via its numeric resource type (24); the named
+ * RT_MANIFEST keyword is unreliable across windres versions, so the numeric
+ * form is used deliberately.
+ *
+ * This is free and unencumbered software released into the public domain.
+ */
+
+#define MANIFEST_RESOURCE_ID 1
+#define RT_MANIFEST_TYPE 24
+
+MANIFEST_RESOURCE_ID RT_MANIFEST_TYPE "mcp-w32s.manifest"
