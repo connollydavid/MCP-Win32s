@@ -16,6 +16,8 @@ fn caps(pty: bool) -> Capabilities {
         encoding: EncodingMode::Codepage,
         codepage: 437,
         version: "test".to_string(),
+        toolchains: vec![],
+        toolchain_registration: false,
     }
 }
 

@@ -29,6 +29,7 @@
 #include "catalog.h"
 #include "exec_ops.h"
 #include "pty_exec.h"
+#include "toolchain_probe.h"
 
 /* Protocol constants */
 #define CMD_BUF_SIZE    8192
@@ -737,6 +738,10 @@ void ProcessCommand(const char *line, Transport *t)
  * (spec: catalog.allium ServerStartup; PHASE4 startup checklist). */
 static const char *g_readyWarning = NULL;
 
+/* Build toolchains detected once at startup (spec: toolchains.allium
+ * ToolchainDetected); reported in every ready message's features.toolchains. */
+static ToolchainSet g_toolchains;
+
 /*
  * SendReady - Write the extended per-connection ready message: status,
  * codepage, version, transport, features (spec: wire-contract.allium
@@ -747,7 +752,7 @@ static void SendReady(Transport *t)
     static char msg[2048];
     int len;
 
-    len = BuildReadyMessage(TransportName(t), g_readyWarning,
+    len = BuildReadyMessage(TransportName(t), g_readyWarning, &g_toolchains,
                             msg, (int)sizeof(msg));
     if (len > 0) {
         TransportWriteAll(t, msg, len);
@@ -833,6 +838,11 @@ int main(void)
 
     cat = LoadCatalogAtStartup(&config);
     ExecConfigure(cat, config.unsafeMode);
+
+    /* Detect installed build toolchains once (spec: toolchains.allium
+     * ToolchainDetected): run each catalogued probe command's version banner.
+     * Reported in every ready message's features.toolchains array. */
+    ToolchainProbe(cat, &g_toolchains);
 
     SerialBackendRegister();
     TcpBackendRegister();

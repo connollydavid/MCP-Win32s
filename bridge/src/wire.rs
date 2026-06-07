@@ -27,6 +27,18 @@ impl Ready {
     }
 }
 
+/// One build toolchain the device detected at startup, carried in the ready
+/// message's `features.toolchains` array (`specs/wire-contract.allium`
+/// ReadyShape; `specs/toolchains.allium` DetectedToolchain). `version` is the
+/// full banner string (e.g. `12.00.8804`) — the build number distinguishes
+/// service packs the support matrix keys on.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DetectedToolchain {
+    pub vendor: String,
+    pub command: String,
+    pub version: String,
+}
+
 /// The device feature flags. The documented booleans are named; any
 /// further keys (binary_classify, process_mitigation, and the future
 /// `mem`/`encoding` tier strings) are captured in `extra`.

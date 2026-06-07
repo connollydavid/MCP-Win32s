@@ -231,23 +231,26 @@
       "supports_win32s": true,
       "description": "Microsoft C/C++ compiler driver: compiles and links C and C++ source files.",
       "options": [
+        {"flag": "/nologo", "desc": "Suppresses the compiler copyright banner."},
         {"flag": "/c", "desc": "Compiles without linking."},
         {"flag": "/TC", "desc": "Specifies that all source files are C source, regardless of extension."},
         {"flag": "/TP", "desc": "Specifies that all source files are C++ source, regardless of extension."},
         {"flag": "/Fe", "arg": "name", "desc": "Names the executable file (glued form: /Fename)."},
+        {"flag": "/Fo", "arg": "file", "desc": "Names the output object file (glued form: /Fofile)."},
         {"flag": "/I", "arg": "dir", "desc": "Adds a directory to the list searched for include files."},
         {"flag": "/D", "arg": "macro", "desc": "Defines a preprocessor macro."},
         {"flag": "/O2", "desc": "Creates fast code (maximize speed)."},
         {"flag": "/W", "arg": "level", "desc": "Sets the warning level (0-4); glued form /W4."}
       ],
       "positional": [{"name": "sources", "optional": false, "type": "path"}],
-      "examples": ["cl /TC file.c", "cl /c /W4 main.c util.c"]
+      "examples": ["cl /TC file.c", "cl /nologo /c /W4 main.c util.c"]
     },
     "link": {
       "kind": "external",
       "supports_win32s": true,
       "description": "Microsoft incremental linker: links object files and libraries into an executable or DLL.",
       "options": [
+        {"flag": "/NOLOGO", "desc": "Suppresses the linker copyright banner."},
         {"flag": "/OUT", "arg": "file", "desc": "Overrides the default name of the program the linker creates (glued: /OUT:file)."},
         {"flag": "/DLL", "desc": "Builds a DLL as the main output file."},
         {"flag": "/SUBSYSTEM", "arg": "type", "desc": "Tells the operating system how to run the .exe (glued: /SUBSYSTEM:CONSOLE)."},
@@ -255,13 +258,14 @@
         {"flag": "/LIBPATH", "arg": "dir", "desc": "Overrides the environment library path (glued: /LIBPATH:dir)."}
       ],
       "positional": [{"name": "objects", "optional": false, "type": "path"}],
-      "examples": ["link main.obj", "link /OUT:app.exe /DEBUG main.obj util.obj"]
+      "examples": ["link main.obj", "link /NOLOGO /OUT:app.exe /DEBUG main.obj util.obj"]
     },
     "lib": {
       "kind": "external",
       "supports_win32s": true,
       "description": "Microsoft Library Manager: creates and manages a library of object files.",
       "options": [
+        {"flag": "/NOLOGO", "desc": "Suppresses the librarian copyright banner."},
         {"flag": "/OUT", "arg": "file", "desc": "Overrides the default output file name (glued: /OUT:file)."},
         {"flag": "/LIST", "desc": "Displays information about the output library to standard output."},
         {"flag": "/REMOVE", "arg": "member", "desc": "Omits the specified object from the output library (glued: /REMOVE:member)."}
@@ -287,13 +291,68 @@
       "supports_win32s": true,
       "description": "Microsoft Macro Assembler: assembles and links one or more assembly-language source files.",
       "options": [
+        {"flag": "/nologo", "desc": "Suppresses the assembler copyright banner."},
         {"flag": "/c", "desc": "Assembles only; does not link."},
         {"flag": "/Fo", "arg": "file", "desc": "Names the output object file (glued: /Fofile)."},
+        {"flag": "/I", "arg": "dir", "desc": "Adds a directory to the include-file search path."},
+        {"flag": "/D", "arg": "macro", "desc": "Defines a preprocessor macro."},
         {"flag": "/coff", "desc": "Generates common object file format (COFF) output."},
         {"flag": "/Zi", "desc": "Generates CodeView debugging information."}
       ],
       "positional": [{"name": "sources", "optional": false, "type": "path"}],
       "examples": ["ml /c boot.asm", "ml /coff /c /Fofoo.obj foo.asm"]
+    },
+    "wcc386": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Open Watcom C/C++ 32-bit compiler: compiles C/C++ source to OMF object files.",
+      "options": [
+        {"flag": "-zq", "desc": "Operates quietly (suppresses the copyright banner)."},
+        {"flag": "-c", "desc": "Compiles only; does not invoke the linker."},
+        {"flag": "-fo", "arg": "file", "desc": "Names the output object file (glued: -fo=file)."},
+        {"flag": "-i", "arg": "dir", "desc": "Adds a directory to the include-file search path (glued: -i=dir)."},
+        {"flag": "-d", "arg": "macro", "desc": "Defines a preprocessor macro (glued: -dNAME or -dNAME=value)."},
+        {"flag": "-w", "arg": "level", "desc": "Sets the warning level (glued: -w3)."},
+        {"flag": "-bt", "arg": "target", "desc": "Sets the build target OS; Win32 requires -bt=nt (glued)."},
+        {"flag": "-mf", "desc": "Uses the flat 32-bit memory model (required for Win32)."},
+        {"flag": "-ot", "desc": "Optimizes for time (speed)."},
+        {"flag": "-ox", "desc": "Enables the standard set of speed optimizations."}
+      ],
+      "positional": [{"name": "sources", "optional": false, "type": "path"}],
+      "examples": ["wcc386 -zq -bt=nt -mf hello.c", "wcc386 -zq -i=inc -dWIN32 -fo=hello.obj hello.c"]
+    },
+    "wlink": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Open Watcom linker: links OMF object files and libraries using a directive language (NAME, FILE, LIBRARY, SYSTEM, OPTION). Directives are bare words, not slash/dash flags.",
+      "options": [],
+      "positional": [{"name": "directives", "optional": false, "type": "string"}],
+      "examples": ["wlink system nt name app.exe file hello.obj", "wlink option quiet system nt name app.exe file a.obj,b.obj library kernel32.lib"]
+    },
+    "wlib": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Open Watcom library manager: creates and manages OMF object libraries. Object operands carry a +/-/* prefix.",
+      "options": [
+        {"flag": "-q", "desc": "Operates quietly (suppresses the banner)."},
+        {"flag": "-o", "arg": "file", "desc": "Names the output library file (glued: -o=file)."},
+        {"flag": "-b", "desc": "Suppresses creation of a backup library."}
+      ],
+      "positional": [{"name": "library", "optional": false, "type": "path"}],
+      "examples": ["wlib -q -o=mylib.lib +a.obj +b.obj", "wlib mylib.lib +new.obj"]
+    },
+    "wasm": {
+      "kind": "external",
+      "supports_win32s": true,
+      "description": "Open Watcom assembler: assembles x86 assembly source to OMF object files.",
+      "options": [
+        {"flag": "-zq", "desc": "Operates quietly (suppresses the copyright banner)."},
+        {"flag": "-fo", "arg": "file", "desc": "Names the output object file (glued: -fo=file)."},
+        {"flag": "-i", "arg": "dir", "desc": "Adds a directory to the include-file search path (glued: -i=dir)."},
+        {"flag": "-d", "arg": "macro", "desc": "Defines a preprocessor macro (glued: -dNAME)."}
+      ],
+      "positional": [{"name": "sources", "optional": false, "type": "path"}],
+      "examples": ["wasm -zq boot.asm", "wasm -zq -fo=boot.obj boot.asm"]
     },
     "rc": {
       "kind": "external",

@@ -57,7 +57,8 @@ set(CORE_SOURCES
   src/binfmt.c
   src/catalog.c
   src/exec_ops.c
-  src/pty_exec.c)
+  src/pty_exec.c
+  src/toolchain_probe.c)
 
 # --- main executable -------------------------------------------------------
 # The TCP backend is runtime-loaded (LoadLibraryA), so we deliberately do NOT

@@ -25,6 +25,8 @@ fn caps(pty: bool, mem: MemTier, enc: EncodingMode) -> Capabilities {
         encoding: enc,
         codepage: 437,
         version: "t".to_string(),
+        toolchains: vec![],
+        toolchain_registration: false,
     }
 }
 
@@ -49,7 +51,7 @@ proptest! {
         let mut f = Features { pty, ..Default::default() };
         f.extra.insert("mem".to_string(), serde_json::Value::String(mem.clone()));
         f.extra.insert("encoding".to_string(), serde_json::Value::String(enc.clone()));
-        let c = Capabilities::from_ready(437, "t".to_string(), &f);
+        let c = Capabilities::from_ready(437, "t".to_string(), &f, false);
         prop_assert_eq!(c.has_pty, pty);
         let want_mem = match mem.as_str() {
             "process" => MemTier::Process, "arena" => MemTier::Arena,
