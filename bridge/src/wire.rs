@@ -94,9 +94,4 @@ impl Response {
     pub fn is_ok(&self) -> bool {
         self.status == "ok"
     }
-
-    /// A string field from the response body (e.g. echo's `data`).
-    pub fn field_str(&self, key: &str) -> Option<&str> {
-        self.fields.get(key).and_then(|v| v.as_str())
-    }
 }

@@ -7,7 +7,7 @@
 //! the capability gating, and the tool-call -> device -> result mapping
 //! with the isError-vs-protocol-error split.
 
-pub mod wire;
 pub mod capabilities;
 pub mod device;
 pub mod server;
+pub mod wire;

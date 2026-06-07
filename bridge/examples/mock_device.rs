@@ -8,7 +8,9 @@ use tokio::net::TcpListener;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:31900".to_string());
+    let addr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:31900".to_string());
     let listener = TcpListener::bind(&addr).await?;
     eprintln!("mock device listening on {addr}");
     loop {

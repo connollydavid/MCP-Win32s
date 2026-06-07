@@ -50,6 +50,18 @@ async fn device_error_maps_to_iserror() {
         .await
         .unwrap();
     assert_eq!(r.is_error, Some(true), "device error -> isError");
+    // The spec's ToolCallRecoverableError ensures `text: reason` — the
+    // device's error string must surface to the model, not be dropped.
+    let text: String = r
+        .content
+        .iter()
+        .filter_map(|c| c.as_text())
+        .map(|t| t.text.as_str())
+        .collect();
+    assert!(
+        text.contains("unknown command"),
+        "device error reason surfaces in the result text; got {text:?}"
+    );
 }
 
 /// A transport failure is also a recoverable isError result (the model
@@ -100,7 +112,10 @@ async fn full_mcp_lifecycle_over_duplex() {
     });
     let client = ().serve(client_t).await.expect("client up");
 
-    let tools = client.list_tools(Default::default()).await.expect("list_tools");
+    let tools = client
+        .list_tools(Default::default())
+        .await
+        .expect("list_tools");
     assert!(
         tools.tools.iter().any(|t| t.name == "win32_echo"),
         "win32_echo is advertised"
