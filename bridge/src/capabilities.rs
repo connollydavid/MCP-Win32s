@@ -15,11 +15,18 @@ pub enum MemTier {
     SharedVm,
 }
 
-/// The device's active text encoding for its own (path) surfaces.
+/// The device's text-encoding PROVENANCE: which tier it transcoded the wire
+/// text FROM (the ready `features.encoding` tag). The device emits valid UTF-8
+/// on EVERY tier, so the wire is uniformly UTF-8 and this is INFORMATIONAL only
+/// — never a switch selecting bridge transcoding (spec: mcp-bridge.allium
+/// `EncodingProvenance`, wire-contract.allium ReadyShape). `Unknown` covers an
+/// absent or unrecognised tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EncodingMode {
-    Codepage,
-    Utf8Native,
+pub enum EncodingProvenance {
+    Manifest,
+    ViaWide,
+    FromCodepage,
+    Unknown,
 }
 
 /// The bridge's view of what the device supports, read once from the
@@ -28,7 +35,9 @@ pub enum EncodingMode {
 pub struct Capabilities {
     pub has_pty: bool,
     pub mem: MemTier,
-    pub encoding: EncodingMode,
+    /// Informational only: which tier the device transcoded the UTF-8 wire text
+    /// FROM. No tool gates on it (the wire is always UTF-8).
+    pub encoding: EncodingProvenance,
     pub codepage: i64,
     pub version: String,
     /// Build toolchains the device detected at startup (the ready message's
@@ -52,11 +61,11 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Resolve from the ready message. `mem`/`encoding` tier strings land
-    /// with the 5.3/5.4 device work; until then they default
-    /// conservatively (no memory access, codepage encoding).
-    /// `allow_registration` is the bridge-operator opt-in (a CLI flag), not a
-    /// device-reported capability.
+    /// Resolve from the ready message. `mem` is the memory tier; `encoding` is
+    /// the informational text-encoding provenance tag (the device always emits
+    /// UTF-8). Both default conservatively when absent/unrecognised (no memory
+    /// access; `Unknown` provenance). `allow_registration` is the
+    /// bridge-operator opt-in (a CLI flag), not a device-reported capability.
     pub fn from_ready(
         codepage: i64,
         version: String,
@@ -71,8 +80,10 @@ impl Capabilities {
             _ => MemTier::None,
         };
         let encoding = match f.extra.get("encoding").and_then(|v| v.as_str()) {
-            Some("utf8_native") => EncodingMode::Utf8Native,
-            _ => EncodingMode::Codepage,
+            Some("utf8_manifest") => EncodingProvenance::Manifest,
+            Some("utf8_via_w") => EncodingProvenance::ViaWide,
+            Some("utf8_from_cp") => EncodingProvenance::FromCodepage,
+            _ => EncodingProvenance::Unknown,
         };
         // `features.toolchains` is an unknown key, so it rides `extra`. A
         // malformed entry is dropped (an empty array, not a hard failure).
@@ -106,7 +117,9 @@ impl Capabilities {
             // PokeRequiresBothArmingLayers (the device /ALLOWMEMWRITE arm is the
             // independent device half).
             "mem_write" => self.mem != MemTier::None && self.allow_memory_write,
-            "utf8" => self.encoding == EncodingMode::Utf8Native,
+            // 5.4 retired "utf8": the device emits valid UTF-8 on every tier, so
+            // the wire is uniformly UTF-8 and no tool gates on encoding
+            // (DeviceCapabilities.encoding is informational provenance only).
             // The runtime-registration opt-in gates win32_register_toolchain
             // (RegistrationRequiresOptIn).
             "toolchain_registration" => self.toolchain_registration,

@@ -944,9 +944,12 @@ TEST_CASE(ptyexec_capability_absent_error) {
 }
 
 /*
- * Obligation: mcp-protocol.allium output_kind = utf8, the ptyExec transcode
- * seam (OBLIGATIONS-5.4.md). ConPTY output is transcoded to UTF-8, so the
- * response declares output_kind:"utf8". ConPTY is Win10 1809+; skip-with-reason
+ * The ptyExec transcode seam: ConPTY output is transcoded to UTF-8, so the
+ * response declares output_kind:"utf8". output_kind is an unmodelled wire
+ * detail (no structural obligation - OBLIGATIONS-5.4.md notes the planned
+ * mcp-protocol edit was a no-op); the wire change is documented in
+ * wire-contract.allium and the underlying safety is NeverEmitInvalidUtf8. This
+ * pins the observable contract change. ConPTY is Win10 1809+; skip-with-reason
  * where absent (e.g. Wine CI) - runner-verified on a ConPTY host.
  */
 TEST_CASE(ptyexec_output_kind_utf8) {

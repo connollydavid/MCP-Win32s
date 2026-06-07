@@ -8,7 +8,7 @@ mod common;
 use common as mock;
 
 use async_trait::async_trait;
-use mcp_w32s_bridge::capabilities::{Capabilities, EncodingMode, MemTier};
+use mcp_w32s_bridge::capabilities::{Capabilities, EncodingProvenance, MemTier};
 use mcp_w32s_bridge::device::Device;
 use mcp_w32s_bridge::server::Bridge;
 use mcp_w32s_bridge::wire::{Command, Response};
@@ -31,7 +31,7 @@ fn caps(mem: MemTier, allow_memory_write: bool) -> Capabilities {
     Capabilities {
         has_pty: false,
         mem,
-        encoding: EncodingMode::Codepage,
+        encoding: EncodingProvenance::FromCodepage,
         codepage: 437,
         version: "test".to_string(),
         toolchains: vec![],

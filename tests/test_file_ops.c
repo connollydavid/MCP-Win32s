@@ -909,13 +909,14 @@ TEST_CASE(mkdir_then_rmdir_lifecycle) {
 }
 
 /*
- * Obligations: encoding.allium PathConverted (inbound) + OutputConverted
- * (outbound), Utf8RoundTripFidelity, the live `wide` tier (OBLIGATIONS-5.4.md).
- * A CJK-named file (UTF-8 wire path) round-trips create -> list -> read on the
- * NT-family wide tier: EncOpenPath widens to UTF-16 -> CreateFileW; the name
- * comes back through FindFirstFileW -> EncWideToWire as the same UTF-8 bytes.
- * Skip-with-reason on the codepage tier, where an arbitrary ANSI page cannot
- * represent the name (host-tolerant per the CI-parity rule).
+ * Obligations: rule-success.PathConverted (inbound) + rule-success.OutputConverted
+ * (outbound) - the integration halves; the PathSeparatorScanIsDbcsSafe
+ * integration half (OBLIGATIONS-5.4.md). A CJK-named file (UTF-8 wire path)
+ * round-trips create -> list -> read on the NT-family live `wide` tier:
+ * EncOpenPath widens to UTF-16 -> CreateFileW; the name comes back through
+ * FindFirstFileW -> EncWideToWire as the same UTF-8 bytes. Skip-with-reason on
+ * the codepage tier, where an arbitrary ANSI page cannot represent the name
+ * (host-tolerant per the CI-parity rule).
  */
 TEST_CASE(wide_tier_cjk_roundtrip) {
     /* "<U+65E5><U+672C><U+8A9E>.txt" - Japanese "nihongo" + ".txt", UTF-8. */

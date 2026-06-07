@@ -1,7 +1,7 @@
 //! 5.0 property tests (the theft analog): the pure capability-gating and
 //! response-mapping logic. Cites obligations from bridge/OBLIGATIONS-5.0.md.
 
-use mcp_w32s_bridge::capabilities::{Capabilities, EncodingMode, MemTier};
+use mcp_w32s_bridge::capabilities::{Capabilities, EncodingProvenance, MemTier};
 use mcp_w32s_bridge::wire::{Features, Response};
 use proptest::prelude::*;
 
@@ -14,11 +14,21 @@ fn mem_strat() -> impl Strategy<Value = MemTier> {
     ]
 }
 
-fn enc_strat() -> impl Strategy<Value = EncodingMode> {
-    prop_oneof![Just(EncodingMode::Codepage), Just(EncodingMode::Utf8Native)]
+fn enc_strat() -> impl Strategy<Value = EncodingProvenance> {
+    prop_oneof![
+        Just(EncodingProvenance::Manifest),
+        Just(EncodingProvenance::ViaWide),
+        Just(EncodingProvenance::FromCodepage),
+        Just(EncodingProvenance::Unknown),
+    ]
 }
 
-fn caps(pty: bool, mem: MemTier, enc: EncodingMode, allow_memory_write: bool) -> Capabilities {
+fn caps(
+    pty: bool,
+    mem: MemTier,
+    enc: EncodingProvenance,
+    allow_memory_write: bool,
+) -> Capabilities {
     Capabilities {
         has_pty: pty,
         mem,
@@ -48,7 +58,9 @@ proptest! {
         prop_assert_eq!(c.satisfies("pty"), pty);
         prop_assert_eq!(c.satisfies("mem"), mem != MemTier::None);
         prop_assert_eq!(c.satisfies("mem_write"), mem != MemTier::None && amw);
-        prop_assert_eq!(c.satisfies("utf8"), enc == EncodingMode::Utf8Native);
+        // 5.4 retired "utf8": encoding is informational, so it never gates a
+        // tool. The old gate name now falls through to the unknown arm.
+        prop_assert!(!c.satisfies("utf8"));
         prop_assert!(!c.satisfies("unknown_capability_xyz"));
         // mem_write is strictly stronger than mem: it never holds where mem
         // does not (a poke can never advertise where peek cannot).
@@ -57,11 +69,12 @@ proptest! {
         }
     }
 
-    /// from_ready reads the mem/encoding tiers (rule-success.CapabilitiesResolved,
-    /// enum-comparable.{MemTier,EncodingMode}) from the features payload,
-    /// defaulting conservatively when absent.
+    /// from_ready reads the mem tier + the informational encoding provenance
+    /// (rule-success.CapabilitiesResolved, enum-comparable.{MemTier,
+    /// EncodingProvenance}) from the features payload, defaulting conservatively
+    /// when absent/unrecognised (mem none, encoding Unknown).
     #[test]
-    fn from_ready_reads_tiers(pty in any::<bool>(), mem in "process|arena|shared_vm|none|garbage", enc in "utf8_native|codepage|garbage") {
+    fn from_ready_reads_tiers(pty in any::<bool>(), mem in "process|arena|shared_vm|none|garbage", enc in "utf8_manifest|utf8_via_w|utf8_from_cp|garbage") {
         let mut f = Features { pty, ..Default::default() };
         f.extra.insert("mem".to_string(), serde_json::Value::String(mem.clone()));
         f.extra.insert("encoding".to_string(), serde_json::Value::String(enc.clone()));
@@ -72,7 +85,12 @@ proptest! {
             "shared_vm" => MemTier::SharedVm, _ => MemTier::None,
         };
         prop_assert_eq!(c.mem, want_mem);
-        let want_enc = if enc == "utf8_native" { EncodingMode::Utf8Native } else { EncodingMode::Codepage };
+        let want_enc = match enc.as_str() {
+            "utf8_manifest" => EncodingProvenance::Manifest,
+            "utf8_via_w" => EncodingProvenance::ViaWide,
+            "utf8_from_cp" => EncodingProvenance::FromCodepage,
+            _ => EncodingProvenance::Unknown,
+        };
         prop_assert_eq!(c.encoding, want_enc);
     }
 
