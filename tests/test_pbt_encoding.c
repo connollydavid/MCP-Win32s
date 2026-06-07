@@ -119,7 +119,7 @@ static int gen_wf(prop_ctx *_pc, unsigned short *u)
 
 /* Property: round-trip on the well-formed UTF-16 subset is the identity. */
 PROP_TEST(codec_round_trip) {
-    unsigned short u[MAX_U];
+    unsigned short u[MAX_U] = {0};   /* fully init: gen_wf fills [0..n) (n may be 0) */
     unsigned char out8[MAX_B];
     unsigned short back[MAX_U];
     EncStatus s1, s2;
@@ -140,7 +140,7 @@ PROP_TEST(codec_round_trip) {
 
 /* Property: decode of arbitrary bytes is total and emits no lone surrogate. */
 PROP_TEST(codec_decode_total) {
-    unsigned char b[MAX_B];
+    unsigned char b[MAX_B] = {0};    /* fully init: filled [0..n), n may be 0 (-Wmaybe-uninitialized) */
     unsigned short out[MAX_B];
     EncStatus s;
     int n, nu, k, i, oracleUnits;
@@ -187,7 +187,7 @@ PROP_TEST(codec_decode_total) {
 
 /* Property: encode of arbitrary units always yields well-formed UTF-8. */
 PROP_TEST(codec_never_invalid) {
-    unsigned short u[MAX_CP];
+    unsigned short u[MAX_CP] = {0};  /* fully init: filled [0..n), n may be 0 */
     unsigned char out[MAX_B];
     EncStatus s;
     int n, nb, i;
@@ -204,7 +204,7 @@ PROP_TEST(codec_never_invalid) {
 
 /* Property: a capped encode/decode leaves a whole valid prefix. */
 PROP_TEST(codec_truncation_clean) {
-    unsigned short u[MAX_U];
+    unsigned short u[MAX_U] = {0};   /* fully init: gen_wf fills [0..n) (n may be 0) */
     unsigned char capped[MAX_B];
     unsigned char enc[MAX_B];
     unsigned short dec[MAX_U];
