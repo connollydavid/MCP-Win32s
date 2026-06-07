@@ -90,6 +90,52 @@ TEST_CASE(parse_all_fields) {
     TEST_ASSERT_STR_EQUAL("AQID", cmd.data, "data");
 }
 
+/* Obligation: entity-fields.Command (extended) / parse of dest
+ * (OBLIGATIONS-5.1.md, "Device: wire protocol"). copy carries a
+ * source in path and a destination in dest. */
+TEST_CASE(parse_copy_command) {
+    JsonCommand cmd;
+    int result;
+    /* JSON: {"cmd":"copy","id":"1","path":"C:\\a.txt","dest":"C:\\b.txt"} */
+    result = ParseJsonCommand(
+        "{\"cmd\":\"copy\",\"id\":\"1\",\"path\":\"C:\\\\a.txt\","
+        "\"dest\":\"C:\\\\b.txt\"}", &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_STR_EQUAL("copy", cmd.cmd, "cmd field");
+    TEST_ASSERT_STR_EQUAL("1", cmd.id, "id field");
+    TEST_ASSERT_STR_EQUAL("C:\\a.txt", cmd.path, "path field (source)");
+    TEST_ASSERT_STR_EQUAL("C:\\b.txt", cmd.dest, "dest field (destination)");
+}
+
+/* Obligation: entity-fields.Command (extended) / parse of dest
+ * (OBLIGATIONS-5.1.md, "Device: wire protocol"). move has the same
+ * source/destination wire shape as copy. */
+TEST_CASE(parse_move_command) {
+    JsonCommand cmd;
+    int result;
+    /* JSON: {"cmd":"move","id":"2","path":"C:\\a.txt","dest":"C:\\b.txt"} */
+    result = ParseJsonCommand(
+        "{\"cmd\":\"move\",\"id\":\"2\",\"path\":\"C:\\\\a.txt\","
+        "\"dest\":\"C:\\\\b.txt\"}", &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_STR_EQUAL("move", cmd.cmd, "cmd field");
+    TEST_ASSERT_STR_EQUAL("2", cmd.id, "id field");
+    TEST_ASSERT_STR_EQUAL("C:\\a.txt", cmd.path, "path field (source)");
+    TEST_ASSERT_STR_EQUAL("C:\\b.txt", cmd.dest, "dest field (destination)");
+}
+
+/* Obligation: entity-fields.Command (extended) / "absent dest parses
+ * empty" (OBLIGATIONS-5.1.md, "Device: wire protocol"). A command
+ * without dest leaves the field zeroed (memset default). */
+TEST_CASE(parse_dest_absent_zeroed) {
+    JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand(
+        "{\"cmd\":\"read\",\"id\":\"3\",\"path\":\"C:\\\\a.txt\"}", &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT(cmd.dest[0] == '\0', "absent dest should be zeroed");
+}
+
 /* ========================================================
  * Parsing - Edge Cases
  * ======================================================== */
@@ -497,6 +543,9 @@ int main(void)
     RUN_TEST(parse_list_command);
     RUN_TEST(parse_delete_command);
     RUN_TEST(parse_all_fields);
+    RUN_TEST(parse_copy_command);
+    RUN_TEST(parse_move_command);
+    RUN_TEST(parse_dest_absent_zeroed);
 
     printf("\nParsing - Edge Cases:\n");
     RUN_TEST(parse_empty_string);
