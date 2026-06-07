@@ -164,6 +164,100 @@ TEST_CASE(force_fallback_zeroes_flags_and_pointers) {
         "unmasked binary_type ptr preserved");
 }
 
+/* ========================================================
+ * #7 The 5.4 delay-loaded -W (UTF-16) uplift resolves on
+ *    this NT host: all eight file/dir pointers plus
+ *    CreateProcessW are non-NULL and the two flags are set.
+ *    The has_wide_fileapi flag implies every backing pointer
+ *    (the multi-pointer invariant).
+ *    Obligation: entity-fields.Capabilities ("has_* iff p* non-NULL")
+ * ======================================================== */
+
+TEST_CASE(wide_uplift_probe) {
+    FeatInit();
+
+    /* File/dir tier: flag set on NT, every backing pointer present. */
+    TEST_ASSERT_INT_EQUAL(1, g_features.has_wide_fileapi,
+        "wide fileapi available on NT host");
+    TEST_ASSERT(g_features.pCreateFileW != NULL, "wide: CreateFileW ptr");
+    TEST_ASSERT(g_features.pFindFirstFileW != NULL, "wide: FindFirstFileW ptr");
+    TEST_ASSERT(g_features.pFindNextFileW != NULL, "wide: FindNextFileW ptr");
+    TEST_ASSERT(g_features.pDeleteFileW != NULL, "wide: DeleteFileW ptr");
+    TEST_ASSERT(g_features.pCopyFileW != NULL, "wide: CopyFileW ptr");
+    TEST_ASSERT(g_features.pMoveFileW != NULL, "wide: MoveFileW ptr");
+    TEST_ASSERT(g_features.pCreateDirectoryW != NULL, "wide: CreateDirectoryW ptr");
+    TEST_ASSERT(g_features.pRemoveDirectoryW != NULL, "wide: RemoveDirectoryW ptr");
+
+    /* Spawn tier tracked separately. */
+    TEST_ASSERT_INT_EQUAL(1, g_features.has_wide_createprocess,
+        "wide createprocess available on NT host");
+    TEST_ASSERT(g_features.pCreateProcessW != NULL, "wide: CreateProcessW ptr");
+
+    /* Multi-pointer invariant: flag set => every backing pointer present. */
+    if (g_features.has_wide_fileapi) {
+        TEST_ASSERT(g_features.pCreateFileW != NULL &&
+                    g_features.pFindFirstFileW != NULL &&
+                    g_features.pFindNextFileW != NULL &&
+                    g_features.pDeleteFileW != NULL &&
+                    g_features.pCopyFileW != NULL &&
+                    g_features.pMoveFileW != NULL &&
+                    g_features.pCreateDirectoryW != NULL &&
+                    g_features.pRemoveDirectoryW != NULL,
+                    "has_wide_fileapi => all eight file/dir ptrs set");
+    }
+}
+
+/* ========================================================
+ * #8 FeatForceFallback drops the 5.4 -W uplift: both wide
+ *    flags clear and ALL NINE -W pointers go NULL, so the
+ *    codepage (-A) tier can be exercised on an NT host.
+ *    An unrelated capability is preserved.
+ *    Obligation: invariant.Win32sIsBaseline
+ * ======================================================== */
+
+TEST_CASE(force_fallback_wide) {
+    int mask;
+    int binary_before;
+    BOOL (WINAPI *binary_ptr_before)(LPCSTR, LPDWORD);
+
+    FeatInit();
+
+    /* Capture an unrelated capability to confirm it is preserved. */
+    binary_before = g_features.has_get_binary_type;
+    binary_ptr_before = g_features.pGetBinaryTypeA;
+
+    mask = FeatForceFallback(FEAT_FORCE_NO_WIDE_FILEAPI |
+                             FEAT_FORCE_NO_WIDE_CREATEPROCESS);
+    TEST_ASSERT_INT_EQUAL(FEAT_FORCE_NO_WIDE_FILEAPI |
+                          FEAT_FORCE_NO_WIDE_CREATEPROCESS, mask,
+                          "returns the mask applied");
+
+    /* Flags zeroed. */
+    TEST_ASSERT_INT_EQUAL(0, g_features.has_wide_fileapi, "wide fileapi flag zeroed");
+    TEST_ASSERT_INT_EQUAL(0, g_features.has_wide_createprocess,
+        "wide createprocess flag zeroed");
+
+    /* All nine -W pointers zeroed. */
+    TEST_ASSERT(g_features.pCreateFileW == NULL, "CreateFileW ptr NULL");
+    TEST_ASSERT(g_features.pFindFirstFileW == NULL, "FindFirstFileW ptr NULL");
+    TEST_ASSERT(g_features.pFindNextFileW == NULL, "FindNextFileW ptr NULL");
+    TEST_ASSERT(g_features.pDeleteFileW == NULL, "DeleteFileW ptr NULL");
+    TEST_ASSERT(g_features.pCopyFileW == NULL, "CopyFileW ptr NULL");
+    TEST_ASSERT(g_features.pMoveFileW == NULL, "MoveFileW ptr NULL");
+    TEST_ASSERT(g_features.pCreateDirectoryW == NULL, "CreateDirectoryW ptr NULL");
+    TEST_ASSERT(g_features.pRemoveDirectoryW == NULL, "RemoveDirectoryW ptr NULL");
+    TEST_ASSERT(g_features.pCreateProcessW == NULL, "CreateProcessW ptr NULL");
+
+    /* Untouched capability preserved (mask did not include it). */
+    TEST_ASSERT_INT_EQUAL(binary_before, g_features.has_get_binary_type,
+        "unmasked binary_type flag preserved");
+    TEST_ASSERT(g_features.pGetBinaryTypeA == binary_ptr_before,
+        "unmasked binary_type ptr preserved");
+}
+
+/* The os_family_maps_to_tier / EncTierCurrent test is added with the
+ * encoding tier half (a later 5.4 module supplies that function). */
+
 int main(void)
 {
     RUN_TEST(init_populates);
@@ -172,6 +266,8 @@ int main(void)
     RUN_TEST(flags_match_pointers);
     RUN_TEST(pseudo_console_reflects_host);
     RUN_TEST(force_fallback_zeroes_flags_and_pointers);
+    RUN_TEST(wide_uplift_probe);
+    RUN_TEST(force_fallback_wide);
 
     print_test_summary();
     return g_tests_failed;

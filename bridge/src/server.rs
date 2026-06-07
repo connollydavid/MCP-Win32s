@@ -689,8 +689,12 @@ fn catalogued_build_commands() -> HashSet<String> {
         .collect()
 }
 
-/// Base64-decode a device reply field (`stdout_b64`/`stderr_b64`) to text. 5.2
-/// uses `from_utf8_lossy`; full codepage transcoding lands in 5.4.
+/// Base64-decode a device reply field (`stdout_b64`/`stderr_b64`) to text. As
+/// of 5.4 the device owns the whole text pipeline and transcodes console output
+/// to UTF-8 on every tier, so these bytes are ALREADY valid UTF-8 — the bridge
+/// only validates them (no codepage logic, no `encoding_rs`/`oem_cp`). The
+/// `from_utf8_lossy` is kept purely as a belt-and-suspenders for a malformed
+/// reply: a conformant device never triggers a replacement here.
 fn decode_b64_field(fields: &Map<String, Value>, key: &str) -> String {
     let b64 = fields.get(key).and_then(Value::as_str).unwrap_or("");
     match base64::engine::general_purpose::STANDARD.decode(b64) {
@@ -808,4 +812,26 @@ fn register_toolchain_route() -> ToolRoute<Bridge> {
         let args = ctx.arguments.clone().unwrap_or_default();
         Box::pin(async move { Ok(bridge.register_toolchain(args).await) })
     })
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    use base64::Engine;
+
+    /// passthrough_validates_utf8 (OBLIGATIONS-5.4.md, bridge): the device now
+    /// guarantees UTF-8, so base64 of valid UTF-8 bytes (CJK here) round-trips
+    /// through decode_b64_field byte-for-byte — no codepage transcoding, no
+    /// replacement. This is the bridge passthrough contract.
+    #[test]
+    fn passthrough_validates_utf8() {
+        // "日本語" — U+65E5 U+672C U+8A9E, the device's UTF-8 wire bytes.
+        let utf8 = "日本語";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf8.as_bytes());
+        let mut fields = Map::new();
+        fields.insert("stdout_b64".to_string(), Value::String(b64));
+        let got = decode_b64_field(&fields, "stdout_b64");
+        assert_eq!(got, utf8, "valid UTF-8 passes through unchanged");
+        assert!(!got.contains('\u{FFFD}'), "no replacement char introduced");
+    }
 }

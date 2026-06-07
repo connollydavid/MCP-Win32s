@@ -187,6 +187,74 @@ void FeatInit(void)
                 (BOOL (WINAPI *)(int, PVOID, FeatSizeT))proc;
             g_features.has_set_process_mitigation = 1;
         }
+
+        /*
+         * 5.4: the delay-loaded -W (UTF-16) file/dir/spawn set - the `wide`
+         * encoding tier. Resolved only here as string literals, never linked
+         * by name, so the import resolver still loads the binary on Win32s.
+         */
+        proc = GetProcAddress(hKernel, "CreateFileW");
+        if (proc != NULL) {
+            g_features.pCreateFileW =
+                (HANDLE (WINAPI *)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES,
+                                   DWORD, DWORD, HANDLE))proc;
+        }
+        proc = GetProcAddress(hKernel, "FindFirstFileW");
+        if (proc != NULL) {
+            g_features.pFindFirstFileW =
+                (HANDLE (WINAPI *)(LPCWSTR, void *))proc;
+        }
+        proc = GetProcAddress(hKernel, "FindNextFileW");
+        if (proc != NULL) {
+            g_features.pFindNextFileW =
+                (BOOL (WINAPI *)(HANDLE, void *))proc;
+        }
+        proc = GetProcAddress(hKernel, "DeleteFileW");
+        if (proc != NULL) {
+            g_features.pDeleteFileW =
+                (BOOL (WINAPI *)(LPCWSTR))proc;
+        }
+        proc = GetProcAddress(hKernel, "CopyFileW");
+        if (proc != NULL) {
+            g_features.pCopyFileW =
+                (BOOL (WINAPI *)(LPCWSTR, LPCWSTR, BOOL))proc;
+        }
+        proc = GetProcAddress(hKernel, "MoveFileW");
+        if (proc != NULL) {
+            g_features.pMoveFileW =
+                (BOOL (WINAPI *)(LPCWSTR, LPCWSTR))proc;
+        }
+        proc = GetProcAddress(hKernel, "CreateDirectoryW");
+        if (proc != NULL) {
+            g_features.pCreateDirectoryW =
+                (BOOL (WINAPI *)(LPCWSTR, LPSECURITY_ATTRIBUTES))proc;
+        }
+        proc = GetProcAddress(hKernel, "RemoveDirectoryW");
+        if (proc != NULL) {
+            g_features.pRemoveDirectoryW =
+                (BOOL (WINAPI *)(LPCWSTR))proc;
+        }
+        /* All eight file/dir -W APIs exist since NT 3.1; one flag covers them. */
+        if (g_features.pCreateFileW != NULL &&
+            g_features.pFindFirstFileW != NULL &&
+            g_features.pFindNextFileW != NULL &&
+            g_features.pDeleteFileW != NULL &&
+            g_features.pCopyFileW != NULL &&
+            g_features.pMoveFileW != NULL &&
+            g_features.pCreateDirectoryW != NULL &&
+            g_features.pRemoveDirectoryW != NULL) {
+            g_features.has_wide_fileapi = 1;
+        }
+
+        /* CreateProcessW is tracked separately - the spawn path. */
+        proc = GetProcAddress(hKernel, "CreateProcessW");
+        if (proc != NULL) {
+            g_features.pCreateProcessW =
+                (BOOL (WINAPI *)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
+                                 LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID,
+                                 LPCWSTR, void *, LPPROCESS_INFORMATION))proc;
+            g_features.has_wide_createprocess = 1;
+        }
     }
 
     /* WoW64 self-check when IsWow64Process is present (XP SP2+). */
@@ -249,6 +317,21 @@ int FeatForceFallback(int flagsMask)
     if (flagsMask & FEAT_FORCE_NO_BINARY_TYPE) {
         g_features.has_get_binary_type = 0;
         g_features.pGetBinaryTypeA = NULL;
+    }
+    if (flagsMask & FEAT_FORCE_NO_WIDE_FILEAPI) {
+        g_features.has_wide_fileapi = 0;
+        g_features.pCreateFileW = NULL;
+        g_features.pFindFirstFileW = NULL;
+        g_features.pFindNextFileW = NULL;
+        g_features.pDeleteFileW = NULL;
+        g_features.pCopyFileW = NULL;
+        g_features.pMoveFileW = NULL;
+        g_features.pCreateDirectoryW = NULL;
+        g_features.pRemoveDirectoryW = NULL;
+    }
+    if (flagsMask & FEAT_FORCE_NO_WIDE_CREATEPROCESS) {
+        g_features.has_wide_createprocess = 0;
+        g_features.pCreateProcessW = NULL;
     }
 
     return flagsMask;

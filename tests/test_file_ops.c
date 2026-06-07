@@ -11,6 +11,8 @@
 #include <string.h>
 #include "test_framework.h"
 #include "file_ops.h"
+#include "feat.h"
+#include "encoding.h"
 
 /* Global temp directory path */
 static char g_tmpDir[260];
@@ -906,9 +908,66 @@ TEST_CASE(mkdir_then_rmdir_lifecycle) {
     cleanup_dir("test_dir_lifecycle");
 }
 
+/*
+ * Obligations: rule-success.PathConverted (inbound) + rule-success.OutputConverted
+ * (outbound) - the integration halves; the PathSeparatorScanIsDbcsSafe
+ * integration half (OBLIGATIONS-5.4.md). A CJK-named file (UTF-8 wire path)
+ * round-trips create -> list -> read on the NT-family live `wide` tier:
+ * EncOpenPath widens to UTF-16 -> CreateFileW; the name comes back through
+ * FindFirstFileW -> EncWideToWire as the same UTF-8 bytes. Skip-with-reason on
+ * the codepage tier, where an arbitrary ANSI page cannot represent the name
+ * (host-tolerant per the CI-parity rule).
+ */
+TEST_CASE(wide_tier_cjk_roundtrip) {
+    /* "<U+65E5><U+672C><U+8A9E>.txt" - Japanese "nihongo" + ".txt", UTF-8. */
+    static const char cjkName[] =
+        "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E.txt";
+    char path[300];
+    char err[128];
+    char listing[65536];
+    unsigned char buf[64];
+    int len;
+    int ok;
+
+    if (EncTierCurrent() == ENC_TIER_CODEPAGE) {
+        printf("    [skip] codepage tier: CJK name not representable in ACP\n");
+        return;
+    }
+
+    tmp_path(path, sizeof(path), cjkName);
+    FileOpDelete(path, err, sizeof(err));   /* best-effort pre-clean */
+
+    {
+        const unsigned char data[] = "wide content";
+        ok = FileOpWrite(path, data, (int)(sizeof(data) - 1), err, sizeof(err));
+        TEST_ASSERT_INT_EQUAL(1, ok, "CJK-named write succeeds (CreateFileW)");
+    }
+
+    /* The listing must carry the name back as the SAME UTF-8 bytes. */
+    {
+        char dirOnly[260];
+        tmp_path(dirOnly, sizeof(dirOnly), "");
+        ok = FileOpList(dirOnly, listing, sizeof(listing), err, sizeof(err));
+        TEST_ASSERT_INT_EQUAL(1, ok, "list succeeds");
+        TEST_ASSERT_INT_EQUAL(0, (int)(strstr(listing, cjkName) == NULL),
+                              "CJK name present in listing as UTF-8");
+    }
+
+    /* Read back through the same UTF-8 path. */
+    ok = FileOpRead(path, buf, sizeof(buf), &len, err, sizeof(err));
+    TEST_ASSERT_INT_EQUAL(1, ok, "CJK-named read succeeds");
+    TEST_ASSERT_INT_EQUAL(12, len, "content length round-trips");
+
+    FileOpDelete(path, err, sizeof(err));
+}
+
 int main(void)
 {
     char tmpDir[260];
+
+    /* Probe the host so file_ops selects the live tier: on this NT-family
+     * dev host / CI runner that is the `wide` tier (CreateFileW et al.). */
+    FeatInit();
 
     /* Get temp directory */
     {
@@ -964,6 +1023,7 @@ int main(void)
     RUN_TEST(rmdir_nonempty_errors);
     RUN_TEST(rmdir_missing_errors);
     RUN_TEST(mkdir_then_rmdir_lifecycle);
+    RUN_TEST(wide_tier_cjk_roundtrip);
 
     print_test_summary();
     return g_tests_failed;

@@ -31,6 +31,9 @@ if [ "$1" = "host-pbt" ]; then
     # mem_ops: only the two pure arithmetic guards compile natively
     # (MEM_OPS_HOST_PURE excludes the Win32 surface) - the off-by-overflow pin.
     gcc $HFLAGS -DMEM_OPS_HOST_PURE tests/host/theft_mem.c src/mem_ops.c build/host/theft/*.o -lm -o build/host/theft_mem
+    # encoding: the pure UTF-8<->UTF-16 codec (ENCODING_HOST_PURE excludes the
+    # Win32 tier surface in encoding.h) - the four codec property pins at 50k.
+    gcc $HFLAGS -DENCODING_HOST_PURE tests/host/theft_encoding.c src/encoding.c build/host/theft/*.o -lm -o build/host/theft_encoding
     # UBSan runs in recover mode: theft's own PRNG prints one benign
     # shift diagnostic (vendored, not patched). The modules under test
     # are expected to stay diagnostic-free - see tests/host/README.md.
@@ -39,6 +42,7 @@ if [ "$1" = "host-pbt" ]; then
     build/host/theft_argv
     build/host/theft_catalog
     build/host/theft_mem
+    build/host/theft_encoding
     echo "host-pbt: all properties passed"
     exit 0
 fi

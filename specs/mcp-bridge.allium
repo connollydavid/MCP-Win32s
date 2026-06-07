@@ -37,8 +37,12 @@ use "./memory-ops.allium" as memops
 -- bridge references it as memops/MemTier on DeviceCapabilities.mem and gates
 -- the five memory tools against it.
 
--- The device's active text encoding for its own (path) surfaces.
-enum EncodingMode { codepage | utf8_native }
+-- The device's text-encoding PROVENANCE: which tier it transcoded the wire
+-- text FROM (the ready features.encoding tag - see wire-contract.allium
+-- ReadyShape). The device emits valid UTF-8 on EVERY OS tier, so the wire is
+-- uniformly UTF-8 and this is INFORMATIONAL only - never a switch selecting
+-- bridge transcoding. `unknown` covers an absent or unrecognised tag.
+enum EncodingProvenance { utf8_manifest | utf8_via_w | utf8_from_cp | unknown }
 
 -- A tool call's failure register. A RECOVERABLE failure (catalog miss,
 -- busy, timeout, bad argument, a capability absent at call time) becomes
@@ -92,7 +96,9 @@ entity DeviceCapabilities {
     session: McpSession
     has_pty: Boolean
     mem: memops/MemTier
-    encoding: EncodingMode
+    -- Informational only: which tier the device transcoded the UTF-8 wire text
+    -- FROM. No tool gates on it (the wire is always UTF-8).
+    encoding: EncodingProvenance
     -- Operator opt-in for runtime toolchain registration (the hybrid
     -- authoring model's dangerous half). Off by default; only when enabled is
     -- win32_register_toolchain advertised - see RegistrationRequiresOptIn.
@@ -121,11 +127,13 @@ entity DeviceCapabilities {
 -- required capability is advertised only when the device provides it,
 -- via the capability_satisfied black box (which knows how each named
 -- capability maps onto DeviceCapabilities). The named capabilities and
--- their satisfaction conditions: "pty" (has_pty), "utf8" (encoding =
--- utf8_native), "toolchain_registration" (toolchain_registration), and -
--- for the memory tools (5.3) - "mem" (mem != none, any memory tier) and
--- "mem_write" (mem != none AND allow_memory_write - the TWO-FACTOR poke
--- gate, both the tier and the operator opt-in).
+-- their satisfaction conditions: "pty" (has_pty), "toolchain_registration"
+-- (toolchain_registration), and - for the memory tools (5.3) - "mem"
+-- (mem != none, any memory tier) and "mem_write" (mem != none AND
+-- allow_memory_write - the TWO-FACTOR poke gate, both the tier and the
+-- operator opt-in). (5.4 retired the "utf8" capability: the device emits valid
+-- UTF-8 on every tier, so the wire is uniformly UTF-8 and no tool gates on
+-- encoding - DeviceCapabilities.encoding is informational provenance only.)
 entity Tool {
     session: McpSession
     name: String
