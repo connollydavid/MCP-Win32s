@@ -122,6 +122,12 @@ target_link_libraries(test_exec_ops PRIVATE kernel32)
 add_executable(test_pty_exec tests/test_pty_exec.c src/pty_exec.c src/feat.c)
 target_link_libraries(test_pty_exec PRIVATE kernel32)
 
+# --- 5.2 build-toolchain test targets --------------------------------------
+add_executable(test_toolchain_probe
+  tests/test_toolchain_probe.c src/toolchain_probe.c
+  src/exec_ops.c src/catalog.c src/feat.c src/binfmt.c)
+target_link_libraries(test_toolchain_probe PRIVATE kernel32)
+
 # wire_client: the 4.0b wire-contract smoke client. A test tool, so a
 # static wsock32 link is fine here (the SERVER stays runtime-loaded).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/smoke/wire_client.c)
@@ -145,7 +151,7 @@ add_custom_command(TARGET test_catalog POST_BUILD
 foreach(t test_json test_transport test_tcp test_serial
           test_base64 test_file_ops test_pbt_base64
           test_feat test_argv test_binfmt test_catalog
-          test_exec_ops test_pty_exec)
+          test_exec_ops test_pty_exec test_toolchain_probe)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
