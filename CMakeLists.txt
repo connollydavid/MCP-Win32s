@@ -151,6 +151,14 @@ add_dependencies(test_mem_ops mem_target)
 add_executable(test_audit tests/test_audit.c src/audit.c)
 target_link_libraries(test_audit PRIVATE kernel32 user32)
 
+# --- 5.4 text-encoding test targets ----------------------------------------
+# test_encoding exercises the OS-independent charset tables (M2: the exhaustive
+# per-page round-trip on the bijective subset + the documented non-bijection
+# cases + strict narrowing). Pure - links only the table sources.
+add_executable(test_encoding
+  tests/test_encoding.c src/charset_tables.c src/charset_tables_data.c)
+target_link_libraries(test_encoding PRIVATE kernel32)
+
 # wire_client: the 4.0b wire-contract smoke client. A test tool, so a
 # static wsock32 link is fine here (the SERVER stays runtime-loaded).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/smoke/wire_client.c)
@@ -175,7 +183,7 @@ foreach(t test_json test_transport test_tcp test_serial
           test_base64 test_file_ops test_pbt_base64
           test_feat test_argv test_binfmt test_catalog
           test_exec_ops test_pty_exec test_toolchain_probe
-          test_mem_ops test_audit)
+          test_mem_ops test_audit test_encoding)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
