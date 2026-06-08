@@ -71,13 +71,13 @@ rule CommandCreated {
 
 rule CommandDispatch {
     when: cmd: Command.status becomes pending
-    requires: cmd.cmd in {echo, read, write, list, delete, copy, move, mkdir, rmdir, exec, `ptyExec`}
+    requires: cmd.cmd in {echo, read, write, list, delete, copy, move, mkdir, rmdir, exec, `ptyExec`, `listCommands`}
     ensures: cmd.status = processed
 }
 
 rule CommandUnknown {
     when: cmd: Command.status becomes pending
-    requires: cmd.cmd not in {echo, read, write, list, delete, copy, move, mkdir, rmdir, exec, `ptyExec`}
+    requires: cmd.cmd not in {echo, read, write, list, delete, copy, move, mkdir, rmdir, exec, `ptyExec`, `listCommands`}
     ensures: cmd.status = error
     ensures: Response.created(
         command: cmd,
@@ -380,6 +380,36 @@ rule PtyExecCommand {
     when: cmd: Command.status becomes processed
     requires: cmd.cmd = `ptyExec`
     ensures: ExecGateRequested(cmd: cmd, pty: true)
+}
+
+-- listCommands is the read-only discovery verb: it asks the catalog
+-- (catalog.allium CatalogListed) for the device's loaded entries. It spawns
+-- nothing and bypasses the exec gate (there is no argv to validate); the
+-- listing rides back as CatalogListingReady, mirroring how the exec gate's
+-- rejection rides back as ExecRejected.
+rule ListCommandsCommand {
+    when: cmd: Command.status becomes processed
+    requires: cmd.cmd = `listCommands`
+    ensures: ListCommandsRequested(request_id: cmd.id)
+}
+
+-- The catalog's listing snapshot (catalog.allium) returns as a successful
+-- response. listing is the serialized entries array (the host's per-entry
+-- { name, description, builtin, destructive, flags } payload, like the exec
+-- envelope's flattened body); Response names one representative key.
+-- CatalogListingReady is emitted by catalog.allium's CatalogListed rule, not
+-- by a surface (per-module analyse flags it as unprovided because it cannot
+-- see cross-module emissions - the same situation as ExecRejected above).
+rule ListCommandsResult {
+    when: CatalogListingReady(request_id, listing)
+    let cmd = Command{id: request_id}
+    ensures: Response.created(
+        command: cmd,
+        id: request_id,
+        status: ok,
+        key: "commands",
+        value: listing
+    )
 }
 
 -- Any rejection on the exec path (busy, stdin too large, pty absent,

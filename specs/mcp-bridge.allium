@@ -51,6 +51,16 @@ enum EncodingProvenance { utf8_manifest | utf8_via_w | utf8_from_cp | unknown }
 -- and never reaches the device.
 enum FailureKind { recoverable | protocol }
 
+-- The recoverable outcomes the bridge can surface for a tool call WITHOUT
+-- relaying it to the device, each an isError tool result the model can act
+-- on. relayed is the normal path (the device was reached and replied);
+-- device_circuit_open is the tripped device circuit-breaker ("device
+-- circuit open"); rate_limited is the per-tool rate cap ("rate limited");
+-- unsafe_opt_in_absent is the unsafe-exec safety gate
+-- (UnsafeExecRequiresOperatorOptIn). The three non-relayed kinds are local
+-- recoverable refusals: the call never touches the device.
+enum RecoverableOutcome { relayed | device_circuit_open | rate_limited | unsafe_opt_in_absent }
+
 -- Normalized diagnostic severity. Each toolchain definition's regex maps the
 -- toolchain's own keyword (MSVC "error"/"warning"/"fatal error"; Open Watcom
 -- "Error!"/"Warning!") onto these. info covers note-level lines.
@@ -120,6 +130,18 @@ entity DeviceCapabilities {
     -- succeed (memory-ops.allium PokeRequiresBothArmingLayers). The peek/spawn/
     -- terminate/release tools need only "mem" (mem != none), never this flag.
     allow_memory_write: Boolean
+    -- Operator opt-in for UNSAFE exec: an exec invocation carrying unsafe=true
+    -- bypasses the device catalog allow-list (the command-injection defence -
+    -- catalog.allium GateBypassedByUnsafeRequest). Off by default; only when
+    -- enabled may the bridge relay unsafe=true to the device - see
+    -- UnsafeExecRequiresOperatorOptIn. This is a BRIDGE-OPERATOR opt-in set at
+    -- bridge startup (a CLI flag), NOT a device-reported capability resolved
+    -- from the ready message, and NOT a tool-advertisement gate (win32_exec is
+    -- always advertised): it gates the per-call unsafe flag, refusing the call
+    -- recoverably when the operator did not opt in. Modelled exactly like
+    -- allow_memory_write (resolved by bridge_allows_unsafe_exec, a black box
+    -- over bridge startup).
+    allow_unsafe_exec: Boolean
 }
 
 -- A tool the bridge may expose. Concrete tools are introduced in
@@ -158,6 +180,14 @@ entity ToolCall {
     session: McpSession
     tool: Tool
     status: dispatched | ok | error | rejected
+    -- Whether THIS call carried unsafe=true (an exec invocation requesting the
+    -- catalog bypass). false for every non-exec tool and for a plain exec.
+    unsafe_requested: Boolean
+    -- Which recoverable path this call took. `relayed` is the normal device
+    -- round-trip; the three non-relayed kinds (device_circuit_open,
+    -- rate_limited, unsafe_opt_in_absent) are LOCAL recoverable refusals that
+    -- create the call already in `error` and never dispatch to the device.
+    outcome: RecoverableOutcome
 
     transitions status {
         dispatched -> ok
@@ -271,7 +301,8 @@ rule CapabilitiesResolved {
         has_pty: device_has_pty(session.device),
         mem: device_mem_tier(session.device),
         encoding: device_encoding(session.device),
-        allow_memory_write: bridge_allows_memory_write
+        allow_memory_write: bridge_allows_memory_write,
+        allow_unsafe_exec: bridge_allows_unsafe_exec
     )
 }
 
@@ -313,13 +344,21 @@ rule ToolAdvertised {
 
 -- Dispatch: an advertised tool with well-formed arguments goes to the
 -- device. args_valid is the schema check (2020-12 inputSchema).
+-- An exec invocation requesting unsafe=true is dispatched here ONLY when the
+-- operator opted in; otherwise ExecUnsafeRejected refuses it recoverably
+-- (UnsafeExecRequiresOperatorOptIn).
 rule ToolCallDispatched {
-    when: ToolCalled(session, tool, args_valid)
+    when: ToolCalled(session, tool, args_valid, unsafe_requested)
+    let caps = DeviceCapabilities{session: session}
+    requires: exists caps
     requires: tool.advertised and args_valid
+    requires: not unsafe_requested or caps.allow_unsafe_exec
     ensures: ToolCall.created(
         session: session,
         tool: tool,
-        status: dispatched
+        status: dispatched,
+        unsafe_requested: unsafe_requested,
+        outcome: relayed
     )
 }
 
@@ -327,15 +366,93 @@ rule ToolCallDispatched {
 -- error: rejected before the device is touched, surfaced as a JSON-RPC
 -- error rather than an isError tool result.
 rule ToolCallRejected {
-    when: ToolCalled(session, tool, args_valid)
+    when: ToolCalled(session, tool, args_valid, unsafe_requested)
     requires: not tool.advertised or not args_valid
     ensures: ToolCall.created(
         session: session,
         tool: tool,
         status: rejected,
+        unsafe_requested: unsafe_requested,
+        outcome: relayed,
         failure_kind: protocol
     )
     ensures: ProtocolError(session: session, tool_name: tool.name)
+}
+
+-- THE SAFETY PIN (UnsafeExecRequiresOperatorOptIn): an advertised, well-formed
+-- exec invocation that carries unsafe=true is REFUSED when the operator did not
+-- opt in (caps.allow_unsafe_exec = false). The refusal is a LOCAL recoverable
+-- tool error - the call is created already in `error`, an isError ToolResult is
+-- produced, and the unsafe request is NEVER relayed to the device. This is the
+-- bridge analogue of the device's ShellTailNeutralised pin: the property
+-- (unsafe reaches the device only under the opt-in) is named and pinned, not
+-- abstracted into a black box.
+rule ExecUnsafeRejected {
+    when: ToolCalled(session, tool, args_valid, unsafe_requested)
+    let caps = DeviceCapabilities{session: session}
+    requires: exists caps
+    requires: tool.advertised and args_valid
+    requires: unsafe_requested and not caps.allow_unsafe_exec
+    ensures:
+        let call = ToolCall.created(
+            session: session,
+            tool: tool,
+            status: error,
+            unsafe_requested: true,
+            outcome: unsafe_opt_in_absent,
+            failure_kind: recoverable
+        )
+        ToolResult.created(
+            call: call,
+            is_error: true,
+            text: "unsafe exec not permitted: operator opt-in required",
+            has_structured: false
+        )
+}
+
+-- Runtime resilience: a tripped device circuit-breaker refuses the call
+-- locally with an isError "device circuit open" - the device link is in a
+-- fault state and is not touched until it recovers. A recoverable outcome the
+-- model can retry; never a protocol error.
+rule ToolCallCircuitOpen {
+    when: DeviceCircuitOpen(session, tool)
+    ensures:
+        let call = ToolCall.created(
+            session: session,
+            tool: tool,
+            status: error,
+            unsafe_requested: false,
+            outcome: device_circuit_open,
+            failure_kind: recoverable
+        )
+        ToolResult.created(
+            call: call,
+            is_error: true,
+            text: "device circuit open",
+            has_structured: false
+        )
+}
+
+-- Runtime resilience: a per-tool rate limit refuses the call locally with an
+-- isError "rate limited" - the call is shed before the device is touched. A
+-- recoverable outcome the model can retry after backing off.
+rule ToolCallRateLimited {
+    when: ToolRateLimited(session, tool)
+    ensures:
+        let call = ToolCall.created(
+            session: session,
+            tool: tool,
+            status: error,
+            unsafe_requested: false,
+            outcome: rate_limited,
+            failure_kind: recoverable
+        )
+        ToolResult.created(
+            call: call,
+            is_error: true,
+            text: "rate limited",
+            has_structured: false
+        )
 }
 
 -- Device reply mapping: ok -> ok result (text + structuredContent);
@@ -418,6 +535,27 @@ rule MemoryToolsRegistered {
         Tool.created(session: caps.session, name: "win32_poke", required_capability: "mem_write", device_cmd: "poke", destructive: true, read_only: false)
         Tool.created(session: caps.session, name: "win32_terminate", required_capability: "mem", device_cmd: "terminate", destructive: true, read_only: false)
         Tool.created(session: caps.session, name: "win32_release", required_capability: "mem", device_cmd: "release", destructive: false, read_only: false)
+}
+
+-- The exec discovery surface (5.5): three tools registered once capabilities
+-- are resolved. win32_exec and win32_pty_exec are 1:1 relays to the device's
+-- exec/ptyExec wire commands; both are destructive (they run arbitrary
+-- catalogued programs that may write the filesystem) and not read-only.
+-- win32_exec names no required capability (exec is uniform across every OS
+-- tier); win32_pty_exec names "pty" so it advertises only on a ConPTY-capable
+-- device (PtyToolGatedOnCapability), mirroring how the memory tools gate on
+-- "mem". win32_list_commands is the read-only discovery tool: it relays the
+-- device's listCommands verb to report the loaded catalog, is always advertised
+-- (no required capability), destroys nothing and is read-only (mirrors
+-- win32_list_toolchains). The unsafe-exec catalog bypass is NOT an
+-- advertisement gate here - win32_exec is always advertised - it is the
+-- per-call gate enforced by ExecUnsafeRejected / UnsafeExecRequiresOperatorOptIn.
+rule ExecToolsRegistered {
+    when: caps: DeviceCapabilities.created
+    ensures:
+        Tool.created(session: caps.session, name: "win32_exec", device_cmd: "exec", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_pty_exec", required_capability: "pty", device_cmd: "ptyExec", destructive: true, read_only: false)
+        Tool.created(session: caps.session, name: "win32_list_commands", device_cmd: "listCommands", destructive: false, read_only: true)
 }
 
 -- Runtime registration (the hybrid model's dangerous half): an agent submits a
@@ -602,6 +740,48 @@ invariant MemoryToolHintsAreHonest {
         and (t.read_only implies not t.destructive)
 }
 
+-- Honesty pin for the exec tools' advisory annotations: win32_exec and
+-- win32_pty_exec run programs and are destructive (never read-only);
+-- win32_list_commands only reports and is read-only (never destructive).
+-- Mirrors FileToolHintsAreHonest / MemoryToolHintsAreHonest.
+invariant ExecToolHintsAreHonest {
+    for t in Tools:
+        (t.name in {"win32_exec", "win32_pty_exec"} implies t.destructive and not t.read_only)
+        and (t.name = "win32_list_commands" implies t.read_only and not t.destructive)
+}
+
+-- Every exec tool is a pure 1:1 relay to a device wire command (exec, ptyExec,
+-- listCommands), like the file tools and unlike the composed build steps.
+invariant ExecToolsAreDirectRelays {
+    for t in Tools:
+        t.name in {"win32_exec", "win32_pty_exec", "win32_list_commands"}
+            implies t.device_cmd != null
+}
+
+-- The pty tool is capability-gated: win32_pty_exec always names "pty", so
+-- (with AdvertisedToolsAreCapable) it advertises only on a ConPTY-capable
+-- device. Mirrors RegistrationRequiresOptIn / MemoryWriteToolRequiresOptIn.
+invariant PtyToolGatedOnCapability {
+    for t in Tools:
+        t.name = "win32_pty_exec" implies t.required_capability = "pty"
+}
+
+-- THE SAFETY PIN (UnsafeExecRequiresOperatorOptIn): the bridge relays an
+-- unsafe=true exec to the device ONLY under the operator opt-in. Any call that
+-- was dispatched (reached the device) carrying unsafe_requested implies the
+-- session's allow_unsafe_exec is set; and the local refusal path
+-- (unsafe_opt_in_absent) is always a non-dispatched recoverable error that
+-- never relays. Together these pin that an unsafe catalog bypass crosses to the
+-- device only when the operator opted in. This is the bridge half of the
+-- defence; the device's own catalog gate (catalog.allium) is independent.
+invariant UnsafeExecRequiresOperatorOptIn {
+    for c in ToolCalls:
+        (c.unsafe_requested and c.status = dispatched
+            implies DeviceCapabilities{session: c.session}.allow_unsafe_exec)
+        and (c.outcome = unsafe_opt_in_absent
+            implies c.status = error and c.unsafe_requested)
+}
+
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
@@ -617,9 +797,37 @@ surface McpClient {
             when s.status = initializing
         ClientDisconnected(s)
             when s.status = ready
-        ToolCalled(s, tool, args_valid)
+        ToolCalled(s, tool, args_valid, unsafe_requested)
             when s.status = ready
         ToolchainRegistrationRequested(name, vendor, version_probe_command, version_regex)
+            when s.status = ready
+
+    @guarantee PowerToolsAreAudited
+        -- Every destructive / power tool call - win32_exec, win32_pty_exec,
+        -- win32_write_file, win32_delete_file, win32_move_file,
+        -- win32_remove_dir, win32_spawn_retain, win32_poke, win32_terminate,
+        -- and every generated build tool - produces a durable audit record
+        -- carrying the tool name, the arguments, the outcome, and (for exec)
+        -- whether the unsafe bypass was used. The record is written whether the
+        -- call was relayed, refused locally (circuit open, rate limited, unsafe
+        -- opt-in absent), or errored at the device. The audit sink is durable
+        -- and out of band of the result the model sees - power granted to the
+        -- agent is logged, never silent. (The bridge-side counterpart to the
+        -- device's poke audit in memory-ops.allium.)
+}
+
+-- The bridge's runtime-resilience boundary: the local refusals the bridge
+-- raises BEFORE touching the device. The circuit-breaker trips
+-- (DeviceCircuitOpen) when the device link is in a fault state; the per-tool
+-- rate limiter sheds a call (ToolRateLimited) when its rate cap is exceeded.
+-- Both produce an isError recoverable tool result and never reach the device.
+surface BridgeResilience {
+    facing s: McpSession
+
+    provides:
+        DeviceCircuitOpen(s, tool)
+            when s.status = ready
+        ToolRateLimited(s, tool)
             when s.status = ready
 }
 
