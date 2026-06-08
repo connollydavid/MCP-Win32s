@@ -21,6 +21,7 @@ fn caps() -> Capabilities {
         toolchains: vec![],
         toolchain_registration: false,
         allow_memory_write: false,
+        allow_unsafe_exec: false,
     }
 }
 
@@ -59,16 +60,20 @@ async fn file_tools_all_advertised() {
     let names: std::collections::BTreeSet<&str> =
         tools.tools.iter().map(|t| t.name.as_ref()).collect();
 
-    // The advertised set is exactly the eight file tools, win32_echo, and the
-    // always-on read-only discovery tool (win32_list_toolchains). No build
-    // tools: this device reports no detected toolchains, and registration is
-    // off, so win32_register_toolchain is not advertised.
+    // The advertised set is exactly the eight file tools, win32_echo, the
+    // always-on read-only discovery tool (win32_list_toolchains), and the two
+    // always-advertised exec tools (win32_exec, win32_list_commands — no
+    // required capability). win32_pty_exec is pruned (this device has no
+    // ConPTY). No build tools: this device reports no detected toolchains, and
+    // registration is off, so win32_register_toolchain is not advertised.
     let mut expected: std::collections::BTreeSet<&str> = FILE_TOOLS.iter().copied().collect();
     expected.insert("win32_echo");
     expected.insert("win32_list_toolchains");
+    expected.insert("win32_exec");
+    expected.insert("win32_list_commands");
     assert_eq!(
         names, expected,
-        "advertised set is the eight file tools + echo + the discovery tool"
+        "advertised set is the eight file tools + echo + the discovery tool + the two always-on exec tools"
     );
 
     // Every file tool carries a JSON Schema 2020-12 inputSchema that is a

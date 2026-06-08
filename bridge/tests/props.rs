@@ -2,6 +2,7 @@
 //! response-mapping logic. Cites obligations from bridge/OBLIGATIONS-5.0.md.
 
 use mcp_w32s_bridge::capabilities::{Capabilities, EncodingProvenance, MemTier};
+use mcp_w32s_bridge::server::{unsafe_gate, ExecGate};
 use mcp_w32s_bridge::wire::{Features, Response};
 use proptest::prelude::*;
 
@@ -38,6 +39,7 @@ fn caps(
         toolchains: vec![],
         toolchain_registration: false,
         allow_memory_write,
+        allow_unsafe_exec: false,
     }
 }
 
@@ -78,7 +80,7 @@ proptest! {
         let mut f = Features { pty, ..Default::default() };
         f.extra.insert("mem".to_string(), serde_json::Value::String(mem.clone()));
         f.extra.insert("encoding".to_string(), serde_json::Value::String(enc.clone()));
-        let c = Capabilities::from_ready(437, "t".to_string(), &f, false, false);
+        let c = Capabilities::from_ready(437, "t".to_string(), &f, false, false, false);
         prop_assert_eq!(c.has_pty, pty);
         let want_mem = match mem.as_str() {
             "process" => MemTier::Process, "arena" => MemTier::Arena,
@@ -92,6 +94,62 @@ proptest! {
             _ => EncodingProvenance::Unknown,
         };
         prop_assert_eq!(c.encoding, want_enc);
+    }
+
+    /// invariant.UnsafeExecRequiresOperatorOptIn (THE SAFETY PIN, PBT) — over a
+    /// random tool, an unsafe request, and the operator opt-in, the bridge's
+    /// per-call decision (the SAME `unsafe_gate` the handler calls) satisfies the
+    /// two pinned implications:
+    ///   (1) dispatched ∧ unsafe_requested ⟹ allow_unsafe_exec
+    ///       (an unsafe bypass reaches the device only under the opt-in), and
+    ///   (2) outcome = unsafe_opt_in_absent ⟹ status = error ∧ unsafe_requested
+    ///       (the local-refusal outcome is always a non-dispatched recoverable
+    ///       error that did request unsafe).
+    /// Only win32_exec carries unsafe; for any other tool unsafe_requested is
+    /// always false (no exec semantics), so it always dispatches.
+    #[test]
+    fn unsafe_reaches_device_only_under_opt_in(
+        is_exec in any::<bool>(),
+        unsafe_req in any::<bool>(),
+        allow_unsafe in any::<bool>(),
+    ) {
+        // Non-exec tools never carry an unsafe request.
+        let unsafe_requested = is_exec && unsafe_req;
+
+        // The bridge's decision: exec routes through unsafe_gate; a non-exec
+        // tool (no unsafe) always relays.
+        let gate = if is_exec {
+            unsafe_gate(unsafe_requested, allow_unsafe)
+        } else {
+            ExecGate::Relay
+        };
+
+        // Map the gate onto the spec's (status, outcome) for this call.
+        let (dispatched, status_error, outcome_unsafe_absent) = match gate {
+            // Relay => the call dispatches (status reaches the device, not error
+            // locally) with outcome `relayed`.
+            ExecGate::Relay => (true, false, false),
+            // RefuseLocally => a non-dispatched recoverable error with outcome
+            // `unsafe_opt_in_absent`.
+            ExecGate::RefuseLocally => (false, true, true),
+        };
+
+        // (1) dispatched ∧ unsafe_requested ⟹ allow_unsafe_exec.
+        if dispatched && unsafe_requested {
+            prop_assert!(allow_unsafe, "an unsafe bypass dispatched only under the opt-in");
+        }
+        // (2) outcome = unsafe_opt_in_absent ⟹ status = error ∧ unsafe_requested.
+        if outcome_unsafe_absent {
+            prop_assert!(status_error, "the refusal outcome is a recoverable error");
+            prop_assert!(unsafe_requested, "the refusal outcome implies unsafe was requested");
+            prop_assert!(!dispatched, "the refusal never dispatched to the device");
+        }
+        // And the refusal happens iff exec requested unsafe without the opt-in.
+        prop_assert_eq!(
+            outcome_unsafe_absent,
+            unsafe_requested && !allow_unsafe,
+            "RefuseLocally iff unsafe requested and not opted in"
+        );
     }
 
     /// Response parsing never panics on arbitrary JSON-ish input and the
