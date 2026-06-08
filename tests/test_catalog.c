@@ -29,6 +29,9 @@
 /* Resolved catalog path, found once in main. */
 static char g_catalogPath[MAX_PATH];
 
+/* Listing buffer: comfortably larger than the ~22KB default catalog. */
+#define LISTING_BUF 65536
+
 /*
  * fileExists - True if a regular file is present at path.
  */
@@ -316,6 +319,161 @@ TEST_CASE(builtin_route_data_available) {
     CatalogFree(cat);
 }
 
+/*
+ * Obligation (catalog.allium rule-success.CatalogListed,
+ * rule-entity-creation.CatalogListed.1; tests/OBLIGATIONS-5.5.md
+ * list_commands_reports_loaded): serialising the loaded catalog produces the
+ * per-entry wire shape { name, description, builtin, destructive, flags } with
+ * each string field JSON-escaped. dir is a known shell-builtin with flags.
+ */
+TEST_CASE(list_commands_reports_loaded) {
+    Catalog *cat;
+    char err[128];
+    static char out[LISTING_BUF];
+    int len;
+
+    CatalogLoad(g_catalogPath, &cat, err, sizeof(err));
+    TEST_ASSERT(cat != NULL, "catalog loads");
+
+    len = CatalogSerializeJson(cat, out, (int)sizeof(out));
+    TEST_ASSERT(len > 0, "serialise succeeds");
+    TEST_ASSERT(out[0] == '[', "listing is a JSON array");
+    TEST_ASSERT(out[len - 1] == ']', "array closed");
+
+    /* dir entry present with the per-entry wire keys. */
+    TEST_ASSERT(strstr(out, "\"name\":\"dir\"") != NULL, "dir name present");
+    TEST_ASSERT(strstr(out, "\"description\":\"\"") != NULL,
+                "description wire key present (empty: not retained)");
+    TEST_ASSERT(strstr(out, "\"builtin\":true") != NULL,
+                "dir reported builtin:true");
+    TEST_ASSERT(strstr(out, "\"destructive\":false") != NULL,
+                "destructive wire key present (constant false)");
+    TEST_ASSERT(strstr(out, "\"flags\":[") != NULL, "flags array present");
+    /* dir declares /A (takes a value) and /B (does not). */
+    TEST_ASSERT(strstr(out, "\"flag\":\"/A\",\"takes_value\":true") != NULL,
+                "arg flag /A reports takes_value:true");
+    TEST_ASSERT(strstr(out, "\"flag\":\"/B\",\"takes_value\":false") != NULL,
+                "bare flag /B reports takes_value:false");
+    CatalogFree(cat);
+}
+
+/*
+ * Obligation (catalog.allium invariant.ListingReflectsLoadedCatalog;
+ * tests/OBLIGATIONS-5.5.md listing_reflects_loaded_catalog): the serialised
+ * entry set is the WHOLE loaded set - one serialised entry object per loaded
+ * CatalogEntry, nothing added or hidden. Driven across the default catalog and
+ * a small two-entry catalog.
+ */
+TEST_CASE(listing_reflects_loaded_catalog) {
+    Catalog *cat;
+    char err[128];
+    static char out[LISTING_BUF];
+    char tmpDir[MAX_PATH];
+    char path[MAX_PATH];
+    HANDLE hFile;
+    DWORD written;
+    int len;
+    int objs;
+    const char *p;
+    const char *small =
+        "{ \"version\": 1, \"commands\": {"
+        " \"foo\": { \"kind\": \"external\", \"options\": [] },"
+        " \"bar\": { \"kind\": \"shell-builtin\", \"options\":"
+        " [ {\"flag\": \"/X\"} ] } } }";
+
+    /* Count entry objects by the unique per-entry "name": key. */
+
+    /* Default catalog: object count == entry_count. */
+    CatalogLoad(g_catalogPath, &cat, err, sizeof(err));
+    TEST_ASSERT(cat != NULL, "default catalog loads");
+    len = CatalogSerializeJson(cat, out, (int)sizeof(out));
+    TEST_ASSERT(len > 0, "default serialise succeeds");
+    objs = 0;
+    for (p = out; (p = strstr(p, "\"name\":\"")) != NULL; p++) {
+        objs++;
+    }
+    TEST_ASSERT_INT_EQUAL(CatalogCount(cat), objs,
+                          "default: one serialised entry per loaded entry");
+    CatalogFree(cat);
+
+    /* A small two-entry catalog: same fidelity. */
+    GetTempPathA(sizeof(tmpDir), tmpDir);
+    lstrcpynA(path, tmpDir, sizeof(path));
+    lstrcatA(path, "mcp_small_catalog.json");
+    hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL, NULL);
+    TEST_ASSERT(hFile != INVALID_HANDLE_VALUE, "temp file created");
+    WriteFile(hFile, small, (DWORD)lstrlenA(small), &written, NULL);
+    CloseHandle(hFile);
+
+    CatalogLoad(path, &cat, err, sizeof(err));
+    DeleteFileA(path);
+    TEST_ASSERT(cat != NULL, "small catalog loads");
+    TEST_ASSERT_INT_EQUAL(2, CatalogCount(cat), "small catalog has 2 entries");
+    len = CatalogSerializeJson(cat, out, (int)sizeof(out));
+    TEST_ASSERT(len > 0, "small serialise succeeds");
+    objs = 0;
+    for (p = out; (p = strstr(p, "\"name\":\"")) != NULL; p++) {
+        objs++;
+    }
+    TEST_ASSERT_INT_EQUAL(2, objs, "small: two serialised entries");
+    TEST_ASSERT(strstr(out, "\"name\":\"foo\"") != NULL, "foo listed");
+    TEST_ASSERT(strstr(out, "\"name\":\"bar\"") != NULL, "bar listed");
+    CatalogFree(cat);
+}
+
+/*
+ * Obligation (catalog.allium gate-bypass non-interference SAFETY PIN;
+ * tests/OBLIGATIONS-5.5.md list_commands_never_invokes_gate): serialising an
+ * ENFORCED catalog is a pure read - it never mutates the catalog and never
+ * invokes the exec gate. Assert the catalog state (entry_count) and every
+ * entry's gate-relevant validation behaviour are unchanged across the call.
+ */
+TEST_CASE(list_commands_never_invokes_gate) {
+    Catalog *cat;
+    char err[128];
+    static char out[LISTING_BUF];
+    const CatalogEntry *e;
+    const char *good[2];
+    const char *bad[2];
+    int countBefore;
+    int okBefore;
+    int rejBefore;
+    int okAfter;
+    int rejAfter;
+
+    CatalogLoad(g_catalogPath, &cat, err, sizeof(err));
+    TEST_ASSERT(cat != NULL, "catalog loads");
+
+    /* Snapshot the gate's behaviour BEFORE the listing (an allowed flag and a
+     * rejected flag against the dir entry). */
+    e = CatalogLookup(cat, "dir");
+    TEST_ASSERT(e != NULL, "dir present");
+    good[0] = "dir"; good[1] = "/B";
+    bad[0] = "dir";  bad[1] = "/UNKNOWN";
+    countBefore = CatalogCount(cat);
+    okBefore  = CatalogValidateArgs(e, good, 2, err, sizeof(err));
+    rejBefore = CatalogValidateArgs(e, bad, 2, err, sizeof(err));
+
+    /* The read-only listing. */
+    TEST_ASSERT(CatalogSerializeJson(cat, out, (int)sizeof(out)) > 0,
+                "serialise succeeds");
+
+    /* AFTER: entry_count unchanged and the gate still validates identically -
+     * the listing neither mutated the catalog nor armed/disarmed the gate. */
+    TEST_ASSERT_INT_EQUAL(countBefore, CatalogCount(cat),
+                          "entry_count unchanged by listing");
+    e = CatalogLookup(cat, "dir");
+    TEST_ASSERT(e != NULL, "dir still present after listing");
+    okAfter  = CatalogValidateArgs(e, good, 2, err, sizeof(err));
+    rejAfter = CatalogValidateArgs(e, bad, 2, err, sizeof(err));
+    TEST_ASSERT_INT_EQUAL(okBefore, okAfter, "allowed flag still allowed");
+    TEST_ASSERT_INT_EQUAL(rejBefore, rejAfter, "rejected flag still rejected");
+    TEST_ASSERT_INT_EQUAL(1, okAfter, "dir /B allowed (gate intact)");
+    TEST_ASSERT_INT_EQUAL(0, rejAfter, "dir /UNKNOWN rejected (gate intact)");
+    CatalogFree(cat);
+}
+
 int main(void)
 {
     if (!findCatalog(g_catalogPath, sizeof(g_catalogPath))) {
@@ -335,6 +493,9 @@ int main(void)
     RUN_TEST(validate_cl_tc_ok);
     RUN_TEST(validate_glued_equals_split);
     RUN_TEST(builtin_route_data_available);
+    RUN_TEST(list_commands_reports_loaded);
+    RUN_TEST(listing_reflects_loaded_catalog);
+    RUN_TEST(list_commands_never_invokes_gate);
 
     print_test_summary();
     return g_tests_failed;

@@ -37,6 +37,7 @@ fn caps(mem: MemTier, allow_memory_write: bool) -> Capabilities {
         toolchains: vec![],
         toolchain_registration: false,
         allow_memory_write,
+        allow_unsafe_exec: false,
     }
 }
 

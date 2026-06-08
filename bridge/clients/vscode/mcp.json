@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "win32s": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/bridge/target/release/mcp-w32s-bridge",
+      "args": ["--tcp", "127.0.0.1:31800"]
+    }
+  }
+}

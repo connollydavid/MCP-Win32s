@@ -22,8 +22,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::sync::Mutex;
 
+use crate::audit::{AuditLog, Outcome};
+use crate::breaker::Breaker;
 use crate::capabilities::{tools_to_prune, Capabilities};
 use crate::device::Device;
+use crate::ratelimit::RateLimiter;
 use crate::toolchain::argv;
 use crate::toolchain::definition::{
     self, ArgItem, DefinitionSource, DiagnosticSpec, Registry, RoleSpec, ToolRole,
@@ -128,6 +131,85 @@ pub struct TokenParams {
     pub token: String,
 }
 
+/// Parameters for `win32_exec`: run a catalogued command capturing output.
+/// `argv[0]` must be on the device catalog (the device re-gates it) unless
+/// `unsafe` is set and the operator armed `--allow-unsafe-exec`. Every optional
+/// field maps by name onto the device `exec` wire command.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ExecParams {
+    /// The command to run, as an argv array. `argv[0]` is the (catalogued)
+    /// command; the rest are its arguments.
+    pub argv: Vec<String>,
+    /// Working directory for the child, or omit to inherit the device's.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Wall-clock timeout in milliseconds; the child is killed if it overruns.
+    #[serde(default)]
+    pub timeout_ms: Option<i64>,
+    /// Standard input for the child, base64-encoded.
+    #[serde(default)]
+    pub stdin_b64: Option<String>,
+    /// Maximum captured output bytes per stream (the device truncates beyond).
+    #[serde(default)]
+    pub max_output: Option<i64>,
+    /// Run the command line through the shell (`cmd /c`) rather than spawning
+    /// the program directly. The device neutralises the user tail either way.
+    #[serde(default)]
+    pub shell: Option<bool>,
+    /// Address-space cap for the child in bytes (a job-object memory limit on
+    /// capable hosts).
+    #[serde(default)]
+    pub mem_cap_bytes: Option<i64>,
+    /// CPU-time cap for the child in milliseconds (a job-object CPU limit on
+    /// capable hosts).
+    #[serde(default)]
+    pub cpu_time_ms: Option<i64>,
+    /// Bypass the device command catalog allow-list (THE UNSAFE BYPASS). Off by
+    /// default; relayed to the device only when the operator armed the bridge
+    /// with `--allow-unsafe-exec`, otherwise the call is refused locally
+    /// (UnsafeExecRequiresOperatorOptIn). The wire field is literally `unsafe`;
+    /// the Rust field is renamed because `unsafe` is a keyword.
+    #[serde(rename = "unsafe", default)]
+    pub unsafe_bypass: Option<bool>,
+}
+
+/// Parameters for `win32_pty_exec`: like exec, run under a pseudo-console, with
+/// terminal dimensions instead of the resource caps. Maps by name onto the
+/// device `ptyExec` wire command.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PtyExecParams {
+    /// The command to run, as an argv array.
+    pub argv: Vec<String>,
+    /// Working directory for the child, or omit to inherit the device's.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Wall-clock timeout in milliseconds.
+    #[serde(default)]
+    pub timeout_ms: Option<i64>,
+    /// Standard input for the child, base64-encoded.
+    #[serde(default)]
+    pub stdin_b64: Option<String>,
+    /// Maximum captured output bytes (the device truncates beyond).
+    #[serde(default)]
+    pub max_output: Option<i64>,
+    /// Run the command line through the shell rather than spawning directly.
+    #[serde(default)]
+    pub shell: Option<bool>,
+    /// Pseudo-console width in columns.
+    #[serde(default)]
+    pub cols: Option<i64>,
+    /// Pseudo-console height in rows.
+    #[serde(default)]
+    pub rows: Option<i64>,
+}
+
+/// Parameters for `win32_list_commands`: none — it reports the device catalog.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ListCommandsParams {}
+
 struct Inner {
     caps: Capabilities,
     device: Mutex<Box<dyn Device>>,
@@ -137,6 +219,13 @@ struct Inner {
     /// registration mutates it (the new tools materialise on the next session,
     /// per the registry-as-source-of-truth model).
     registry: Mutex<Registry>,
+    /// Runtime resilience (5.5): the device-facing circuit-breaker and the
+    /// per-tool token-bucket rate limiter every relayed call passes through
+    /// (rate-limit -> breaker -> relay), plus the append-only power-tool audit
+    /// log (PowerToolsAreAudited).
+    breaker: Mutex<Breaker>,
+    limiter: Mutex<RateLimiter>,
+    audit: AuditLog,
 }
 
 /// The bridge MCP server. Clone-cheap (shares one `Inner`); rmcp requires
@@ -149,10 +238,32 @@ pub struct Bridge {
 
 impl Bridge {
     /// Build the server from the resolved device capabilities and the
-    /// live device client. Capability gating: the full router is built,
-    /// then tools whose required capability the device lacks are pruned,
-    /// so `tools/list` reflects the device.
+    /// live device client, with the default resilience config (a production
+    /// circuit-breaker + rate limiter, audit to stderr). Capability gating: the
+    /// full router is built, then tools whose required capability the device
+    /// lacks are pruned, so `tools/list` reflects the device.
     pub fn new(caps: Capabilities, device: Box<dyn Device>) -> Self {
+        Self::with_config(
+            caps,
+            device,
+            AuditLog::stderr(),
+            Breaker::production(),
+            RateLimiter::production(),
+        )
+    }
+
+    /// Build the server with explicit resilience config: the power-tool audit
+    /// sink, the device circuit-breaker, and the per-tool rate limiter. `main`
+    /// uses this to wire the `--audit-log` sink; tests use it to inject a
+    /// tripped breaker / a tiny rate cap so the local-refusal paths fire
+    /// deterministically.
+    pub fn with_config(
+        caps: Capabilities,
+        device: Box<dyn Device>,
+        audit: AuditLog,
+        breaker: Breaker,
+        limiter: RateLimiter,
+    ) -> Self {
         let mut router = Self::tool_router();
         for name in tools_to_prune(&caps) {
             router.remove_route(name);
@@ -180,6 +291,9 @@ impl Bridge {
                 device: Mutex::new(device),
                 counter: AtomicU64::new(1),
                 registry: Mutex::new(registry),
+                breaker: Mutex::new(breaker),
+                limiter: Mutex::new(limiter),
+                audit,
             }),
             tool_router: router,
         }
@@ -190,11 +304,40 @@ impl Bridge {
         format!("b{n}")
     }
 
-    /// Round-trip a command to the device and map the reply: ok -> a
-    /// success result carrying `fields` as structuredContent; a device
-    /// `status:"error"` -> an isError tool result; a transport failure ->
-    /// an isError tool result (recoverable from the model's view).
-    async fn round_trip(&self, cmd: Command) -> CallToolResult {
+    /// Round-trip a command to the device through the resilience path and map
+    /// the reply. `tool_name` is the MCP tool the call came from (the rate-limit
+    /// bucket key and the audit subject); `is_power` is whether this is a
+    /// destructive/power tool (audited on every outcome — PowerToolsAreAudited).
+    ///
+    /// The order is rate-limit -> circuit-breaker -> relay (BridgeResilience):
+    /// an exhausted rate cap sheds locally ("rate limited", ToolCallRateLimited)
+    /// and a tripped breaker short-circuits locally ("device circuit open",
+    /// ToolCallCircuitOpen) — both BEFORE the device is touched. Otherwise the
+    /// call relays: ok -> structuredContent; a device `status:"error"` or a
+    /// transport failure -> a recoverable isError (the breaker counts the
+    /// failure). The audit record carries the relayed wire args, redacted.
+    async fn dispatch(&self, tool_name: &str, cmd: Command, is_power: bool) -> CallToolResult {
+        // (1) Rate-limit. An exhausted bucket sheds the call locally.
+        if !self.inner.limiter.lock().await.try_acquire(tool_name) {
+            if is_power {
+                self.inner
+                    .audit
+                    .record(tool_name, &cmd.args, Outcome::RateLimited);
+            }
+            return CallToolResult::error(vec![Content::text("rate limited")]);
+        }
+
+        // (2) Circuit-breaker. A tripped breaker short-circuits locally.
+        if !self.inner.breaker.lock().await.admit() {
+            if is_power {
+                self.inner
+                    .audit
+                    .record(tool_name, &cmd.args, Outcome::DeviceCircuitOpen);
+            }
+            return CallToolResult::error(vec![Content::text("device circuit open")]);
+        }
+
+        // (3) Relay to the device.
         let result = {
             let mut dev = self.inner.device.lock().await;
             dev.call(&cmd).await
@@ -202,17 +345,51 @@ impl Bridge {
         match result {
             // ok -> structuredContent (rmcp's `structured` also mirrors the
             // JSON into a text content block for clients that only read text).
-            Ok(resp) if resp.is_ok() => CallToolResult::structured(json!(resp.fields)),
-            // A device status:"error" is a recoverable tool error (isError).
+            Ok(resp) if resp.is_ok() => {
+                self.inner.breaker.lock().await.record_success();
+                if is_power {
+                    self.inner
+                        .audit
+                        .record(tool_name, &cmd.args, Outcome::Relayed);
+                }
+                CallToolResult::structured(json!(resp.fields))
+            }
+            // A device status:"error" is a recoverable tool error (isError),
+            // and a device-side fault that counts toward the breaker.
             Ok(resp) => {
+                self.inner.breaker.lock().await.record_failure();
+                if is_power {
+                    self.inner
+                        .audit
+                        .record(tool_name, &cmd.args, Outcome::DeviceError);
+                }
                 let reason = resp.error.unwrap_or_else(|| "device error".to_string());
                 CallToolResult::error(vec![Content::text(reason)])
             }
             // A transport failure is also recoverable from the model's view.
             Err(e) => {
+                self.inner.breaker.lock().await.record_failure();
+                if is_power {
+                    self.inner
+                        .audit
+                        .record(tool_name, &cmd.args, Outcome::DeviceError);
+                }
                 CallToolResult::error(vec![Content::text(format!("device unreachable: {e}"))])
             }
         }
+    }
+
+    /// A non-power relay (read-only/non-destructive tool): the resilience path
+    /// without an audit record (PowerToolsAreAudited audits only power tools;
+    /// read-only tools like win32_list_commands produce no audit record).
+    async fn round_trip(&self, tool_name: &str, cmd: Command) -> CallToolResult {
+        self.dispatch(tool_name, cmd, false).await
+    }
+
+    /// A power/destructive relay: the resilience path WITH an audit record on
+    /// every outcome path (PowerToolsAreAudited).
+    async fn round_trip_power(&self, tool_name: &str, cmd: Command) -> CallToolResult {
+        self.dispatch(tool_name, cmd, true).await
     }
 
     /// Run a generated build tool: typed params -> injection-safe argv
@@ -221,8 +398,14 @@ impl Bridge {
     /// compiler exit is NOT a tool error — it rides the structuredContent of a
     /// successful call (compile-error-≠-tool-error). The device failing to RUN
     /// the toolchain (a `status:"error"` reply) is the only isError case.
+    // The build descriptors (role/command/template/dialect/diagnostic) are a
+    // flat per-call list bound in build_route; the 5.5 audit added tool_name,
+    // tipping one past clippy's 7-arg heuristic. Bundling them into a struct
+    // would be a single-use wrapper, so the list is kept flat.
+    #[allow(clippy::too_many_arguments)]
     async fn run_build(
         &self,
+        tool_name: &str,
         role: ToolRole,
         command: String,
         template: Vec<ArgItem>,
@@ -249,10 +432,28 @@ impl Bridge {
 
         // argv[0] is the role's catalogued command; the device re-gates it
         // (CatalogLookup + CatalogValidateArgs) — the BuildArgvIsCatalogued
-        // backstop. This is the bridge's first `exec` user.
+        // backstop. A build tool is a POWER tool (it writes/overwrites .obj/
+        // .exe/.lib), so its relay runs through the resilience path
+        // (rate-limit -> breaker) and is audited on every outcome.
         let cmd = Command::new("exec", self.next_id())
             .with("argv", json!(argv))
             .with("timeout_ms", json!(BUILD_TIMEOUT_MS));
+
+        // (1) Rate-limit.
+        if !self.inner.limiter.lock().await.try_acquire(tool_name) {
+            self.inner
+                .audit
+                .record(tool_name, &cmd.args, Outcome::RateLimited);
+            return CallToolResult::error(vec![Content::text("rate limited")]);
+        }
+        // (2) Circuit-breaker.
+        if !self.inner.breaker.lock().await.admit() {
+            self.inner
+                .audit
+                .record(tool_name, &cmd.args, Outcome::DeviceCircuitOpen);
+            return CallToolResult::error(vec![Content::text("device circuit open")]);
+        }
+        // (3) Relay.
         let result = {
             let mut dev = self.inner.device.lock().await;
             dev.call(&cmd).await
@@ -260,19 +461,33 @@ impl Bridge {
         let resp = match result {
             Ok(r) => r,
             Err(e) => {
+                self.inner.breaker.lock().await.record_failure();
+                self.inner
+                    .audit
+                    .record(tool_name, &cmd.args, Outcome::DeviceError);
                 return CallToolResult::error(vec![Content::text(format!(
                     "device unreachable: {e}"
-                ))])
+                ))]);
             }
         };
         if !resp.is_ok() {
             // The toolchain failed to *run* (catalog reject, spawn failure,
             // timeout) — the recoverable isError case.
+            self.inner.breaker.lock().await.record_failure();
+            self.inner
+                .audit
+                .record(tool_name, &cmd.args, Outcome::DeviceError);
             let reason = resp
                 .error
                 .unwrap_or_else(|| "the build command could not be run".to_string());
             return CallToolResult::error(vec![Content::text(reason)]);
         }
+        // The toolchain RAN (regardless of compile pass/fail): a relayed
+        // success from the breaker's view, audited as relayed.
+        self.inner.breaker.lock().await.record_success();
+        self.inner
+            .audit
+            .record(tool_name, &cmd.args, Outcome::Relayed);
 
         let exit_code = resp
             .fields
@@ -401,7 +616,7 @@ impl Bridge {
         Parameters(p): Parameters<EchoParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("echo", self.next_id()).with("line", Value::String(p.text));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip("win32_echo", cmd).await)
     }
 
     /// Read a file from the Win32 host. 1:1 relay to the device `read`
@@ -416,7 +631,7 @@ impl Bridge {
         Parameters(p): Parameters<PathParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("read", self.next_id()).with("path", Value::String(p.path));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip("win32_read_file", cmd).await)
     }
 
     /// Write a file on the Win32 host. 1:1 relay to the device `write`
@@ -433,7 +648,7 @@ impl Bridge {
         let cmd = Command::new("write", self.next_id())
             .with("path", Value::String(p.path))
             .with("data", Value::String(p.data));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip_power("win32_write_file", cmd).await)
     }
 
     /// List a directory on the Win32 host. 1:1 relay to the device `list`
@@ -448,7 +663,7 @@ impl Bridge {
         Parameters(p): Parameters<PathParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("list", self.next_id()).with("path", Value::String(p.path));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip("win32_list_dir", cmd).await)
     }
 
     /// Delete a file on the Win32 host. 1:1 relay to the device `delete`
@@ -463,7 +678,7 @@ impl Bridge {
         Parameters(p): Parameters<PathParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("delete", self.next_id()).with("path", Value::String(p.path));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip_power("win32_delete_file", cmd).await)
     }
 
     /// Copy a file on the Win32 host. 1:1 relay to the device `copy`
@@ -480,7 +695,7 @@ impl Bridge {
         let cmd = Command::new("copy", self.next_id())
             .with("path", Value::String(p.source))
             .with("dest", Value::String(p.dest));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip("win32_copy_file", cmd).await)
     }
 
     /// Move/rename a file on the Win32 host. 1:1 relay to the device
@@ -497,7 +712,7 @@ impl Bridge {
         let cmd = Command::new("move", self.next_id())
             .with("path", Value::String(p.source))
             .with("dest", Value::String(p.dest));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip_power("win32_move_file", cmd).await)
     }
 
     /// Create a directory on the Win32 host. 1:1 relay to the device
@@ -511,7 +726,7 @@ impl Bridge {
         Parameters(p): Parameters<PathParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("mkdir", self.next_id()).with("path", Value::String(p.path));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip("win32_make_dir", cmd).await)
     }
 
     /// Remove an empty directory on the Win32 host. 1:1 relay to the
@@ -526,7 +741,7 @@ impl Bridge {
         Parameters(p): Parameters<PathParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("rmdir", self.next_id()).with("path", Value::String(p.path));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip_power("win32_remove_dir", cmd).await)
     }
 
     // ----- memory tools (5.3) -------------------------------------------
@@ -554,7 +769,7 @@ impl Bridge {
         if let Some(cwd) = p.cwd {
             cmd = cmd.with("cwd", Value::String(cwd));
         }
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip_power("win32_spawn_retain", cmd).await)
     }
 
     /// Read memory from a retained process (or the shared address space on
@@ -575,7 +790,7 @@ impl Bridge {
         if let Some(token) = p.token {
             cmd = cmd.with("mem_token", Value::String(token));
         }
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip("win32_peek", cmd).await)
     }
 
     /// Write memory to a retained process (or the shared address space on
@@ -597,7 +812,7 @@ impl Bridge {
         if let Some(token) = p.token {
             cmd = cmd.with("mem_token", Value::String(token));
         }
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip_power("win32_poke", cmd).await)
     }
 
     /// Terminate a retained process and free its slot. 1:1 relay to the device
@@ -613,7 +828,7 @@ impl Bridge {
     ) -> Result<CallToolResult, ErrorData> {
         let cmd =
             Command::new("terminate", self.next_id()).with("mem_token", Value::String(p.token));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip_power("win32_terminate", cmd).await)
     }
 
     /// Release a retained process handle WITHOUT killing the child (it keeps
@@ -628,7 +843,135 @@ impl Bridge {
         Parameters(p): Parameters<TokenParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let cmd = Command::new("release", self.next_id()).with("mem_token", Value::String(p.token));
-        Ok(self.round_trip(cmd).await)
+        Ok(self.round_trip("win32_release", cmd).await)
+    }
+
+    // ----- exec discovery tools (5.5) -----------------------------------
+    // The three exec tools are 1:1 relays to the device's exec/ptyExec/
+    // listCommands wire commands (ExecToolsRegistered, ExecToolsAreDirectRelays).
+    // win32_exec/win32_pty_exec are destructive and power-audited; win32_exec
+    // carries the per-call unsafe-bypass gate (UnsafeExecRequiresOperatorOptIn);
+    // win32_pty_exec is capability-gated on "pty" via GATED_TOOLS
+    // (PtyToolGatedOnCapability). win32_list_commands is read-only and always
+    // advertised (no required capability), like win32_list_toolchains.
+
+    /// Run a catalogued command on the Win32 host, capturing stdout/stderr.
+    /// 1:1 relay to the device `exec` command. THE UNSAFE-EXEC SAFETY GATE
+    /// (UnsafeExecRequiresOperatorOptIn): `unsafe:true` requests the device
+    /// catalog bypass; the bridge relays it ONLY when the operator passed
+    /// `--allow-unsafe-exec`, otherwise it refuses the call locally and the
+    /// device receives nothing.
+    #[tool(
+        name = "win32_exec",
+        description = "Run a catalogued command on the Win32 host, capturing stdout/stderr. `argv[0]` must be on the device command catalog. `unsafe:true` bypasses the catalog allow-list and is refused unless the operator armed the bridge with --allow-unsafe-exec.",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_exec(
+        &self,
+        Parameters(p): Parameters<ExecParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let unsafe_requested = p.unsafe_bypass == Some(true);
+        // THE SAFETY PIN (ExecUnsafeRejected / UnsafeExecRequiresOperatorOptIn):
+        // the per-call decision is the pure `unsafe_gate` (so the property test
+        // exercises the exact branch the handler takes). RefuseLocally → an
+        // unsafe-bypass exec without the operator opt-in is refused LOCALLY: a
+        // recoverable isError, the device is NEVER touched, and the power audit
+        // records the refusal (outcome unsafe_opt_in_absent).
+        if unsafe_gate(unsafe_requested, self.inner.caps.allow_unsafe_exec)
+            == ExecGate::RefuseLocally
+        {
+            self.inner.audit.record(
+                "win32_exec",
+                &exec_audit_args(&p),
+                Outcome::UnsafeOptInAbsent,
+            );
+            return Ok(CallToolResult::error(vec![Content::text(
+                "unsafe exec not permitted: operator opt-in required",
+            )]));
+        }
+
+        let mut cmd = Command::new("exec", self.next_id()).with("argv", json!(p.argv));
+        if let Some(cwd) = p.cwd {
+            cmd = cmd.with("cwd", Value::String(cwd));
+        }
+        if let Some(timeout_ms) = p.timeout_ms {
+            cmd = cmd.with("timeout_ms", json!(timeout_ms));
+        }
+        if let Some(stdin_b64) = p.stdin_b64 {
+            cmd = cmd.with("stdin_b64", Value::String(stdin_b64));
+        }
+        if let Some(max_output) = p.max_output {
+            cmd = cmd.with("max_output", json!(max_output));
+        }
+        if let Some(shell) = p.shell {
+            cmd = cmd.with("shell", Value::Bool(shell));
+        }
+        if let Some(mem_cap_bytes) = p.mem_cap_bytes {
+            cmd = cmd.with("mem_cap_bytes", json!(mem_cap_bytes));
+        }
+        if let Some(cpu_time_ms) = p.cpu_time_ms {
+            cmd = cmd.with("cpu_time_ms", json!(cpu_time_ms));
+        }
+        // Relay `unsafe:true` ONLY when the bypass was requested (and, by the
+        // gate above, the operator opted in). A plain exec carries no `unsafe`.
+        if unsafe_requested {
+            cmd = cmd.with("unsafe", Value::Bool(true));
+        }
+        Ok(self.round_trip_power("win32_exec", cmd).await)
+    }
+
+    /// Run a catalogued command under a pseudo-console (ConPTY, Win10 1809+),
+    /// capturing the combined terminal stream. 1:1 relay to the device
+    /// `ptyExec` command. Capability-gated on "pty": advertised only on a
+    /// ConPTY-capable device (PtyToolGatedOnCapability).
+    #[tool(
+        name = "win32_pty_exec",
+        description = "Run a catalogued command under a pseudo-console (ConPTY) on the Win32 host, capturing the combined terminal stream. Available only on a ConPTY-capable device (Windows 10 1809+).",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn win32_pty_exec(
+        &self,
+        Parameters(p): Parameters<PtyExecParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut cmd = Command::new("ptyExec", self.next_id()).with("argv", json!(p.argv));
+        if let Some(cwd) = p.cwd {
+            cmd = cmd.with("cwd", Value::String(cwd));
+        }
+        if let Some(timeout_ms) = p.timeout_ms {
+            cmd = cmd.with("timeout_ms", json!(timeout_ms));
+        }
+        if let Some(stdin_b64) = p.stdin_b64 {
+            cmd = cmd.with("stdin_b64", Value::String(stdin_b64));
+        }
+        if let Some(max_output) = p.max_output {
+            cmd = cmd.with("max_output", json!(max_output));
+        }
+        if let Some(shell) = p.shell {
+            cmd = cmd.with("shell", Value::Bool(shell));
+        }
+        if let Some(cols) = p.cols {
+            cmd = cmd.with("cols", json!(cols));
+        }
+        if let Some(rows) = p.rows {
+            cmd = cmd.with("rows", json!(rows));
+        }
+        Ok(self.round_trip_power("win32_pty_exec", cmd).await)
+    }
+
+    /// List the commands on the device's catalog allow-list. 1:1 relay to the
+    /// device `listCommands` command. Read-only and always advertised (no
+    /// required capability), like win32_list_toolchains.
+    #[tool(
+        name = "win32_list_commands",
+        description = "List the commands on the device's catalog allow-list (the programs win32_exec/win32_pty_exec may run). Read-only — it reports the catalog and changes nothing.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn win32_list_commands(
+        &self,
+        Parameters(_p): Parameters<ListCommandsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd = Command::new("listCommands", self.next_id());
+        Ok(self.round_trip("win32_list_commands", cmd).await)
     }
 }
 
@@ -649,6 +992,48 @@ impl ServerHandler for Bridge {
 // ------------------------------------------------------------------
 // The build subsystem seam: dynamic tool generation from definitions
 // ------------------------------------------------------------------
+
+/// The per-call decision for `win32_exec`'s unsafe-bypass gate
+/// (UnsafeExecRequiresOperatorOptIn): whether to relay to the device or refuse
+/// locally. `Relay` covers both a plain exec and an opted-in unsafe exec;
+/// `RefuseLocally` is the safety pin's refusal (an unsafe request without the
+/// operator opt-in — the device receives nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecGate {
+    Relay,
+    RefuseLocally,
+}
+
+/// THE SAFETY PIN, as a pure function (so the property test and the handler
+/// share one branch): an exec relays UNLESS it requested the unsafe catalog
+/// bypass and the operator did not opt in. `unsafe_requested ∧ ¬opt_in ⟹
+/// RefuseLocally`; otherwise `Relay`. Mirrors the spec's
+/// `not unsafe_requested or caps.allow_unsafe_exec` dispatch precondition
+/// (ToolCallDispatched) and its negation (ExecUnsafeRejected).
+pub fn unsafe_gate(unsafe_requested: bool, allow_unsafe_exec: bool) -> ExecGate {
+    if unsafe_requested && !allow_unsafe_exec {
+        ExecGate::RefuseLocally
+    } else {
+        ExecGate::Relay
+    }
+}
+
+/// The argument summary for an exec call's audit record on the local-refusal
+/// path (`unsafe_opt_in_absent`), where the wire `Command` is never built. The
+/// device never receives these — they are only what the operator authorised the
+/// model to ATTEMPT — so the audit captures the argv and the unsafe request.
+fn exec_audit_args(p: &ExecParams) -> Map<String, Value> {
+    let mut args = Map::new();
+    args.insert("argv".to_string(), json!(p.argv));
+    if let Some(cwd) = &p.cwd {
+        args.insert("cwd".to_string(), Value::String(cwd.clone()));
+    }
+    args.insert(
+        "unsafe".to_string(),
+        Value::Bool(p.unsafe_bypass == Some(true)),
+    );
+    args
+}
 
 /// The generated tool name for a (definition, role): `win32_<name>_<role>`
 /// (e.g. `win32_msvc_compile`, `win32_watcom_link`). The spec's
@@ -742,7 +1127,7 @@ fn build_route(def_name: &str, role: ToolRole, rs: &RoleSpec) -> ToolRoute<Bridg
          data; a nonzero compiler exit is a build failure (success:false), not a tool error.",
         role = role.as_str(),
     );
-    let tool = Tool::new(name, description, object(argv::role_schema(role)))
+    let tool = Tool::new(name.clone(), description, object(argv::role_schema(role)))
         .annotate(ToolAnnotations::new().read_only(false).destructive(true));
 
     let command = rs.command.clone();
@@ -751,13 +1136,16 @@ fn build_route(def_name: &str, role: ToolRole, rs: &RoleSpec) -> ToolRoute<Bridg
     ToolRoute::new_dyn(tool, move |ctx: ToolCallContext<'_, Bridge>| {
         let bridge = ctx.service.clone();
         let args = ctx.arguments.clone().unwrap_or_default();
+        let tool_name = name.clone();
         let command = command.clone();
         let template = template.clone();
         let dialect = dialect.clone();
         let diagnostic = diagnostic.clone();
         Box::pin(async move {
             Ok(bridge
-                .run_build(role, command, template, dialect, diagnostic, args)
+                .run_build(
+                    &tool_name, role, command, template, dialect, diagnostic, args,
+                )
                 .await)
         })
     })

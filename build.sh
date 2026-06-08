@@ -27,7 +27,7 @@ if [ "$1" = "host-pbt" ]; then
     gcc $HFLAGS tests/host/theft_base64.c  src/base64.c      build/host/theft/*.o -lm -o build/host/theft_base64
     gcc $HFLAGS tests/host/theft_json.c    src/json_parser.c build/host/theft/*.o -lm -o build/host/theft_json
     gcc $HFLAGS tests/host/theft_argv.c    src/argv.c        build/host/theft/*.o -lm -o build/host/theft_argv
-    gcc $HFLAGS tests/host/theft_catalog.c src/catalog.c     build/host/theft/*.o -lm -o build/host/theft_catalog
+    gcc $HFLAGS tests/host/theft_catalog.c src/catalog.c src/json_parser.c build/host/theft/*.o -lm -o build/host/theft_catalog
     # mem_ops: only the two pure arithmetic guards compile natively
     # (MEM_OPS_HOST_PURE excludes the Win32 surface) - the off-by-overflow pin.
     gcc $HFLAGS -DMEM_OPS_HOST_PURE tests/host/theft_mem.c src/mem_ops.c build/host/theft/*.o -lm -o build/host/theft_mem

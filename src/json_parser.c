@@ -71,8 +71,10 @@ static int json_unescape(const char *src, int src_len, char *dst, int dst_size)
  */
 static int json_escape(const char *src, char *dst, int dst_size)
 {
+    static const char hexd[] = "0123456789abcdef";
     int out;
     const char *p;
+    unsigned char c;
 
     out = 0;
     for (p = src; *p != '\0'; p++) {
@@ -113,8 +115,23 @@ static int json_escape(const char *src, char *dst, int dst_size)
             dst[out++] = 'f';
             break;
         default:
-            if (out + 1 > dst_size - 1) return -1;
-            dst[out++] = *p;
+            /* RFC 8259 7: U+0000-001F MUST be \u-escaped (the named short
+               escapes above already cover \n \t \r \b \f). Any other control
+               byte would otherwise pass through verbatim and produce invalid
+               JSON / invalid wire UTF-8 (NeverEmitInvalidUtf8). */
+            c = (unsigned char)*p;
+            if (c < 0x20) {
+                if (out + 6 > dst_size - 1) return -1;
+                dst[out++] = '\\';
+                dst[out++] = 'u';
+                dst[out++] = '0';
+                dst[out++] = '0';
+                dst[out++] = hexd[(c >> 4) & 0x0F];
+                dst[out++] = hexd[c & 0x0F];
+            } else {
+                if (out + 1 > dst_size - 1) return -1;
+                dst[out++] = (char)c;
+            }
             break;
         }
     }
