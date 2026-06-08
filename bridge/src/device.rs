@@ -95,19 +95,31 @@ where
 /// Argument forms: `--tcp HOST:PORT` | `--serial PATH[:BAUD]`.
 pub async fn connect(
     args: impl Iterator<Item = String>,
-) -> Result<(Capabilities, Box<dyn Device>)> {
-    // `--allow-toolchain-registration` and `--allow-memory-write` are operator
-    // opt-ins (RegistrationRequiresOptIn / MemoryWriteToolRequiresOptIn); they
-    // may appear anywhere in the argument list. The transport flag + target are
+) -> Result<(Capabilities, Box<dyn Device>, Option<String>)> {
+    // `--allow-toolchain-registration`, `--allow-memory-write` and
+    // `--allow-unsafe-exec` are operator opt-ins (RegistrationRequiresOptIn /
+    // MemoryWriteToolRequiresOptIn / UnsafeExecRequiresOperatorOptIn); they may
+    // appear anywhere in the argument list. `--audit-log <file>` selects the
+    // power-tool audit sink (default stderr). The transport flag + target are
     // the remaining positional arguments.
     let mut positional = Vec::new();
     let mut allow_registration = false;
     let mut allow_memory_write = false;
-    for arg in args {
+    let mut allow_unsafe_exec = false;
+    let mut audit_log: Option<String> = None;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
         if arg == "--allow-toolchain-registration" {
             allow_registration = true;
         } else if arg == "--allow-memory-write" {
             allow_memory_write = true;
+        } else if arg == "--allow-unsafe-exec" {
+            allow_unsafe_exec = true;
+        } else if arg == "--audit-log" {
+            audit_log = args
+                .next()
+                .map(Some)
+                .ok_or_else(|| anyhow!("--audit-log requires a file path argument"))?;
         } else {
             positional.push(arg);
         }
@@ -115,7 +127,7 @@ pub async fn connect(
     let mut positional = positional.into_iter();
     let kind = positional.next().unwrap_or_else(|| "--tcp".to_string());
     let target = positional.next().ok_or_else(|| {
-        anyhow!("usage: mcp-w32s-bridge (--tcp HOST:PORT | --serial PATH[:BAUD]) [--allow-toolchain-registration] [--allow-memory-write]")
+        anyhow!("usage: mcp-w32s-bridge (--tcp HOST:PORT | --serial PATH[:BAUD]) [--allow-toolchain-registration] [--allow-memory-write] [--allow-unsafe-exec] [--audit-log FILE]")
     })?;
 
     match kind.as_str() {
@@ -131,8 +143,9 @@ pub async fn connect(
                 &ready.features,
                 allow_registration,
                 allow_memory_write,
+                allow_unsafe_exec,
             );
-            Ok((caps, Box::new(dev)))
+            Ok((caps, Box::new(dev), audit_log))
         }
         "--serial" => {
             let (path, baud) = match target.rsplit_once(':') {
@@ -151,8 +164,9 @@ pub async fn connect(
                 &ready.features,
                 allow_registration,
                 allow_memory_write,
+                allow_unsafe_exec,
             );
-            Ok((caps, Box::new(dev)))
+            Ok((caps, Box::new(dev), audit_log))
         }
         other => bail!("unknown transport flag {other} (expected --tcp or --serial)"),
     }

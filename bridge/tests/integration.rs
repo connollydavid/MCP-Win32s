@@ -19,6 +19,7 @@ fn caps(pty: bool) -> Capabilities {
         toolchains: vec![],
         toolchain_registration: false,
         allow_memory_write: false,
+        allow_unsafe_exec: false,
     }
 }
 

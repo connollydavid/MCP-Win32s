@@ -187,6 +187,40 @@ static void send_busy_error(const char *id, Transport *t)
 }
 
 /*
+ * HandleListCommands - The read-only discovery verb (spec: mcp-protocol.allium
+ * ListCommandsCommand / ListCommandsResult, catalog.allium CatalogListed). It
+ * serialises the session catalog and emits {"id":..,"status":"ok",
+ * "commands":[...]}. It spawns nothing, mutates nothing, and never invokes the
+ * exec gate (there is no argv to validate) - ListingReflectsLoadedCatalog.
+ */
+static void HandleListCommands(const JsonCommand *cmd, Transport *t)
+{
+    static char listing[MCP_MAX_RESPONSE];
+    static char response[MCP_MAX_RESPONSE];
+    int pos;
+
+    if (CatalogSerializeJson(g_catalog, listing, (int)sizeof(listing)) < 0) {
+        send_exec_error(cmd->id, "listing too large", t);
+        return;
+    }
+
+    /* The listing is already a JSON array, so it rides as a raw value (not a
+     * BuildJsonResponse-escaped string) - mirror the exec envelope assembly. */
+    pos = 0;
+    if (!resp_append(response, sizeof(response), &pos, "{\"id\":\"") ||
+        !resp_append(response, sizeof(response), &pos, cmd->id) ||
+        !resp_append(response, sizeof(response), &pos,
+                     "\",\"status\":\"ok\",\"commands\":") ||
+        !resp_append(response, sizeof(response), &pos, listing) ||
+        !resp_append(response, sizeof(response), &pos, "}\n")) {
+        return;
+    }
+    if (t != NULL) {
+        TransportWriteAll(t, response, pos);
+    }
+}
+
+/*
  * HandleExec - The exec / ptyExec dispatcher: busy domain, catalog
  * gate, admission sentinels, spawn, response (specs: process-ops,
  * catalog, mcp-protocol).
@@ -929,6 +963,9 @@ void ProcessCommand(const char *line, Transport *t)
         return;
     } else if (strcmp(cmd.cmd, "ptyExec") == 0) {
         HandleExec(&cmd, t, 1);
+        return;
+    } else if (strcmp(cmd.cmd, "listCommands") == 0) {
+        HandleListCommands(&cmd, t);
         return;
     } else if (strcmp(cmd.cmd, "spawnRetain") == 0 ||
                strcmp(cmd.cmd, "peek") == 0 ||

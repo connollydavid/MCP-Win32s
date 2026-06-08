@@ -35,6 +35,10 @@ entity Catalog {
     loaded: Boolean
     enforced: Boolean
     entry_count: Integer
+
+    -- The loaded whitelist entries, navigable for the listCommands report
+    -- (CatalogListed) and the gate lookups.
+    entries: CatalogEntry with catalog = this
 }
 
 entity CatalogEntry {
@@ -42,6 +46,23 @@ entity CatalogEntry {
     name: String
     kind: EntryKind
     supports_win32s: Boolean
+}
+
+-- A read-only snapshot of the loaded catalog returned by the listCommands
+-- discovery verb (5.5). It REPORTS the catalog the device loaded at startup -
+-- it never mutates the catalog and never spawns anything, so it bypasses the
+-- exec gate entirely (no CatalogValidateArgs/args_allowed path - there is no
+-- argv to validate). On the wire each listed entry flattens to
+-- { name, description, builtin, destructive, flags } - the per-entry fields the
+-- host serialises from its catalog table (description/builtin/destructive/flags
+-- are wire-shape fields the host emits per entry, like the exec envelope's
+-- flattened keys in mcp-protocol.allium; they are not modelled as CatalogEntry
+-- state here). entry_count mirrors the catalog's own count: the listing is the
+-- whole loaded set, nothing added or hidden (ListingReflectsLoadedCatalog).
+entity CatalogListing {
+    catalog: Catalog
+    request_id: String
+    entry_count: Integer
 }
 
 ------------------------------------------------------------
@@ -77,6 +98,42 @@ rule CatalogLoadRecorded {
 rule WhitelistDisabledByOperator {
     when: WhitelistDisabled(c)
     ensures: c.enforced = false
+}
+
+-- Discovery: the listCommands verb (dispatched in mcp-protocol via
+-- ListCommandsRequested) returns the device's actually-loaded catalog. It is a
+-- pure report over the `given` catalog - it reads the loaded entries and
+-- nothing else: it never spawns, never mutates the catalog, and never touches
+-- the exec gate (no argv, so no CatalogValidateArgs/args_allowed). The snapshot
+-- reflects exactly the loaded set (ListingReflectsLoadedCatalog), regardless of
+-- whether enforcement is on - the catalog is consulted for routing even when
+-- /UNSAFE disabled the whitelist.
+--
+-- SECURITY INVARIANT (ListingIsValidJson, enforced by the serialiser; weed
+-- 2026-06-07): catalog_listing_json escapes EVERY string field it flattens to
+-- the wire - the per-entry name, description and each flag string - so the
+-- emitted listing is always well-formed JSON and valid wire UTF-8. The string
+-- fields are derived from the loaded catalog (operator-supplied data, never the
+-- device's own constants), so they must be treated as untrusted: every C0
+-- control byte is \u-escaped and every JSON metacharacter (" \) is backslash-
+-- escaped before it reaches the wire. catalog_listing_json is the black box
+-- that performs this; this pin is what makes its escaping auditable (a
+-- construct-by-construct weed cannot see inside the black box). An earlier
+-- build emitted control bytes raw, producing a listing a strict JSON client
+-- rejects; the serialiser now \u-escapes all C0 bytes. This is the listing
+-- counterpart of the wire-contract's NeverEmitInvalidUtf8 floor: nothing the
+-- device puts on the UTF-8 wire is malformed.
+rule CatalogListed {
+    when: ListCommandsRequested(request_id)
+    ensures: CatalogListing.created(
+        catalog: catalog,
+        request_id: request_id,
+        entry_count: catalog.entry_count
+    )
+    ensures: CatalogListingReady(
+        request_id: request_id,
+        listing: catalog_listing_json(catalog)
+    )
 }
 
 -- Gating: every exec/ptyExec passes through here (mcp-protocol emits
@@ -211,6 +268,16 @@ invariant LoadedCatalogHasEntries {
 invariant EntriesBelongToTheCatalog {
     for e in CatalogEntries:
         e.name.size > 0
+}
+
+-- The listCommands report reflects exactly the loaded catalog: its entry_count
+-- equals the catalog's own count - the listing reports the whole loaded set,
+-- adding nothing and hiding nothing. (It also never mutates the catalog and
+-- never bypasses the gate: CatalogListed has no argv path and creates only the
+-- read-only CatalogListing - the gate rules are untouched.)
+invariant ListingReflectsLoadedCatalog {
+    for l in CatalogListings:
+        l.entry_count = l.catalog.entry_count
 }
 
 ------------------------------------------------------------

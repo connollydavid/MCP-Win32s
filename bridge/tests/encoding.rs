@@ -16,7 +16,7 @@ fn caps_with_encoding(tag: Option<&str>, mem: Option<&str>) -> Capabilities {
         f.extra
             .insert("mem".into(), serde_json::Value::String(m.into()));
     }
-    Capabilities::from_ready(437, "t".into(), &f, false, false)
+    Capabilities::from_ready(437, "t".into(), &f, false, false, false)
 }
 
 /// encoding_tag_informational (OBLIGATIONS-5.4.md, bridge): the tag is parsed

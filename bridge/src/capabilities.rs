@@ -58,6 +58,14 @@ pub struct Capabilities {
     /// `PokeRequiresBothArmingLayers`; the device `/ALLOWMEMWRITE` arm is the
     /// independent device half. Off by default (`MemoryWriteToolRequiresOptIn`).
     pub allow_memory_write: bool,
+    /// Operator opt-in for UNSAFE exec (the `win32_exec` catalog bypass). A
+    /// BRIDGE-operator flag (`--allow-unsafe-exec`), not a device wire field and
+    /// NOT a tool-advertisement gate (`win32_exec` is always advertised). It
+    /// gates the per-call `unsafe` flag: an exec carrying `unsafe:true` is
+    /// relayed only when this is set, else refused recoverably
+    /// (`UnsafeExecRequiresOperatorOptIn`). Off by default. Modelled exactly
+    /// like `allow_memory_write`.
+    pub allow_unsafe_exec: bool,
 }
 
 impl Capabilities {
@@ -72,6 +80,7 @@ impl Capabilities {
         f: &Features,
         allow_registration: bool,
         allow_memory_write: bool,
+        allow_unsafe_exec: bool,
     ) -> Self {
         let mem = match f.extra.get("mem").and_then(|v| v.as_str()) {
             Some("process") => MemTier::Process,
@@ -101,6 +110,7 @@ impl Capabilities {
             toolchains,
             toolchain_registration: allow_registration,
             allow_memory_write,
+            allow_unsafe_exec,
         }
     }
 
@@ -142,6 +152,10 @@ pub const GATED_TOOLS: &[(&str, &str)] = &[
     ("win32_poke", "mem_write"),
     ("win32_terminate", "mem"),
     ("win32_release", "mem"),
+    // 5.5: the pty exec tool advertises only on a ConPTY-capable device
+    // (PtyToolGatedOnCapability); win32_exec/win32_list_commands name no
+    // capability and are always advertised.
+    ("win32_pty_exec", "pty"),
 ];
 
 /// The tool names that should be pruned from the router because the
