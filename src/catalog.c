@@ -792,7 +792,11 @@ static int serialAppend(char *out, int outSize, int *pos, const char *src)
 static int serialAppendEscaped(char *out, int outSize, int *pos,
                                const char *src)
 {
-    char esc[CATALOG_SHELL_LEN * 2 + 2];
+    /* Worst case: a CATALOG_NAME_LEN field of all-C0 bytes, each escaped to
+       \u00XX (6x); flag fields (CATALOG_FLAG_LEN) are shorter, so name bounds
+       it. (The old CATALOG_SHELL_LEN*2 sizing predated the C0 \u-escape and
+       was both the wrong field and under-provisioned.) */
+    char esc[CATALOG_NAME_LEN * 6 + 2];
 
     if (JsonEscape(src != NULL ? src : "", esc, (int)sizeof(esc)) < 0) {
         return 0;

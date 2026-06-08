@@ -236,14 +236,11 @@ jobs:
     # connection to the device at the given host:port. Inspector exits non-zero
     # if the MCP call fails or the output does not match its expectations.
     #
-    # TODO(main-session): confirm the --unsafe-exec opt-in flag name once the
-    # 5.5 bridge implementation lands (the capabilities.rs / device.rs that parse
-    # it do not exist yet on this branch). The conformance job tests only safe
-    # calls (win32_list_commands is read-only; win32_exec without unsafe: true).
-    # The flag is omitted here; add --allow-unsafe-exec if the bridge requires
-    # it for the exec tools to appear in tools/list (currently unclear from the
-    # pre-implementation spec — OBLIGATIONS-5.5.md says the exec tools are always
-    # advertised on a ready device, so no opt-in flag should be needed for list).
+    # The conformance job exercises only safe calls: win32_list_commands is
+    # read-only, and win32_exec is never called with unsafe:true. The exec
+    # tools are always advertised on a ready device, so no --allow-unsafe-exec
+    # is needed here — the unsafe catalog bypass is gated per-call (refused
+    # locally without the operator opt-in), not at tool advertisement.
     - name: Conformance (Inspector CLI — tools/list + tools/call)
       run: |
         BRIDGE=bridge/target/release/mcp-w32s-bridge
