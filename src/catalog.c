@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "catalog.h"
+#include "json_parser.h"
 
 #define CATALOG_MAX_ENTRIES 64
 #define CATALOG_MAX_OPTIONS 16
@@ -761,4 +762,115 @@ int CatalogEntrySupportsWin32s(const CatalogEntry *e)
 int CatalogCount(const Catalog *cat)
 {
     return cat != NULL ? cat->entry_count : 0;
+}
+
+/*
+ * serialAppend - Bounds-checked append of a literal/string to out at *pos.
+ * Returns 1 on success, 0 if it would overflow (out unchanged at *pos).
+ */
+static int serialAppend(char *out, int outSize, int *pos, const char *src)
+{
+    int len;
+    int i;
+
+    len = lstrlenA(src);
+    if (*pos + len >= outSize) {
+        return 0;
+    }
+    for (i = 0; i < len; i++) {
+        out[*pos + i] = src[i];
+    }
+    *pos += len;
+    out[*pos] = '\0';
+    return 1;
+}
+
+/*
+ * serialAppendEscaped - JSON-escape src (via the shared JsonEscape helper)
+ * and append the result to out at *pos. Returns 1 on success, 0 on overflow.
+ */
+static int serialAppendEscaped(char *out, int outSize, int *pos,
+                               const char *src)
+{
+    char esc[CATALOG_SHELL_LEN * 2 + 2];
+
+    if (JsonEscape(src != NULL ? src : "", esc, (int)sizeof(esc)) < 0) {
+        return 0;
+    }
+    return serialAppend(out, outSize, pos, esc);
+}
+
+int CatalogSerializeJson(const Catalog *cat, char *out, int outSize)
+{
+    int pos;
+    int i;
+
+    if (out == NULL || outSize < 1) {
+        return -1;
+    }
+    out[0] = '\0';
+    pos = 0;
+
+    if (!serialAppend(out, outSize, &pos, "[")) {
+        out[0] = '\0';
+        return -1;
+    }
+    if (cat != NULL) {
+        for (i = 0; i < cat->entry_count; i++) {
+            const CatalogEntry *e = &cat->entries[i];
+            int j;
+
+            if (i > 0) {
+                if (!serialAppend(out, outSize, &pos, ",")) {
+                    out[0] = '\0';
+                    return -1;
+                }
+            }
+            /* name (escaped); description is wire-shape only - not retained
+             * in CatalogEntry, so it serialises empty; builtin from is_builtin;
+             * destructive has no struct field, so it is constant false. */
+            if (!serialAppend(out, outSize, &pos, "{\"name\":\"") ||
+                !serialAppendEscaped(out, outSize, &pos, e->name) ||
+                !serialAppend(out, outSize, &pos, "\",\"description\":\"\",") ||
+                !serialAppend(out, outSize, &pos, "\"builtin\":") ||
+                !serialAppend(out, outSize, &pos,
+                              e->is_builtin ? "true" : "false") ||
+                !serialAppend(out, outSize, &pos,
+                              ",\"destructive\":false,\"flags\":[")) {
+                out[0] = '\0';
+                return -1;
+            }
+            for (j = 0; j < e->option_count; j++) {
+                const CatalogOption *opt = &e->options[j];
+
+                if (j > 0) {
+                    if (!serialAppend(out, outSize, &pos, ",")) {
+                        out[0] = '\0';
+                        return -1;
+                    }
+                }
+                /* flag (escaped); takes_value from has_arg; the per-flag
+                 * description is wire-shape only - not retained, so empty. */
+                if (!serialAppend(out, outSize, &pos, "{\"flag\":\"") ||
+                    !serialAppendEscaped(out, outSize, &pos, opt->flag) ||
+                    !serialAppend(out, outSize, &pos, "\",\"takes_value\":") ||
+                    !serialAppend(out, outSize, &pos,
+                                  opt->has_arg ? "true" : "false") ||
+                    !serialAppend(out, outSize, &pos,
+                                  ",\"description\":\"\"}")) {
+                    out[0] = '\0';
+                    return -1;
+                }
+            }
+            if (!serialAppend(out, outSize, &pos, "]}")) {
+                out[0] = '\0';
+                return -1;
+            }
+        }
+    }
+    if (!serialAppend(out, outSize, &pos, "]")) {
+        out[0] = '\0';
+        return -1;
+    }
+    return pos;
 }

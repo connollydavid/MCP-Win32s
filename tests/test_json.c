@@ -311,6 +311,25 @@ TEST_CASE(parse_mem_string_fields) {
     TEST_ASSERT_INT_EQUAL(0, cmd.timeout_ms, "no int field collateral");
 }
 
+/*
+ * Obligation (mcp-protocol.allium entity-fields.Command parse of
+ * cmd:"listCommands", rule-success.ListCommandsCommand;
+ * tests/OBLIGATIONS-5.5.md parse_list_commands_command): the discovery request
+ * {"cmd":"listCommands","id":..} parses to the listCommands verb with the id
+ * captured and no argv path (mirrors parse_list_command / parse_exec_command).
+ */
+TEST_CASE(parse_list_commands_command) {
+    JsonCommand cmd;
+    int result;
+    result = ParseJsonCommand("{\"cmd\":\"listCommands\",\"id\":\"lc7\"}", &cmd);
+    TEST_ASSERT_INT_EQUAL(1, result, "parse should succeed");
+    TEST_ASSERT_STR_EQUAL("listCommands", cmd.cmd, "cmd field");
+    TEST_ASSERT_STR_EQUAL("lc7", cmd.id, "id field");
+    TEST_ASSERT_INT_EQUAL(0, cmd.argv_count, "no argv (read-only discovery)");
+    TEST_ASSERT_STR_EQUAL("", cmd.line, "no line");
+    TEST_ASSERT_STR_EQUAL("", cmd.path, "no path");
+}
+
 TEST_CASE(build_ok_response) {
     char buf[512];
     int len;
@@ -319,6 +338,24 @@ TEST_CASE(build_ok_response) {
     TEST_ASSERT_STR_EQUAL(
         "{\"id\":\"1\",\"status\":\"ok\",\"output\":\"hello\"}\n",
         buf, "ok response format");
+}
+
+/*
+ * Obligation (mcp-protocol.allium rule-success.ListCommandsResult,
+ * rule-entity-creation.ListCommandsResult.1; tests/OBLIGATIONS-5.5.md
+ * build_list_commands_response): the listing rides back as a successful
+ * Response correlated to the request id under the "commands" key
+ * ({"id":..,"status":"ok","commands":...}). The shape is what the device's
+ * HandleListCommands assembles; here we pin the envelope primitive.
+ */
+TEST_CASE(build_list_commands_response) {
+    char buf[512];
+    int len;
+    len = BuildJsonResponse("lc1", "ok", "commands", "[]", buf, sizeof(buf));
+    TEST_ASSERT(len > 0, "should return positive length");
+    TEST_ASSERT_STR_EQUAL(
+        "{\"id\":\"lc1\",\"status\":\"ok\",\"commands\":\"[]\"}\n",
+        buf, "ok response carries the commands key correlated to the id");
 }
 
 TEST_CASE(build_error_response) {
@@ -596,9 +633,11 @@ int main(void)
     RUN_TEST(parse_exec_unknown_array_scalars_ignored);
     RUN_TEST(parse_exec_malformed_values);
     RUN_TEST(parse_mem_string_fields);
+    RUN_TEST(parse_list_commands_command);
 
     printf("\nResponse Building:\n");
     RUN_TEST(build_ok_response);
+    RUN_TEST(build_list_commands_response);
     RUN_TEST(build_error_response);
     RUN_TEST(build_response_escapes_quotes);
     RUN_TEST(build_response_escapes_backslash);

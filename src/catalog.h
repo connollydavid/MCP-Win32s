@@ -61,4 +61,17 @@ int         CatalogEntrySupportsWin32s(const CatalogEntry *e);
  */
 int         CatalogCount(const Catalog *cat);
 
+/*
+ * CatalogSerializeJson - Serialise the loaded catalog to a JSON array for
+ * the listCommands discovery verb (catalog.allium CatalogListed). Each entry
+ * flattens to the per-entry wire shape:
+ *   {"name":..,"description":..,"builtin":bool,"destructive":bool,
+ *    "flags":[{"flag":..,"takes_value":bool,"description":..}, ...]}
+ * Every string field is JSON-escaped. This is a pure read over the loaded
+ * entries: it never mutates the catalog and never invokes the exec gate.
+ * Returns the length written (excluding the terminator), or <0 on overflow
+ * (out left empty). A NULL catalog serialises to "[]".
+ */
+int         CatalogSerializeJson(const Catalog *cat, char *out, int outSize);
+
 #endif /* CATALOG_H */

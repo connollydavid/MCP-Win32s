@@ -1247,6 +1247,66 @@ TEST_CASE(mem_wire_roundtrip) {
 }
 
 /* ========================================================
+ * 5.5 listCommands discovery verb (full JSON -> ProcessCommand
+ * -> ok envelope). Obligations (tests/OBLIGATIONS-5.5.md):
+ * rule-success.ListCommandsCommand (dispatch_list_commands),
+ * rule-success.ListCommandsResult / CatalogListed
+ * (list_commands_round_trip), and the existing unknown-command path
+ * for a still-unknown verb.
+ * ======================================================== */
+
+TEST_CASE(dispatch_list_commands) {
+    /* The additive verb reaches its handler via the main loop: formerly
+     * "unknown command", now dispatched to an ok listing. */
+    MockTransport m;
+    Catalog *cat;
+    cat = load_test_catalog();
+    TEST_ASSERT(cat != NULL, "test catalog loads");
+    ExecConfigure(cat, 0);
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"listCommands\",\"id\":\"d1\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"id\":\"d1\"") != NULL, "id echoed");
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL,
+                "listCommands dispatched (not unknown command)");
+    TEST_ASSERT(strstr(m.out, "unknown command") == NULL,
+                "no longer an unknown verb");
+    ExecConfigure(NULL, 0);
+    CatalogFree(cat);
+}
+
+TEST_CASE(list_commands_round_trip) {
+    /* CatalogListingReady -> ok {"status":"ok","commands":[...]} carrying the
+     * serialised loaded catalog; a still-unknown verb stays "unknown command". */
+    MockTransport m;
+    Catalog *cat;
+    cat = load_test_catalog();
+    TEST_ASSERT(cat != NULL, "test catalog loads");
+    ExecConfigure(cat, 0);
+
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"listCommands\",\"id\":\"rt1\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"ok\"") != NULL, "ok status");
+    TEST_ASSERT(strstr(m.out, "\"commands\":[") != NULL,
+                "commands key carries a JSON array");
+    /* The loaded catalog (dir is a known builtin) rides back in the listing. */
+    TEST_ASSERT(strstr(m.out, "\"name\":\"dir\"") != NULL,
+                "loaded entry present in the listing");
+    TEST_ASSERT(strstr(m.out, "\"builtin\":true") != NULL,
+                "builtin wire field present");
+
+    /* A still-unknown verb is still rejected (the whitelist only grew). */
+    MockTransportInit(&m, NULL, 0);
+    ProcessCommand("{\"cmd\":\"bogus\",\"id\":\"rt2\"}", &m.t);
+    TEST_ASSERT(strstr(m.out, "\"status\":\"error\"") != NULL,
+                "bogus is an error");
+    TEST_ASSERT(strstr(m.out, "unknown command") != NULL,
+                "bogus is still unknown command");
+
+    ExecConfigure(NULL, 0);
+    CatalogFree(cat);
+}
+
+/* ========================================================
  * Main - Run all tests
  * ======================================================== */
 
@@ -1331,6 +1391,10 @@ int main(void)
     RUN_TEST(mem_peek_bad_token_errors);
     RUN_TEST(mem_process_tier_requires_token);
     RUN_TEST(mem_wire_roundtrip);
+
+    printf("\nlistCommands discovery:\n");
+    RUN_TEST(dispatch_list_commands);
+    RUN_TEST(list_commands_round_trip);
 
     print_test_summary();
     return g_tests_failed;

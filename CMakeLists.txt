@@ -138,7 +138,8 @@ add_dependencies(test_argv argv_echo)
 add_executable(test_binfmt tests/test_binfmt.c src/binfmt.c src/feat.c)
 target_link_libraries(test_binfmt PRIVATE kernel32)
 
-add_executable(test_catalog tests/test_catalog.c src/catalog.c)
+# catalog.c serialises the listCommands listing via json_parser.c's JsonEscape.
+add_executable(test_catalog tests/test_catalog.c src/catalog.c src/json_parser.c)
 target_link_libraries(test_catalog PRIVATE kernel32)
 
 # exec_ops.c widens the cmdline for the -W spawn (encoding.c), so the
@@ -154,7 +155,7 @@ target_link_libraries(test_pty_exec PRIVATE kernel32)
 # --- 5.2 build-toolchain test targets --------------------------------------
 add_executable(test_toolchain_probe
   tests/test_toolchain_probe.c src/toolchain_probe.c
-  src/exec_ops.c src/catalog.c src/feat.c src/binfmt.c
+  src/exec_ops.c src/catalog.c src/json_parser.c src/feat.c src/binfmt.c
   src/encoding.c src/charset_tables.c src/charset_tables_data.c)
 target_link_libraries(test_toolchain_probe PRIVATE kernel32)
 
@@ -164,7 +165,7 @@ target_link_libraries(test_toolchain_probe PRIVATE kernel32)
 # helper child next to it. audit.c is linked because MemPoke audits.
 add_executable(test_mem_ops
   tests/test_mem_ops.c src/mem_ops.c src/audit.c
-  src/feat.c src/catalog.c src/argv.c)
+  src/feat.c src/catalog.c src/json_parser.c src/argv.c)
 target_compile_definitions(test_mem_ops PRIVATE TEST_BUILD)
 target_link_libraries(test_mem_ops PRIVATE kernel32 user32)
 
