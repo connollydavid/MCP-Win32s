@@ -408,6 +408,19 @@ TEST_CASE(build_response_escapes_tabs) {
         buf, "tabs should be escaped");
 }
 
+TEST_CASE(build_response_escapes_control_chars) {
+    char buf[512];
+    int len;
+    /* C0 control bytes other than the named \n\t\r\b\f must be \u-escaped per
+       RFC 8259 7; otherwise the wire JSON is malformed (NeverEmitInvalidUtf8).
+       (e.g. 0x01 and 0x1F, which would otherwise pass through raw). */
+    len = BuildJsonResponse("7", "ok", "output", "a\001b\037c", buf, sizeof(buf));
+    TEST_ASSERT(len > 0, "should return positive length");
+    TEST_ASSERT_STR_EQUAL(
+        "{\"id\":\"7\",\"status\":\"ok\",\"output\":\"a\\u0001b\\u001fc\"}\n",
+        buf, "C0 control bytes should be \\u-escaped");
+}
+
 TEST_CASE(build_response_buffer_limit) {
     char buf[16]; /* Intentionally small */
     int len;
@@ -643,6 +656,7 @@ int main(void)
     RUN_TEST(build_response_escapes_backslash);
     RUN_TEST(build_response_escapes_newlines);
     RUN_TEST(build_response_escapes_tabs);
+    RUN_TEST(build_response_escapes_control_chars);
     RUN_TEST(build_response_buffer_limit);
     RUN_TEST(build_response_empty_value);
     RUN_TEST(build_response_null_value);
