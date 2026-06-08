@@ -313,5 +313,25 @@ jobs:
         fi
         echo "OK: win32_list_commands returned a non-error structured result"
 
+        # --- check 3: OpenAI Agents SDK offline MCP check (no LLM, no API key)
+        # MCPServerStdio spawns the bridge, which connects to the same Wine
+        # device; list_tools + call_tool over the MCP plumbing. A venv avoids
+        # the PEP 668 externally-managed-environment restriction on the runner.
+        echo "=== OpenAI Agents SDK (offline, no key) ==="
+        python3 -m venv /tmp/openai-venv
+        /tmp/openai-venv/bin/pip install --quiet openai-agents || {
+          echo "ERROR: pip install openai-agents failed"
+          kill $DEVICE_PID 2>/dev/null || true
+          exit 1
+        }
+        /tmp/openai-venv/bin/python ../../bridge/clients/openai_agents_check.py \
+          127.0.0.1:${DEVICE_PORT} || RC=$?
+        if [ $RC -ne 0 ]; then
+          echo "ERROR: OpenAI Agents SDK offline check failed"
+          kill $DEVICE_PID 2>/dev/null || true
+          exit $RC
+        fi
+        echo "OK: OpenAI Agents SDK offline check passed"
+
         kill $DEVICE_PID 2>/dev/null || true
         exit $RC
