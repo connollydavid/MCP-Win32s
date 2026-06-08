@@ -108,6 +108,21 @@ rule WhitelistDisabledByOperator {
 -- reflects exactly the loaded set (ListingReflectsLoadedCatalog), regardless of
 -- whether enforcement is on - the catalog is consulted for routing even when
 -- /UNSAFE disabled the whitelist.
+--
+-- SECURITY INVARIANT (ListingIsValidJson, enforced by the serialiser; weed
+-- 2026-06-07): catalog_listing_json escapes EVERY string field it flattens to
+-- the wire - the per-entry name, description and each flag string - so the
+-- emitted listing is always well-formed JSON and valid wire UTF-8. The string
+-- fields are derived from the loaded catalog (operator-supplied data, never the
+-- device's own constants), so they must be treated as untrusted: every C0
+-- control byte is \u-escaped and every JSON metacharacter (" \) is backslash-
+-- escaped before it reaches the wire. catalog_listing_json is the black box
+-- that performs this; this pin is what makes its escaping auditable (a
+-- construct-by-construct weed cannot see inside the black box). An earlier
+-- build emitted control bytes raw, producing a listing a strict JSON client
+-- rejects; the serialiser now \u-escapes all C0 bytes. This is the listing
+-- counterpart of the wire-contract's NeverEmitInvalidUtf8 floor: nothing the
+-- device puts on the UTF-8 wire is malformed.
 rule CatalogListed {
     when: ListCommandsRequested(request_id)
     ensures: CatalogListing.created(

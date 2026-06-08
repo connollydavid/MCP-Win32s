@@ -51,15 +51,18 @@ enum EncodingProvenance { utf8_manifest | utf8_via_w | utf8_from_cp | unknown }
 -- and never reaches the device.
 enum FailureKind { recoverable | protocol }
 
--- The recoverable outcomes the bridge can surface for a tool call WITHOUT
--- relaying it to the device, each an isError tool result the model can act
--- on. relayed is the normal path (the device was reached and replied);
--- device_circuit_open is the tripped device circuit-breaker ("device
--- circuit open"); rate_limited is the per-tool rate cap ("rate limited");
--- unsafe_opt_in_absent is the unsafe-exec safety gate
--- (UnsafeExecRequiresOperatorOptIn). The three non-relayed kinds are local
+-- The recoverable outcomes the bridge can surface for a tool call, each an
+-- isError tool result the model can act on. This is the exact partition the
+-- audit log emits. relayed is the normal path (the device was reached and
+-- replied ok); device_error is also a relayed call - the device was reached
+-- but replied with status:"error", or the transport failed - audited as
+-- device_error; device_circuit_open is the tripped device circuit-breaker
+-- ("device circuit open"); rate_limited is the per-tool rate cap ("rate
+-- limited"); unsafe_opt_in_absent is the unsafe-exec safety gate
+-- (UnsafeExecRequiresOperatorOptIn). The three non-relayed kinds
+-- (device_circuit_open, rate_limited, unsafe_opt_in_absent) are local
 -- recoverable refusals: the call never touches the device.
-enum RecoverableOutcome { relayed | device_circuit_open | rate_limited | unsafe_opt_in_absent }
+enum RecoverableOutcome { relayed | device_error | device_circuit_open | rate_limited | unsafe_opt_in_absent }
 
 -- Normalized diagnostic severity. Each toolchain definition's regex maps the
 -- toolchain's own keyword (MSVC "error"/"warning"/"fatal error"; Open Watcom
@@ -183,10 +186,11 @@ entity ToolCall {
     -- Whether THIS call carried unsafe=true (an exec invocation requesting the
     -- catalog bypass). false for every non-exec tool and for a plain exec.
     unsafe_requested: Boolean
-    -- Which recoverable path this call took. `relayed` is the normal device
-    -- round-trip; the three non-relayed kinds (device_circuit_open,
-    -- rate_limited, unsafe_opt_in_absent) are LOCAL recoverable refusals that
-    -- create the call already in `error` and never dispatch to the device.
+    -- Which recoverable path this call took. `relayed` (device reached, replied
+    -- ok) and `device_error` (device reached, replied with an error / transport
+    -- failed) are both dispatched device round-trips. The three LOCAL refusals
+    -- (device_circuit_open, rate_limited, unsafe_opt_in_absent) create the call
+    -- already in `error` and never dispatch to the device.
     outcome: RecoverableOutcome
 
     transitions status {
@@ -475,6 +479,7 @@ rule ToolCallRecoverableError {
     requires: call.status = dispatched
     ensures: call.status = error
     ensures: call.failure_kind = recoverable
+    ensures: call.outcome = device_error
     ensures: ToolResult.created(
         call: call,
         is_error: true,
