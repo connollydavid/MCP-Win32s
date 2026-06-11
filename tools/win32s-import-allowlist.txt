@@ -1,0 +1,90 @@
+# win32s-import-allowlist.txt - the exhaustive set of functions mcp-w32s.exe
+# may statically import, every one verified present in the Win32s 1.25a thunk
+# export surface.
+#
+# WHY THIS EXISTS. A Win32 console binary fails to load on real Win32s 1.25a if
+# it statically imports a function the Win32s thunk (w32scomb.dll and peers)
+# does not export - the loader reports "the procedure entry point X could not be
+# located in w32scomb.dll" and the process never starts. CI cannot catch this by
+# running the PE, because CI runs under Wine, which provides the full modern
+# Win32 API. The DLL-level check (imports must be exactly kernel32 + user32) is
+# necessary but NOT sufficient: GetFileSizeEx lives IN kernel32.dll yet is absent
+# from the Win32s 1.25a thunk, so it passed the DLL check and still broke the
+# load on real hardware (Finding #2). Only a FUNCTION-level allowlist closes that
+# gap. This is the function-level twin of the kernel32+user32 DLL allowlist:
+# default-deny, opt-in, exhaustive, locked against regression.
+#
+# HOW IT IS ENFORCED. The "Verify mcp-w32s.exe imports are all Win32s 1.25a-safe"
+# CI step extracts the binary's actual imported function names and requires them
+# to equal this list exactly. A NEW import (even a valid one) fails CI until it
+# is added here - deliberately, so that adding any import forces a per-symbol
+# Win32s-compatibility check at PR time, the check that GetFileSizeEx skipped.
+#
+# HOW TO ADD AN ENTRY. Verify the function is exported by the Win32s 1.25a thunk
+# DLLs before adding it. Extract W32SCOMB.DLL / W32SKRNL.DLL / W32SYS.DLL from
+# WINDOWS/SYSTEM in the pinned baseline image (host repo, gitignored:
+# vendor/win311/build/baseline/win32s-125a-baseline.img, sha256
+# edcd749716861157cc0c6aae12046c30fd04d6c5692e2ae0c7a8141d23016179) and dump
+# their exports with objdump -p. If the function is absent, it cannot be a static
+# import - resolve it at runtime via GetProcAddress (as the uplift/-W APIs are),
+# or use a supported equivalent (GetFileSizeEx -> GetFileSize).
+#
+# Lines beginning with '#' and blank lines are ignored. Names are sorted.
+CharNextA
+CloseHandle
+CopyFileA
+CreateDirectoryA
+CreateFileA
+CreatePipe
+CreateProcessA
+CreateThread
+DeleteCriticalSection
+DeleteFileA
+EnterCriticalSection
+ExitProcess
+FindClose
+FindFirstFileA
+FindNextFileA
+FlushFileBuffers
+GetACP
+GetCommandLineA
+GetCurrentProcess
+GetExitCodeProcess
+GetFileSize
+GetLastError
+GetModuleFileNameA
+GetModuleHandleA
+GetOEMCP
+GetProcAddress
+GetProcessHeap
+GetTickCount
+GetVersion
+HeapAlloc
+HeapFree
+InitializeCriticalSection
+LeaveCriticalSection
+LoadLibraryA
+MessageBoxA
+MoveFileA
+PeekNamedPipe
+ReadFile
+RemoveDirectoryA
+ResumeThread
+SearchPathA
+SetCommState
+SetCommTimeouts
+SetErrorMode
+SetFilePointer
+SetHandleInformation
+Sleep
+TerminateProcess
+VirtualQuery
+WaitForSingleObject
+WriteFile
+lstrcatA
+lstrcmpA
+lstrcmpiA
+lstrcpyA
+lstrcpynA
+lstrlenA
+wsprintfA

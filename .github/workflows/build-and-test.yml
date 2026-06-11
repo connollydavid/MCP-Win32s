@@ -87,6 +87,38 @@ jobs:
         fi
         echo "OK: imports are exactly kernel32 + user32 (loads on bare Win32s 1.25a)."
 
+    # Phase 6 Finding #2: the DLL-level allowlist above is necessary but NOT
+    # sufficient - GetFileSizeEx lives IN kernel32.dll yet is absent from the
+    # Win32s 1.25a thunk (w32scomb.dll), so it passed the DLL check and still
+    # failed to load on real Win32s. This function-level allowlist closes that
+    # gap: every statically imported symbol must appear in
+    # tools/win32s-import-allowlist.txt, each entry verified against the Win32s
+    # 1.25a export surface. Any drift (a new OR a removed import) fails the
+    # build, so adding an import forces the per-symbol Win32s check at PR time -
+    # the check GetFileSizeEx slipped past.
+    - name: Verify mcp-w32s.exe imports are all Win32s 1.25a-safe (function allowlist)
+      run: |
+        # Imported function names, bounded strictly to the Import Tables section
+        # of objdump -p so that .reloc relocation-type names (ABSOLUTE/HIGHLOW)
+        # and PE-header tokens cannot leak in; identifiers only.
+        i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe | awk '
+          /The Import Tables/         {inimp=1; next}
+          /^(The |PE File |There is)/ {inimp=0}
+          inimp && /\t/ && $NF ~ /^[A-Za-z_][A-Za-z0-9_]+$/ {print $NF}
+        ' | sort -u > /tmp/actual-imports.txt
+        grep -vE '^#|^$' tools/win32s-import-allowlist.txt | sort -u > /tmp/allowed-imports.txt
+        DRIFT=$(diff /tmp/allowed-imports.txt /tmp/actual-imports.txt || true)
+        if [ -n "$DRIFT" ]; then
+          echo "ERROR: mcp-w32s.exe import set drifted from the Win32s 1.25a allowlist."
+          echo "  '<' = allowlisted but no longer imported; '>' = imported but NOT allowlisted."
+          echo "$DRIFT"
+          echo "A '>' line is a NEW static import: verify it is exported by the Win32s"
+          echo "1.25a thunk before adding it to tools/win32s-import-allowlist.txt (see"
+          echo "that file's header), or resolve it at runtime via GetProcAddress."
+          exit 1
+        fi
+        echo "OK: every static import is on the Win32s 1.25a allowlist ($(wc -l < /tmp/actual-imports.txt) functions)."
+
     # 5.4: mcp-w32s.exe must carry the Win10 1903+ UTF-8 opt-in as exactly one
     # application manifest at RT_MANIFEST (type 24) / ID 1 - the resource ID
     # CREATEPROCESS_MANIFEST_RESOURCE_ID. Two manifests (e.g. a MinGW default
