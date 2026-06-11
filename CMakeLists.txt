@@ -84,8 +84,23 @@ set(CORE_SOURCES
 # (it errors out the link). So no suppression flag is added; doing so would
 # both be unnecessary and break the MinGW link. (Verified: build/m5 probe,
 # wrestool -l shows a single --type=24 --name=1.)
-add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} src/mcp-w32s.rc)
-target_link_libraries(mcp-w32s PRIVATE kernel32 user32)
+# The shipped device must run on bare Win32s 1.25a, which has no msvcrt.dll
+# (Win32s ships the older CRTDLL.DLL). MinGW links the C runtime to msvcrt.dll
+# by default, so under MinGW we drop the standard CRT (-nostdlib) and supply our
+# own tiny freestanding runtime (src/mini_crt.c) over kernel32+user32 only.
+# libgcc is kept for compiler-emitted helpers (e.g. __chkstk). Result:
+# mcp-w32s.exe imports ONLY kernel32 + user32 (asserted in CI). The test
+# binaries deliberately keep the ordinary CRT - they run on the dev host / Wine,
+# never on Win32s. The VC6 toolchain path is unchanged.
+# (Phase 6 Finding #1 remediation; see plan/PHASE6.md in the host repo.)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} src/mini_crt.c src/mcp-w32s.rc)
+    target_link_options(mcp-w32s PRIVATE -nostdlib -mconsole)
+    target_link_libraries(mcp-w32s PRIVATE kernel32 user32 gcc)
+else()
+    add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} src/mcp-w32s.rc)
+    target_link_libraries(mcp-w32s PRIVATE kernel32 user32)
+endif()
 
 # --- tests -----------------------------------------------------------------
 enable_testing()

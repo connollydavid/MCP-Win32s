@@ -64,6 +64,61 @@ jobs:
         fi
         echo "OK: uplift APIs are GetProcAddress-only."
 
+    # Phase 6 Finding #1: mcp-w32s.exe must import ONLY kernel32 + user32 - the
+    # two DLLs Win32s 1.25a guarantees. MinGW links the C runtime to msvcrt.dll
+    # by default, which Win32s lacks (it ships CRTDLL.DLL), so a default-linked
+    # binary fails to load on real Win32s with "Cannot find MSVCRT.DLL". This
+    # was invisible to CI because the PEs run under Wine, which DOES provide
+    # msvcrt - so only this static import check (not a Wine run) can catch it.
+    # The freestanding mini CRT (src/mini_crt.c, MinGW build) keeps the set to
+    # {kernel32,user32}; this EXHAUSTIVE allowlist locks it against regression.
+    - name: Verify mcp-w32s.exe imports ONLY kernel32 + user32 (Win32s CRT floor)
+      run: |
+        IMPORTS=$(i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe \
+          | sed -n 's/.*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
+        echo "imports: $IMPORTS"
+        UNEXPECTED=$(echo "$IMPORTS" | grep -vE '^(kernel32|user32)\.dll$' || true)
+        if [ -n "$UNEXPECTED" ]; then
+          echo "ERROR: mcp-w32s.exe imports a DLL that Win32s 1.25a does not provide:"
+          echo "$UNEXPECTED"
+          echo "(msvcrt.dll? the C runtime must be the freestanding src/mini_crt.c -"
+          echo " see plan/PHASE6.md Finding #1 in the host repo.)"
+          exit 1
+        fi
+        echo "OK: imports are exactly kernel32 + user32 (loads on bare Win32s 1.25a)."
+
+    # Phase 6 Finding #2: the DLL-level allowlist above is necessary but NOT
+    # sufficient - GetFileSizeEx lives IN kernel32.dll yet is absent from the
+    # Win32s 1.25a thunk (w32scomb.dll), so it passed the DLL check and still
+    # failed to load on real Win32s. This function-level allowlist closes that
+    # gap: every statically imported symbol must appear in
+    # tools/win32s-import-allowlist.txt, each entry verified against the Win32s
+    # 1.25a export surface. Any drift (a new OR a removed import) fails the
+    # build, so adding an import forces the per-symbol Win32s check at PR time -
+    # the check GetFileSizeEx slipped past.
+    - name: Verify mcp-w32s.exe imports are all Win32s 1.25a-safe (function allowlist)
+      run: |
+        # Imported function names, bounded strictly to the Import Tables section
+        # of objdump -p so that .reloc relocation-type names (ABSOLUTE/HIGHLOW)
+        # and PE-header tokens cannot leak in; identifiers only.
+        i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe | awk '
+          /The Import Tables/         {inimp=1; next}
+          /^(The |PE File |There is)/ {inimp=0}
+          inimp && /\t/ && $NF ~ /^[A-Za-z_][A-Za-z0-9_]+$/ {print $NF}
+        ' | sort -u > /tmp/actual-imports.txt
+        grep -vE '^#|^$' tools/win32s-import-allowlist.txt | sort -u > /tmp/allowed-imports.txt
+        DRIFT=$(diff /tmp/allowed-imports.txt /tmp/actual-imports.txt || true)
+        if [ -n "$DRIFT" ]; then
+          echo "ERROR: mcp-w32s.exe import set drifted from the Win32s 1.25a allowlist."
+          echo "  '<' = allowlisted but no longer imported; '>' = imported but NOT allowlisted."
+          echo "$DRIFT"
+          echo "A '>' line is a NEW static import: verify it is exported by the Win32s"
+          echo "1.25a thunk before adding it to tools/win32s-import-allowlist.txt (see"
+          echo "that file's header), or resolve it at runtime via GetProcAddress."
+          exit 1
+        fi
+        echo "OK: every static import is on the Win32s 1.25a allowlist ($(wc -l < /tmp/actual-imports.txt) functions)."
+
     # 5.4: mcp-w32s.exe must carry the Win10 1903+ UTF-8 opt-in as exactly one
     # application manifest at RT_MANIFEST (type 24) / ID 1 - the resource ID
     # CREATEPROCESS_MANIFEST_RESOURCE_ID. Two manifests (e.g. a MinGW default
@@ -332,3 +387,50 @@ jobs:
 
         kill $DEVICE_PID 2>/dev/null || true
         exit $RC
+
+  # Real-Windows job. The ubuntu job runs the PEs under Wine, whose process
+  # spawning / Winsock / ConPTY emulation is incomplete - so the exec, serial
+  # (exec-integration), TCP and ConPTY suites are host-divergent there. This
+  # job builds the SAME i386 MinGW binaries natively under MSYS2 and runs them
+  # on a real Windows Server runner, so those suites exercise real cmd.exe, real
+  # Winsock and real ConPTY (no Wine, no shims). It does NOT replace the Win32s
+  # 1.25a hardware test (windows-latest is modern Windows: it has msvcrt.dll and
+  # the full Win32 API, so it cannot catch Win32s-subset or msvcrt-absence
+  # issues - the import-allowlist check in the ubuntu job and the manual Win32s
+  # guest cover those). (Phase 6 / the Wine-vs-real-Windows parity axis.)
+  windows-native:
+    name: real-Windows (exec / Winsock / ConPTY, no Wine)
+    runs-on: windows-latest
+    # Newly introduced job, still being stabilised on the MSYS2 toolchain - keep
+    # it informational so it cannot gate merges until it is reliably green; flip
+    # to a required check once the real-Windows run is consistently passing.
+    continue-on-error: true
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up MSYS2 MINGW32 (native i686 toolchain)
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW32
+        update: false
+        install: >-
+          mingw-w64-i686-gcc
+          mingw-w64-i686-cmake
+          mingw-w64-i686-ninja
+          mingw-w64-i686-binutils
+    - name: Build (native i686 MinGW on real Windows)
+      run: |
+        cmake --preset mingw
+        cmake --build --preset mingw
+    - name: Verify the device still imports ONLY kernel32 + user32
+      run: |
+        IMPORTS=$(i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe \
+          | sed -n 's/.*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
+        echo "imports: $IMPORTS"
+        echo "$IMPORTS" | grep -vqE '^(kernel32|user32)\.dll$' && {
+          echo "ERROR: unexpected import (see Finding #1)"; exit 1; } || true
+        echo "OK: kernel32 + user32 only."
+    - name: Test on real Windows (real cmd.exe / Winsock / ConPTY)
+      run: ctest --preset mingw --output-on-failure
