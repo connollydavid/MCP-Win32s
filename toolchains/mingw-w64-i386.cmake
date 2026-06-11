@@ -22,6 +22,14 @@ if(NOT CMAKE_HOST_WIN32)
   set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
   set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
   set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+else()
+  # MSYS2's i686 windres fails to spawn its default preprocessor ("CreateProcess
+  # failed: The system cannot find the file specified") when CMake drives it.
+  # Point it at the mingw32 gcc explicitly and use a temp file rather than the
+  # pipe spawn that misbehaves on Windows. (binutils 2.36+ --preprocessor-arg
+  # syntax.) Linux cross-windres needs none of this and is left untouched.
+  set(CMAKE_RC_FLAGS
+      "--use-temp-file --preprocessor=i686-w64-mingw32-gcc --preprocessor-arg=-E --preprocessor-arg=-xc-header --preprocessor-arg=-DRC_INVOKED")
 endif()
 
 # i386-only codegen + the strict warning gate the project has always used.

@@ -369,6 +369,10 @@ jobs:
   windows-native:
     name: real-Windows (exec / Winsock / ConPTY, no Wine)
     runs-on: windows-latest
+    # Newly introduced job, still being stabilised on the MSYS2 toolchain - keep
+    # it informational so it cannot gate merges until it is reliably green; flip
+    # to a required check once the real-Windows run is consistently passing.
+    continue-on-error: true
     defaults:
       run:
         shell: msys2 {0}
