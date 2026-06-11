@@ -1,0 +1,258 @@
+-- allium: 3
+-- uart.allium
+
+-- Scope: The Win32s direct-UART serial route - the device driving a 16550
+--        UART by bare ring-3 port I/O (IN/OUT to 0x3F8..0x3FF), used ONLY on
+--        the Win32s tier where the Win32 communications API (SetCommState) is
+--        an exported-but-stubbed no-op. The 16550 underneath is fully reachable
+--        from ring-3; this models its detection ladder, polled line discipline,
+--        and the security boundary that keeps the access ring-3-legitimate.
+-- Includes: chip detection (presence, FIFO, loopback self-test), the driven
+--           session lifecycle, and the backing security/safety invariants.
+-- Excludes:
+--   - Backend selection / registry / the Transport vtable (transport.allium
+--     owns those; this route is invisible at the transport layer - kind and
+--     wire name stay "serial"). The non-Win32s tiers use the OS serial path
+--     (serial.allium) and never reach this spec.
+--   - Newline-JSON framing (lives above the transport).
+--   - Baud->divisor arithmetic and the /BAUD flag (transport-level cmdline).
+-- Dependencies: none
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- The detected UART generation. The 8250, 16450 and the non-A 16550 are ALL
+-- driven single-byte (no usable FIFO); only a positively-detected 16550A
+-- enables the FIFO. `unknown` is the probe result for an absent / floating-bus
+-- port (a missing ISA UART reads 0xFF), which fails the open.
+enum ChipKind { unknown | uart_8250 | uart_16450 | uart_16550a }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- One detected-and-driven UART on the Win32s direct route. `host_is_win32s` is
+-- the tier fact captured when the route is selected: the direct port-I/O path
+-- exists ONLY on Win32s (bare IN/OUT faults at ring-3 IOPL-0 on NT), so the
+-- field is the spec-level witness of the tier gate. `ier_enabled` /
+-- `out2_enabled` record whether the chip's interrupt path is armed - the driver
+-- keeps BOTH false so no UART interrupt can ever reach the 8259 PIC. `tx_chunk`
+-- is the polled TX burst size: 1 for every chip below a detected 16550A.
+entity UartChip {
+    base_port: Integer
+    host_is_win32s: Boolean
+    chip_kind: ChipKind
+    fifo_enabled: Boolean
+    ier_enabled: Boolean
+    out2_enabled: Boolean
+    tx_chunk: Integer
+    divisor: Integer
+    status: detecting | loopback_pending | live | open_failed | closed
+
+    transitions status {
+        detecting        -> loopback_pending
+        detecting        -> open_failed
+        loopback_pending -> live
+        loopback_pending -> open_failed
+        live             -> closed
+        terminal: open_failed, closed
+    }
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- TX burst sizes. The 16550A's 16-byte FIFO is the conservative burst
+    -- ceiling on a POSITIVELY-detected 16550A; every lesser chip is driven one
+    -- byte at a time (THRE-polled).
+    fifo_tx_chunk: Integer = 16
+    single_byte_tx_chunk: Integer = 1
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Route selection: the serial backend selects the direct-UART route. THE TIER
+-- GATE LIVES HERE - the route is taken (a UartChip is born) ONLY when the host
+-- is Win32s. On every other tier the backend uses the OS serial path and this
+-- rule never fires, so no UartChip can come into being off Win32s.
+rule UartRouteSelected {
+    when: UartRouteRequested(base_port, host_is_win32s)
+    requires: host_is_win32s = true
+    ensures: UartChip.created(
+        base_port: base_port,
+        host_is_win32s: host_is_win32s,
+        chip_kind: unknown,
+        fifo_enabled: false,
+        ier_enabled: false,
+        out2_enabled: false,
+        tx_chunk: config.single_byte_tx_chunk,
+        divisor: 0,
+        status: detecting
+    )
+}
+
+-- Presence: the IER store-test probe found no port (a floating bus reads 0xFF,
+-- reported as `unknown`). Open fails - there is nothing to drive.
+rule UartPortAbsent {
+    when: UartProbeCompleted(c, detected_kind)
+    requires: c.status = detecting
+    requires: detected_kind = unknown
+    ensures: c.status = open_failed
+}
+
+-- Identification: the port is present and the FIFO/scratch ladder identified
+-- the chip. THE ONE LOAD-BEARING RULE: the FIFO is enabled IFF the chip is a
+-- positively-detected 16550A (IIR & 0xC0 == 0xC0). A non-A 16550 (IIR & 0xC0
+-- == 0x80) and the FIFO-less 8250/16450 are all driven single-byte. The scratch
+-- test only splits 8250 from 16450 and drives NO behavioural branch (both
+-- single-byte), so it sets chip_kind but never tx_chunk/fifo_enabled.
+rule UartChipIdentified {
+    when: UartProbeCompleted(c, detected_kind)
+    requires: c.status = detecting
+    requires: detected_kind != unknown
+    ensures:
+        c.chip_kind = detected_kind
+        if detected_kind = uart_16550a:
+            c.fifo_enabled = true
+            c.tx_chunk = config.fifo_tx_chunk
+        else:
+            c.fifo_enabled = false
+            c.tx_chunk = config.single_byte_tx_chunk
+        c.status = loopback_pending
+}
+
+-- Loopback self-test fail-closed: a dead / clone chip that decodes registers
+-- but does not truly loop back, or that ignored the divisor write (read-back
+-- mismatch), fails the open. There is NO degrade to the OS comm path on this
+-- tier (the UART is owned exclusively - see UartOwnedExclusively), so a failed
+-- open is terminal for serial here.
+rule UartOpenFailsLoopback {
+    when: UartLoopbackCompleted(c, passed, divisor_verified, divisor)
+    requires: c.status = loopback_pending
+    requires: passed = false or divisor_verified = false
+    ensures: c.status = open_failed
+}
+
+-- Going live: loopback passed and the divisor read-back verified. The chip is
+-- now serving. Interrupts are disarmed at the chip (IER=0, MCR OUT2 clear) -
+-- the foundation of the polled discipline AND a security property: with OUT2
+-- clear, a stray UART interrupt can never reach the 8259 PIC.
+rule UartGoesLive {
+    when: UartLoopbackCompleted(c, passed, divisor_verified, divisor)
+    requires: c.status = loopback_pending
+    requires: passed = true and divisor_verified = true
+    ensures:
+        c.divisor = divisor
+        c.ier_enabled = false
+        c.out2_enabled = false
+        c.status = live
+}
+
+-- An orderly shutdown ends a live session.
+rule UartCloses {
+    when: UartSessionCloseRequested(c)
+    requires: c.status = live
+    ensures: c.status = closed
+}
+
+-- A comms fault is the ONLY other exit from a live session: an idle line is a
+-- live session (steady-state RX blocks-yielding, never ending on silence - see
+-- EveryPollLoopBounded), so only a real comms error terminates it from the line.
+rule UartCommsErrorCloses {
+    when: CommsError(c)
+    requires: c.status = live
+    ensures: c.status = closed
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- (1) THE TIER GATE. A served (live) UART exists only on Win32s. The dangerous
+-- branch of the serial tier-dispatch (bare ring-3 port I/O) is reachable ONLY
+-- when is_win32s; weed's gate-bypass dimension must fail to construct a live
+-- UartChip on any other tier (e.g. via the /AUTO serial fallback re-entering
+-- the backend, which re-checks is_win32s).
+invariant ServingViaUartImpliesWin32s {
+    for c in UartChips:
+        c.status = live implies c.host_is_win32s
+}
+
+-- (2) BarePortIoNoEscalation (prose - a discipline on the I/O mechanism, not a
+-- field predicate): the UART is reached by BARE ring-3 IN/OUT only. No VxD, no
+-- IOPL change, no call gate, no IRQ hook, no ring transition. This is "use what
+-- the OS already grants user mode" - the System VM passes System-VM port access
+-- through VCD when nothing else owns the port - never access manufactured by
+-- escalating privilege. Enforced by construction in the port-I/O seam, which
+-- emits only IN/OUT; weed audits that no escalation primitive appears.
+
+-- (3) NO INTERRUPT PATH ARMED. While a UART is live the chip's interrupt
+-- sources are both disarmed: IER=0 (ier_enabled false) AND MCR OUT2 clear
+-- (out2_enabled false). OUT2 is the gate that wires the UART's IRQ to the 8259,
+-- so OUT2-clear means no UART interrupt can ever reach the PIC - polled only.
+invariant NoInterruptPathArmed {
+    for c in UartChips:
+        c.status = live implies (not c.ier_enabled and not c.out2_enabled)
+}
+
+-- (4) FIFO ONLY ON A DETECTED 16550A. A false 16550A positive is the only
+-- dangerous detection direction (a non-A 16550's FIFO transfers stray bytes),
+-- so the FIFO - and any multi-byte TX burst - is permitted ONLY on a chip
+-- positively identified as a 16550A.
+invariant FifoEnabledImpliesDetected16550A {
+    for c in UartChips:
+        (c.fifo_enabled implies c.chip_kind = uart_16550a)
+        and (c.tx_chunk > 1 implies c.chip_kind = uart_16550a)
+}
+
+-- (5) UartOwnedExclusively (prose - a discipline, not a field predicate): on
+-- this route COM1 is NEVER opened via the OS (no CreateFile("COM1"), no
+-- OpenComm), so the Win16 COMM.DRV stays passive and never programs the divisor,
+-- hooks IRQ4 or runs its ISR. There is therefore nothing to contend with and no
+-- fallback to it: a failed open is terminal for serial on Win32s (the
+-- UartOpenFailsLoopback / UartPortAbsent open_failed states are terminal).
+
+-- (6) EveryPollLoopBounded (prose - a termination/behaviour property, not a
+-- single-point-in-time field predicate): every OPEN-phase loop (presence,
+-- FIFO/scratch detect, loopback self-test, divisor read-back) and every TX
+-- THRE/TEMT wait is HARD-BOUNDED and fail-closed - on expiry it aborts the open
+-- or surfaces an error, never spinning, so a wedged or clone UART can never
+-- freeze cooperatively-scheduled Windows. The SOLE exception is steady-state RX:
+-- an idle serial line is a live session, so the RX poll blocks-yielding (pumping
+-- the cooperative scheduler between re-polls) indefinitely and ends the session
+-- only on a real comms error (UartCommsErrorCloses), never on silence.
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+-- The operator/backend boundary: the serial backend selects the direct route
+-- (supplying the base port and the is_win32s tier fact) and may shut a live
+-- session down. UartRouteRequested is the tier gate's entry point.
+surface UartRouteOperator {
+    facing c: UartChip
+
+    provides:
+        UartRouteRequested(base_port, host_is_win32s)
+        UartSessionCloseRequested(c)
+            when c.status = live
+}
+
+-- The hardware/line boundary: the 16550 (via the bare port-I/O seam) reports
+-- the detection-ladder outcomes and any comms fault on a live chip.
+surface UartHardwareProbe {
+    facing c: UartChip
+
+    provides:
+        UartProbeCompleted(c, detected_kind)
+            when c.status = detecting
+        UartLoopbackCompleted(c, passed, divisor_verified, divisor)
+            when c.status = loopback_pending
+        CommsError(c)
+            when c.status = live
+}
