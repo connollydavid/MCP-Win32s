@@ -237,6 +237,20 @@ int UartBackendOpenDirect(const TransportConfig *cfg, Transport *out,
  * from a known state. Test-only.
  */
 void UartResetForTest(void);
+
+/*
+ * UartLastRouteForTest - The route SerialBackendOpen last selected, so the
+ * dispatch-gate test (test_serial.c) can pin the tier decision (SECURITY PIN #1)
+ * WITHOUT driving a real port: -1 none yet, 0 the OS serial (CreateFileA) route,
+ * 1 the Win32s direct-UART route. Under TEST_BUILD the direct branch RECORDS the
+ * decision and returns without any port I/O (a ring-3 IN #GPs on the CI/NT host);
+ * the live open is the on-target #35 hardware acceptance. Defined in serial.c
+ * (where the dispatch branch lives). Test-only.
+ */
+#define UART_ROUTE_NONE        (-1)
+#define UART_ROUTE_OS_SERIAL   0
+#define UART_ROUTE_DIRECT_UART 1
+int UartLastRouteForTest(void);
 #endif
 
 #endif /* UART_H */
