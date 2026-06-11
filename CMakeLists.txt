@@ -57,6 +57,7 @@ set(CORE_SOURCES
   src/encoding.c
   src/file_ops.c
   src/serial.c
+  src/uart.c
   src/transport.c
   src/tcp.c
   src/feat.c
