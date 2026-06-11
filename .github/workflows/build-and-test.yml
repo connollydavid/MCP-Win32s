@@ -355,3 +355,46 @@ jobs:
 
         kill $DEVICE_PID 2>/dev/null || true
         exit $RC
+
+  # Real-Windows job. The ubuntu job runs the PEs under Wine, whose process
+  # spawning / Winsock / ConPTY emulation is incomplete - so the exec, serial
+  # (exec-integration), TCP and ConPTY suites are host-divergent there. This
+  # job builds the SAME i386 MinGW binaries natively under MSYS2 and runs them
+  # on a real Windows Server runner, so those suites exercise real cmd.exe, real
+  # Winsock and real ConPTY (no Wine, no shims). It does NOT replace the Win32s
+  # 1.25a hardware test (windows-latest is modern Windows: it has msvcrt.dll and
+  # the full Win32 API, so it cannot catch Win32s-subset or msvcrt-absence
+  # issues - the import-allowlist check in the ubuntu job and the manual Win32s
+  # guest cover those). (Phase 6 / the Wine-vs-real-Windows parity axis.)
+  windows-native:
+    name: real-Windows (exec / Winsock / ConPTY, no Wine)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up MSYS2 MINGW32 (native i686 toolchain)
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW32
+        update: false
+        install: >-
+          mingw-w64-i686-gcc
+          mingw-w64-i686-cmake
+          mingw-w64-i686-ninja
+          mingw-w64-i686-binutils
+    - name: Build (native i686 MinGW on real Windows)
+      run: |
+        cmake --preset mingw
+        cmake --build --preset mingw
+    - name: Verify the device still imports ONLY kernel32 + user32
+      run: |
+        IMPORTS=$(i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe \
+          | sed -n 's/.*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
+        echo "imports: $IMPORTS"
+        echo "$IMPORTS" | grep -vqE '^(kernel32|user32)\.dll$' && {
+          echo "ERROR: unexpected import (see Finding #1)"; exit 1; } || true
+        echo "OK: kernel32 + user32 only."
+    - name: Test on real Windows (real cmd.exe / Winsock / ConPTY)
+      run: ctest --preset mingw --output-on-failure
