@@ -134,7 +134,13 @@ int FileOpRead(const char *path, unsigned char *buf, int bufSize,
         return 0;
     }
 
-    if (!GetFileSizeEx(hFile, &fileSize)) {
+    /* GetFileSizeEx is absent from the Win32s 1.25a thunk (w32scomb.dll);
+       GetFileSize is exported and sufficient here (files are bufSize-bound,
+       well under the 16 MB per-app limit). Per its contract, INVALID_FILE_SIZE
+       is only an error when GetLastError() is not NO_ERROR. */
+    fileSize.HighPart = 0;
+    fileSize.LowPart = GetFileSize(hFile, NULL);
+    if (fileSize.LowPart == INVALID_FILE_SIZE && GetLastError() != NO_ERROR) {
         err_set(errMsg, errSize, "cannot get file size");
         CloseHandle(hFile);
         return 0;
