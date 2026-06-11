@@ -64,6 +64,29 @@ jobs:
         fi
         echo "OK: uplift APIs are GetProcAddress-only."
 
+    # Phase 6 Finding #1: mcp-w32s.exe must import ONLY kernel32 + user32 - the
+    # two DLLs Win32s 1.25a guarantees. MinGW links the C runtime to msvcrt.dll
+    # by default, which Win32s lacks (it ships CRTDLL.DLL), so a default-linked
+    # binary fails to load on real Win32s with "Cannot find MSVCRT.DLL". This
+    # was invisible to CI because the PEs run under Wine, which DOES provide
+    # msvcrt - so only this static import check (not a Wine run) can catch it.
+    # The freestanding mini CRT (src/mini_crt.c, MinGW build) keeps the set to
+    # {kernel32,user32}; this EXHAUSTIVE allowlist locks it against regression.
+    - name: Verify mcp-w32s.exe imports ONLY kernel32 + user32 (Win32s CRT floor)
+      run: |
+        IMPORTS=$(i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe \
+          | sed -n 's/.*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
+        echo "imports: $IMPORTS"
+        UNEXPECTED=$(echo "$IMPORTS" | grep -vE '^(kernel32|user32)\.dll$' || true)
+        if [ -n "$UNEXPECTED" ]; then
+          echo "ERROR: mcp-w32s.exe imports a DLL that Win32s 1.25a does not provide:"
+          echo "$UNEXPECTED"
+          echo "(msvcrt.dll? the C runtime must be the freestanding src/mini_crt.c -"
+          echo " see plan/PHASE6.md Finding #1 in the host repo.)"
+          exit 1
+        fi
+        echo "OK: imports are exactly kernel32 + user32 (loads on bare Win32s 1.25a)."
+
     # 5.4: mcp-w32s.exe must carry the Win10 1903+ UTF-8 opt-in as exactly one
     # application manifest at RT_MANIFEST (type 24) / ID 1 - the resource ID
     # CREATEPROCESS_MANIFEST_RESOURCE_ID. Two manifests (e.g. a MinGW default
