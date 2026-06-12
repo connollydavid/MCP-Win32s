@@ -341,6 +341,25 @@ PROP_TEST(uart_rx_break_never_zero) {
     PROP_CHECK(rxbuf[0] == realbyte);   /* the real byte, not the dropped 0x00 */
 }
 
+/* P10 (PIN #4, the dangerous detection direction): a non-A 16550 (IIR&0xC0==0x80)
+ * must NOT enable the FIFO - it is driven single-byte, never mis-identified as a
+ * 16550A. Feeds UartDetect the 0x80 readback the FIFO detect must reject. */
+PROP_TEST(uart_nona_16550_no_fifo) {
+    unsigned short base = com_base(PROP_CHOICE(4));
+    UartSim sim;
+    UartPortIo io;
+    UartDriver drv;
+
+    UartSimInit(&sim, base, UART_CHIP_16550A, UART_SIM_NONA_16550);
+    io = UartSimPortIo(&sim);
+    UartDriverInit(&drv, base);
+
+    PROP_CHECK(UartDetect(&io, &drv) != 0);   /* a present non-A chip detects */
+    PROP_CHECK(drv.fifo_enabled == 0);        /* 0x80 NEVER enables the FIFO */
+    PROP_CHECK(drv.tx_chunk == UART_SINGLE_TX_CHUNK);
+    PROP_CHECK(drv.chip_kind != UART_CHIP_16550A);   /* not mis-identified */
+}
+
 int main(void)
 {
     prop_seed(0);
@@ -354,6 +373,7 @@ int main(void)
     PROP_RUN(uart_lsr_before_rbr,        1500);
     PROP_RUN(uart_tx_burst_le_depth,     1500);
     PROP_RUN(uart_rx_break_never_zero,   1500);
+    PROP_RUN(uart_nona_16550_no_fifo,    1500);
 
     return prop_summary();
 }

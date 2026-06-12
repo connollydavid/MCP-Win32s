@@ -36,6 +36,12 @@
  *                             error) must keep waiting, not return 0 (0 would read
  *                             as a peer close on a line that has none); a break
  *                             WITH a framing error is a real comms error (<0).
+ *   P10 nona_16550_no_fifo    PIN #4, the DANGEROUS DETECTION DIRECTION: a non-A
+ *                             16550 (IIR&0xC0==0x80, the false-16550A-positive)
+ *                             must NOT enable the FIFO - fifo_enabled stays 0,
+ *                             tx_chunk stays 1, chip_kind is never 16550A. Feeds
+ *                             the 0x80 readback the FIFO detect must reject (the
+ *                             input the 0xC0/0x00-only fake never produced).
  *
  * This is free and unencumbered software released into the public domain.
  * See LICENSE for details (Unlicense).
@@ -834,6 +840,46 @@ prop_rx_break_never_zero(struct theft *t, void *arg1)
     return THEFT_TRIAL_PASS;
 }
 
+/* ===================================================================
+ * P10 nona_16550_no_fifo - PIN #4, the dangerous detection direction. A non-A
+ * 16550 reports IIR&0xC0==0x80 after FCR=0xE7; the FIFO detect must REFUSE it
+ * (only the exact 0xC0 enables the FIFO). This feeds UartDetect the 0x80
+ * readback directly (the UART_SIM_NONA_16550 variant) and asserts the chip is
+ * driven single-byte - the false-16550A-positive can never enable a multi-byte
+ * burst. Generator: a base port (the kind under the variant is fixed 16550A so
+ * the scratch register is present; the variant overrides IIR to 0x80).
+ * =================================================================== */
+
+static enum theft_trial_res
+prop_nona_16550_no_fifo(struct theft *t, void *arg1)
+{
+    struct chipcase *c = (struct chipcase *)arg1;
+    unsigned short base = com_base(c->base_sel);
+    UartSim sim;
+    UartPortIo io;
+    UartDriver drv;
+    (void)t;
+
+    UartSimInit(&sim, base, UART_CHIP_16550A, UART_SIM_NONA_16550);
+    io = UartSimPortIo(&sim);
+    UartDriverInit(&drv, base);
+
+    if (!UartDetect(&io, &drv)) {
+        return THEFT_TRIAL_FAIL;   /* a present (non-A) chip must be detected */
+    }
+    /* The load-bearing refusal: a 0x80 readback NEVER enables the FIFO. */
+    if (drv.fifo_enabled != 0) {
+        return THEFT_TRIAL_FAIL;
+    }
+    if (drv.tx_chunk != UART_SINGLE_TX_CHUNK) {
+        return THEFT_TRIAL_FAIL;
+    }
+    if (drv.chip_kind == UART_CHIP_16550A) {
+        return THEFT_TRIAL_FAIL;   /* must NOT be mis-identified as a 16550A */
+    }
+    return THEFT_TRIAL_PASS;
+}
+
 /* =================================================================== */
 
 static int run1(const char *name, theft_propfun1 *p,
@@ -873,6 +919,8 @@ int main(void)
                   &burst_info, SEED ^ 0x77);
     fails += run1("uart/rx_break_never_zero",  prop_rx_break_never_zero,
                   &break_info, SEED ^ 0x88);
+    fails += run1("uart/nona_16550_no_fifo",   prop_nona_16550_no_fifo,
+                  &chip_info,  SEED ^ 0x99);
 
     printf("%s\n", fails == 0 ? "ALL PASS" : "FAILURES");
     return fails == 0 ? 0 : 1;

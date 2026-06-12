@@ -71,7 +71,9 @@ typedef enum {
     UART_SIM_ABSENT,        /* floating bus: every read 0xFF, scratch dead     */
     UART_SIM_DEAD_CLONE,    /* decodes registers but loopback does NOT echo    */
     UART_SIM_DIVISOR_STUCK, /* ignores DLL/DLM writes (readback mismatches)    */
-    UART_SIM_NEVER_READY    /* THRE and DR never assert (bounded-loop pin)     */
+    UART_SIM_NEVER_READY,   /* THRE and DR never assert (bounded-loop pin)     */
+    UART_SIM_NONA_16550     /* a broken non-A 16550: IIR reports 0x80, not     */
+                            /* 0xC0 - the false-16550A-positive PIN #4 guards  */
 } UartSimVariant;
 
 typedef struct UartSimTrace {
@@ -211,16 +213,18 @@ static int UartSimHasScratch(const UartSim *s)
     return 1;
 }
 
-/* The IIR top-bit FIFO signature for FCR=0xE7 on this kind. */
+/* The IIR top-bit FIFO signature for FCR=0xE7 on this chip. */
 static unsigned char UartSimFifoIir(const UartSim *s)
 {
-    if (s->kind == UART_CHIP_16550A) {
-        return 0xC0;   /* working FIFO */
+    if (s->variant == UART_SIM_NONA_16550) {
+        return 0x80;   /* the broken non-A 16550: FIFO bits 0x80, NOT 0xC0 -
+                        * the false-16550A-positive the one detection rule must
+                        * refuse (fifo stays OFF, single-byte). */
     }
-    /* A non-A 16550 reports 0x80; 8250/16450 report 0x00. We have no separate
-     * "non-A 16550" kind enum, so model it via DEAD-style? No: kind is the
-     * source of truth. 16450/8250 => 0x00. */
-    return 0x00;
+    if (s->kind == UART_CHIP_16550A) {
+        return 0xC0;   /* working 16550A FIFO */
+    }
+    return 0x00;       /* 8250 / 16450: no FIFO */
 }
 
 /* ----------------------------------------------------------------------

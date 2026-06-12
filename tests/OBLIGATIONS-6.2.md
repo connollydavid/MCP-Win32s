@@ -121,10 +121,21 @@ syscall on-target):
 
 ## Floor
 
-New: **≥7 theft host properties** (`theft_uart.c`: `fifo_iff_16550a`,
+New: **10 theft host properties** (`theft_uart.c`: `fifo_iff_16550a`,
 `loopback_fail_closed`, `interrupts_never_armed`, `divisor_round_trip`,
-`open_loops_bounded`, `rx_idle_is_live`, `tx_burst_le_depth`/`lsr_before_rbr`) +
-**≥7 on-target `prop.h` mirrors** (`test_uart.c`) + **≥2 dispatch-gate units**
-(`test_serial.c`: NT⇒CreateFile, forced-`is_win32s`⇒direct) + the static CI checks
-(no-escalation opcode grep, no-OS-comm grep, zero-new-imports). Existing floors
-only grow (`OBLIGATIONS-PHASE4.md` ≥163 device; 5.0–5.5 unchanged).
+`open_loops_bounded`, `rx_idle_is_live`, `lsr_before_rbr`, `tx_burst_le_depth`,
+`rx_break_never_zero`, `nona_16550_no_fifo`) + **10 on-target `prop.h` mirrors**
+(`test_uart.c`) + **3 dispatch-gate units** (`test_serial.c`:
+`uart_tier_gate_decision`, `uart_dispatch_win32s_selects_direct`,
+`uart_dispatch_non_win32s_selects_os_serial` — no real port I/O) + the static CI
+checks (no-escalation opcode grep, no-OS-comm grep, zero-new-imports). Existing
+floors only grow (`OBLIGATIONS-PHASE4.md` ≥163 device; 5.0–5.5 unchanged).
+
+Two properties beyond the ≥7+≥7+≥2 propagated minimum were added during the
+implement/weed pass and are part of the floor: **`rx_break_never_zero`** pins the
+`UartRxDrain`-never-returns-0 fix (a return-0-on-lone-break defect the orchestrator
+found by reading; it refuted the original 24509/50000 trials), and
+**`nona_16550_no_fifo`** closes a weed-identified coverage gap by feeding
+`UartDetect` the non-A 16550's `IIR&0xC0==0x80` readback directly — the
+false-16550A-positive PIN #4 guards, which the original `0xC0`/`0x00`-only fake
+never produced (the spec names `0x80` as "the only dangerous detection direction").
