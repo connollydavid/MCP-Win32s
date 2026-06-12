@@ -20,6 +20,21 @@ project(mcp-w32s C)
 # both drive a .rc through this language - no per-toolchain special-casing.
 enable_language(RC)
 
+# Universal windres preprocessor (MinGW only): drive it with the FULL PATH to the
+# C compiler CMake already resolved and verified, never a bare name. MSYS2's
+# windres (binutils 2.46, the native-Windows CI runner) fails to spawn a
+# bare-named preprocessor ("CreateProcess failed: The system cannot find the file
+# specified"); a resolved path with its .exe spawns on every host, so the
+# RT_MANIFEST bakes into the SAME binary on the Ubuntu cross build AND the
+# native-Windows build (no runner-specific divergence). The .rc only expands its
+# own two #defines - no system include - so any cpp suffices; this just makes the
+# spawn reliable. CMAKE_C_COMPILER is the full resolved path here (post-project).
+# VC6's rc.exe ignores these windres flags, so guard to the GNU/windres path.
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  set(CMAKE_RC_FLAGS
+      "--use-temp-file --preprocessor=${CMAKE_C_COMPILER} --preprocessor-arg=-E --preprocessor-arg=-xc-header --preprocessor-arg=-DRC_INVOKED")
+endif()
+
 # C89 strict, no GNU extensions (matches the historic -std=c89 -pedantic).
 set(CMAKE_C_STANDARD 90)
 set(CMAKE_C_STANDARD_REQUIRED ON)
