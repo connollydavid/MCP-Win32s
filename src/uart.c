@@ -238,7 +238,7 @@ int UartProgramDivisor(const UartPortIo *io, UartDriver *drv,
 }
 
 /* ----------------------------------------------------------------------
- * UartLoopbackSelfTest - internal-loopback echo test. Returns 1 pass, 0 fail
+ * UartLoopbackSelfTest - internal-loopback echo test. Returns 1 on success, 0 on failure
  * (or DR-poll bound expiry). Restores MCR with OUT2 CLEAR afterward.
  * ---------------------------------------------------------------------- */
 int UartLoopbackSelfTest(const UartPortIo *io, UartDriver *drv)

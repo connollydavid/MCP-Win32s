@@ -1,5 +1,5 @@
 /*
- * exec_ops.c - Child-process spawn, capture and timeout (Phase 4).
+ * exec_ops.c - Child-process spawn, capture and timeout.
  *
  * One child per call. Win32s-baseline correct, uplifting at runtime via
  * g_features. See exec_ops.h for the contract and the orphan-domain note.

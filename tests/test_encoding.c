@@ -473,7 +473,7 @@ TEST_CASE(codec_truncation_boundary_clean)
  * manifest) the live tier is `wide`; FEAT_FORCE_NO_WIDE_FILEAPI
  * forces the `codepage` tier so the strict narrowing is
  * exercisable. The `manifest` runtime effect needs real Win10
- * (Phase 6) - asserted only via EncManifestUtf8Active here.
+ * asserted only via EncManifestUtf8Active here.
  * ======================================================== */
 
 /* enum-comparable.ConversionStatus / ConversionDirection. */

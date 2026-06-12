@@ -219,7 +219,7 @@ TEST_CASE(list_contains_file) {
 /*
  * Obligation: file-ops.allium rule FileListNotFound — an empty directory
  * path is an error ("directory not found"), never a listing of the
- * server's current working directory (weed 2026-06-06, finding #1).
+ * server's current working directory (weed 2026-06-06).
  */
 TEST_CASE(list_empty_path_errors) {
     char err[128];

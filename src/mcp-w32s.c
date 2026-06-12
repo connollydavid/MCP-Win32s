@@ -1091,7 +1091,7 @@ int main(void)
     Catalog *cat;
 
     /* FeatInit first - before any spawn / catalog load / ready
-     * message (PHASE4 startup checklist step 1). */
+     * message (the startup checklist's first step). */
     FeatInit();
 
     cmdLine = GetCommandLineA();
