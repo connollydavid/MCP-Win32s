@@ -17,19 +17,13 @@ set(CMAKE_RC_COMPILER ${TOOLCHAIN_PREFIX}-windres)
 # the PEs run against real cmd.exe/Winsock/ConPTY instead of Wine), the
 # compiler's own sysroot is already correct and the Linux path below does not
 # exist, so leave CMake's default search alone there.
+# (The windres preprocessor is configured universally in CMakeLists.txt - with
+# the resolved full-path compiler - so it bakes the manifest in on both hosts.)
 if(NOT CMAKE_HOST_WIN32)
   set(CMAKE_FIND_ROOT_PATH /usr/${TOOLCHAIN_PREFIX})
   set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
   set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
   set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-else()
-  # MSYS2's i686 windres fails to spawn its default preprocessor ("CreateProcess
-  # failed: The system cannot find the file specified") when CMake drives it.
-  # Point it at the mingw32 gcc explicitly and use a temp file rather than the
-  # pipe spawn that misbehaves on Windows. (binutils 2.36+ --preprocessor-arg
-  # syntax.) Linux cross-windres needs none of this and is left untouched.
-  set(CMAKE_RC_FLAGS
-      "--use-temp-file --preprocessor=i686-w64-mingw32-gcc --preprocessor-arg=-E --preprocessor-arg=-xc-header --preprocessor-arg=-DRC_INVOKED")
 endif()
 
 # i386-only codegen + the strict warning gate the project has always used.
