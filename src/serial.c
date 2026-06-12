@@ -7,6 +7,18 @@
 
 #include <string.h>
 #include "serial.h"
+#include "uart.h"      /* the Win32s tier gate + direct-UART route */
+
+#ifdef TEST_BUILD
+/* The route SerialBackendOpen last selected (uart.h UartLastRouteForTest): the
+ * dispatch-gate test reads this to pin the tier decision (SECURITY PIN #1)
+ * WITHOUT driving a real port. */
+static int g_serial_route = UART_ROUTE_NONE;
+int UartLastRouteForTest(void)
+{
+    return g_serial_route;
+}
+#endif
 
 void BuildSerialDCB(DWORD baudRate, DCB *dcb)
 {
@@ -137,6 +149,34 @@ int SerialBackendOpen(const TransportConfig *cfg, Transport *out,
                       char *err, int errSize)
 {
     HANDLE h;
+
+    /*
+     * TIER GATE (uart.allium ServingViaUartImpliesWin32s, SECURITY PIN #1): on
+     * the Win32s tier the Win32 comm API is an exported-but-stubbed no-op
+     * (SetCommState -> err 120), so the 16550 is driven directly by bare ring-3
+     * port I/O. This MUST be the FIRST decision and is the SOLE selector of the
+     * direct route - it also covers TransportOpen's /AUTO fallback, which
+     * re-enters here and re-checks the tier, so the dangerous branch is
+     * structurally unreachable off Win32s.
+     */
+    if (UartTierWantsDirect()) {
+#ifdef TEST_BUILD
+        /* CI/NT cannot execute a ring-3 IN (it #GPs); the route DECISION is what
+         * is pinned. Record it and stop short of any port I/O - the live open is
+         * the on-target hardware acceptance. */
+        g_serial_route = UART_ROUTE_DIRECT_UART;
+        if (err != NULL && errSize > 0) {
+            lstrcpynA(err, "win32s direct-uart route (test: no port I/O)",
+                      errSize);
+        }
+        return 0;
+#else
+        return UartBackendOpenDirect(cfg, out, err, errSize);
+#endif
+    }
+#ifdef TEST_BUILD
+    g_serial_route = UART_ROUTE_OS_SERIAL;
+#endif
 
     h = OpenSerialPort(cfg->port, cfg->baudRate);
     if (h == INVALID_HANDLE_VALUE) {

@@ -24,6 +24,7 @@
 #include "mem_ops.h"
 #include "encoding.h"
 #include "audit.h"
+#include "uart.h"
 
 /* ========================================================
  * Forward declarations for functions in mcp-w32s.c
@@ -1307,6 +1308,60 @@ TEST_CASE(list_commands_round_trip) {
 }
 
 /* ========================================================
+ * 6.2 direct-UART tier gate (SECURITY PIN #1,
+ * uart.allium ServingViaUartImpliesWin32s). The dispatch decision is pinned
+ * WITHOUT driving a real port (a ring-3 IN #GPs on the CI/NT host); each test
+ * restores g_features via FeatInit() so later tests are unaffected.
+ * ======================================================== */
+
+TEST_CASE(uart_tier_gate_decision) {
+    /* SECURITY PIN #1 (ServingViaUartImpliesWin32s): the gate is exactly the
+     * tier - reads g_features, no I/O. */
+    FeatInit();
+    g_features.is_win32s = 1; g_features.is_nt = 0;
+    TEST_ASSERT_INT_EQUAL(1, UartTierWantsDirect(),
+                          "win32s => direct route wanted");
+    g_features.is_win32s = 0; g_features.is_nt = 1;
+    TEST_ASSERT_INT_EQUAL(0, UartTierWantsDirect(),
+                          "non-win32s => direct NOT wanted");
+    FeatInit();
+}
+
+TEST_CASE(uart_dispatch_win32s_selects_direct) {
+    /* On the Win32s tier SerialBackendOpen takes the direct-UART branch. Under
+     * TEST_BUILD that is a DRY-RUN: it records the route and returns 0 WITHOUT
+     * any port I/O (a ring-3 IN would #GP on CI/NT). */
+    TransportConfig cfg; Transport out; char err[128]; int rc;
+    FeatInit();
+    memset(&cfg, 0, sizeof(cfg));
+    memset(&out, 0, sizeof(out));
+    lstrcpynA(cfg.port, "COM1", (int)sizeof(cfg.port));
+    cfg.baudRate = 19200;
+    g_features.is_win32s = 1; g_features.is_nt = 0;
+    rc = SerialBackendOpen(&cfg, &out, err, (int)sizeof(err));
+    TEST_ASSERT_INT_EQUAL(UART_ROUTE_DIRECT_UART, UartLastRouteForTest(),
+        "win32s tier selects the direct-UART route");
+    TEST_ASSERT_INT_EQUAL(0, rc, "test dry-run returns 0 (no real port I/O)");
+    FeatInit();
+}
+
+TEST_CASE(uart_dispatch_non_win32s_selects_os_serial) {
+    /* Off Win32s the gate lets the OS serial (CreateFileA) path run - proving
+     * the direct branch is unreachable off the tier (incl. the /AUTO re-entry). */
+    TransportConfig cfg; Transport out; char err[128];
+    FeatInit();
+    memset(&cfg, 0, sizeof(cfg));
+    memset(&out, 0, sizeof(out));
+    lstrcpynA(cfg.port, "COM_DOES_NOT_EXIST", (int)sizeof(cfg.port));
+    cfg.baudRate = 19200;
+    g_features.is_win32s = 0; g_features.is_nt = 1;
+    (void)SerialBackendOpen(&cfg, &out, err, (int)sizeof(err));
+    TEST_ASSERT_INT_EQUAL(UART_ROUTE_OS_SERIAL, UartLastRouteForTest(),
+        "non-win32s tier selects the OS serial route");
+    FeatInit();
+}
+
+/* ========================================================
  * Main - Run all tests
  * ======================================================== */
 
@@ -1395,6 +1450,10 @@ int main(void)
     printf("\nlistCommands discovery:\n");
     RUN_TEST(dispatch_list_commands);
     RUN_TEST(list_commands_round_trip);
+
+    RUN_TEST(uart_tier_gate_decision);
+    RUN_TEST(uart_dispatch_win32s_selects_direct);
+    RUN_TEST(uart_dispatch_non_win32s_selects_os_serial);
 
     print_test_summary();
     return g_tests_failed;

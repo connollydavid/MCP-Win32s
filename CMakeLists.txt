@@ -57,6 +57,7 @@ set(CORE_SOURCES
   src/encoding.c
   src/file_ops.c
   src/serial.c
+  src/uart.c
   src/transport.c
   src/tcp.c
   src/feat.c
@@ -211,6 +212,13 @@ add_executable(test_pbt_encoding tests/test_pbt_encoding.c src/encoding.c)
 target_compile_definitions(test_pbt_encoding PRIVATE ENCODING_HOST_PURE)
 target_link_libraries(test_pbt_encoding PRIVATE kernel32)
 
+# test_uart: the prop.h on-target mirror of the theft UART properties, proving
+# the pure detection ladder + driving logic hold on the shipped C89/i386 path.
+# UART_HOST_PURE excludes the asm IN/OUT seam + transport wiring (links uart.c only).
+add_executable(test_uart tests/test_uart.c src/uart.c)
+target_compile_definitions(test_uart PRIVATE UART_HOST_PURE)
+target_link_libraries(test_uart PRIVATE kernel32)
+
 # wire_client: the 4.0b wire-contract smoke client. A test tool, so a
 # static wsock32 link is fine here (the SERVER stays runtime-loaded).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/smoke/wire_client.c)
@@ -235,7 +243,7 @@ foreach(t test_json test_transport test_tcp test_serial
           test_base64 test_file_ops test_pbt_base64
           test_feat test_argv test_binfmt test_catalog
           test_exec_ops test_pty_exec test_toolchain_probe
-          test_mem_ops test_audit test_encoding test_pbt_encoding)
+          test_mem_ops test_audit test_encoding test_pbt_encoding test_uart)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
