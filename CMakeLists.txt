@@ -15,24 +15,30 @@
 cmake_minimum_required(VERSION 3.21)
 project(mcp-w32s C)
 
-# RC compiles the application manifest (src/mcp-w32s.rc) into mcp-w32s.exe only.
-# windres on MinGW (CMAKE_RC_COMPILER, set by the toolchain) and rc.exe on MSVC
-# both drive a .rc through this language - no per-toolchain special-casing.
-enable_language(RC)
-
-# Universal windres preprocessor (MinGW only): drive it with the FULL PATH to the
-# C compiler CMake already resolved and verified, never a bare name. MSYS2's
-# windres (binutils 2.46, the native-Windows CI runner) fails to spawn a
-# bare-named preprocessor ("CreateProcess failed: The system cannot find the file
-# specified"); a resolved path with its .exe spawns on every host, so the
-# RT_MANIFEST bakes into the SAME binary on the Ubuntu cross build AND the
-# native-Windows build (no runner-specific divergence). The .rc only expands its
-# own two #defines - no system include - so any cpp suffices; this just makes the
-# spawn reliable. CMAKE_C_COMPILER is the full resolved path here (post-project).
-# VC6's rc.exe ignores these windres flags, so guard to the GNU/windres path.
-if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-  set(CMAKE_RC_FLAGS
-      "--use-temp-file --preprocessor=${CMAKE_C_COMPILER} --preprocessor-arg=-E --preprocessor-arg=-xc-header --preprocessor-arg=-DRC_INVOKED")
+# RT_MANIFEST (the UTF-8 activeCodePage manifest), embedded in mcp-w32s.exe only.
+# On MSVC, rc.exe compiles src/mcp-w32s.rc directly. On MinGW the manifest is
+# shipped as a PREBUILT, byte-deterministic resource (src/mcp-w32s.res, generated
+# from mcp-w32s.rc + mcp-w32s.manifest): compiling the committed .res to a coff
+# object needs NO preprocessor, so it builds on every runner - including the
+# MSYS2 native-Windows CI runner whose windres (binutils 2.46) cannot spawn a
+# preprocessor to compile the .rc directly ("CreateProcess failed: The system
+# cannot find the file specified", even with a full-path .exe). The SAME manifest
+# lands in every binary; the Ubuntu CI job regenerates the .res from source and
+# byte-diffs it, so the committed artifact can never drift from the .rc/.manifest.
+if(MSVC)
+  enable_language(RC)
+  set(MCP_MANIFEST src/mcp-w32s.rc)
+else()
+  set(MCP_MANIFEST ${CMAKE_BINARY_DIR}/mcp-w32s_manifest.obj)
+  add_custom_command(
+    OUTPUT ${MCP_MANIFEST}
+    COMMAND ${CMAKE_RC_COMPILER} --input-format=res -O coff
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/mcp-w32s.res ${MCP_MANIFEST}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/mcp-w32s.res
+    COMMENT "Embedding the prebuilt RT_MANIFEST (res -> coff, no preprocessor)"
+    VERBATIM)
+  set_source_files_properties(${MCP_MANIFEST} PROPERTIES
+    EXTERNAL_OBJECT TRUE GENERATED TRUE)
 endif()
 
 # C89 strict, no GNU extensions (matches the historic -std=c89 -pedantic).
@@ -110,11 +116,11 @@ set(CORE_SOURCES
 # never on Win32s. The VC6 toolchain path is unchanged.
 # (Phase 6 Finding #1 remediation; see plan/PHASE6.md in the host repo.)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-    add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} src/mini_crt.c src/mcp-w32s.rc)
+    add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} src/mini_crt.c ${MCP_MANIFEST})
     target_link_options(mcp-w32s PRIVATE -nostdlib -mconsole)
     target_link_libraries(mcp-w32s PRIVATE kernel32 user32 gcc)
 else()
-    add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} src/mcp-w32s.rc)
+    add_executable(mcp-w32s src/mcp-w32s.c ${CORE_SOURCES} ${MCP_MANIFEST})
     target_link_libraries(mcp-w32s PRIVATE kernel32 user32)
 endif()
 

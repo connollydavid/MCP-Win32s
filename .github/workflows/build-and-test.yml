@@ -125,6 +125,21 @@ jobs:
     # one alongside ours) would be a malformed resource directory; zero means
     # the *A APIs never switch to UTF-8. wrestool (icoutils) lists and extracts
     # the resource; --raw dumps the manifest bytes verbatim for the content grep.
+    # The MinGW build embeds a PREBUILT src/mcp-w32s.res (so the MSYS2 native
+    # runner needs no windres preprocessor, which is broken there on binutils
+    # 2.46). Guard the committed artifact against drift: regenerate the .res from
+    # the .rc + .manifest here - where the cross windres preprocessor works - and
+    # byte-diff. A stale .res fails the build and prints the regen command.
+    - name: Verify the prebuilt manifest .res matches its source
+      run: |
+        i686-w64-mingw32-windres -I src src/mcp-w32s.rc -O res -o /tmp/regen.res
+        if ! cmp -s /tmp/regen.res src/mcp-w32s.res; then
+          echo "ERROR: src/mcp-w32s.res is stale - regenerate it:"
+          echo "  i686-w64-mingw32-windres -I src src/mcp-w32s.rc -O res -o src/mcp-w32s.res"
+          exit 1
+        fi
+        echo "OK: prebuilt manifest .res matches mcp-w32s.rc + mcp-w32s.manifest."
+
     - name: Verify exactly one UTF-8 activeCodePage manifest at RT_MANIFEST ID 1
       run: |
         N=$(wrestool -l build/mingw/mcp-w32s.exe | grep -c -- '--type=24 --name=1' || true)
