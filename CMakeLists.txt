@@ -25,14 +25,20 @@ project(mcp-w32s C)
 # cannot find the file specified", even with a full-path .exe). The SAME manifest
 # lands in every binary; the Ubuntu CI job regenerates the .res from source and
 # byte-diffs it, so the committed artifact can never drift from the .rc/.manifest.
+enable_language(RC)   # MSVC: rc.exe compiles the .rc. (MinGW uses the .res below.)
 if(MSVC)
-  enable_language(RC)
   set(MCP_MANIFEST src/mcp-w32s.rc)
 else()
+  # Resolve windres to a FULL PATH. The custom command below runs via cmd.exe on
+  # the MSYS2 native runner, where a bare `i686-w64-mingw32-windres` is "not
+  # recognized" - CMake's own RC rule resolves it internally, but the
+  # ${CMAKE_RC_COMPILER} variable stays the bare toolchain name. find_program runs
+  # at configure time in the MSYS2 PATH and yields the full path cmd.exe can spawn.
+  find_program(MCP_WINDRES NAMES "${CMAKE_RC_COMPILER}" windres REQUIRED)
   set(MCP_MANIFEST ${CMAKE_BINARY_DIR}/mcp-w32s_manifest.obj)
   add_custom_command(
     OUTPUT ${MCP_MANIFEST}
-    COMMAND ${CMAKE_RC_COMPILER} --input-format=res -O coff
+    COMMAND ${MCP_WINDRES} --input-format=res -O coff
             ${CMAKE_CURRENT_SOURCE_DIR}/src/mcp-w32s.res ${MCP_MANIFEST}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/mcp-w32s.res
     COMMENT "Embedding the prebuilt RT_MANIFEST (res -> coff, no preprocessor)"
