@@ -484,7 +484,9 @@ jobs:
         cmake --build --preset mingw
     - name: Verify the device still imports ONLY kernel32 + user32
       run: |
-        IMPORTS=$(i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe \
+        # MSYS2 MINGW32 ships UNPREFIXED binutils (objdump, not
+        # i686-w64-mingw32-objdump - the cross-prefixed name does not exist here).
+        IMPORTS=$(objdump -p build/mingw/mcp-w32s.exe \
           | sed -n 's/.*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
         echo "imports: $IMPORTS"
         echo "$IMPORTS" | grep -vqE '^(kernel32|user32)\.dll$' && {
