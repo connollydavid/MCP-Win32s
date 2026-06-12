@@ -212,7 +212,12 @@ jobs:
     - name: Verify the direct-UART route never opens COM via the OS
       run: |
         UOBJ=build/mingw/CMakeFiles/mcp-w32s.dir/src/uart.c.obj
-        if i686-w64-mingw32-nm "$UOBJ" | grep -iE ' U _?(CreateFile|OpenComm|BuildCommDCB|SetCommState|SetCommTimeouts)'; then
+        # The undefined symbol is mingw's dllimport thunk form (e.g.
+        # `__imp__CreateFileA@28`), so match ` U <anything>API` - a `_?` prefix
+        # would only catch the bare `_CreateFileA` form no real code emits, and
+        # would fail OPEN against exactly the regression this guard exists to
+        # catch (verified: serial.c.obj's __imp__CreateFileA@28 is detected).
+        if i686-w64-mingw32-nm "$UOBJ" | grep -iE ' U .*(CreateFile|OpenComm|BuildCommDCB|SetCommState|SetCommTimeouts)'; then
           echo "ERROR: uart.c references an OS comm-open API - not owned exclusively (PIN #5)!"
           exit 1
         fi
