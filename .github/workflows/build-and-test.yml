@@ -125,6 +125,21 @@ jobs:
     # one alongside ours) would be a malformed resource directory; zero means
     # the *A APIs never switch to UTF-8. wrestool (icoutils) lists and extracts
     # the resource; --raw dumps the manifest bytes verbatim for the content grep.
+    # The MinGW build embeds a PREBUILT src/mcp-w32s.res (so the MSYS2 native
+    # runner needs no windres preprocessor, which is broken there on binutils
+    # 2.46). Guard the committed artifact against drift: regenerate the .res from
+    # the .rc + .manifest here - where the cross windres preprocessor works - and
+    # byte-diff. A stale .res fails the build and prints the regen command.
+    - name: Verify the prebuilt manifest .res matches its source
+      run: |
+        i686-w64-mingw32-windres -I src src/mcp-w32s.rc -O res -o /tmp/regen.res
+        if ! cmp -s /tmp/regen.res src/mcp-w32s.res; then
+          echo "ERROR: src/mcp-w32s.res is stale - regenerate it:"
+          echo "  i686-w64-mingw32-windres -I src src/mcp-w32s.rc -O res -o src/mcp-w32s.res"
+          exit 1
+        fi
+        echo "OK: prebuilt manifest .res matches mcp-w32s.rc + mcp-w32s.manifest."
+
     - name: Verify exactly one UTF-8 activeCodePage manifest at RT_MANIFEST ID 1
       run: |
         N=$(wrestool -l build/mingw/mcp-w32s.exe | grep -c -- '--type=24 --name=1' || true)
@@ -444,10 +459,13 @@ jobs:
   windows-native:
     name: real-Windows (exec / Winsock / ConPTY, no Wine)
     runs-on: windows-latest
-    # Newly introduced job, still being stabilised on the MSYS2 toolchain - keep
-    # it informational so it cannot gate merges until it is reliably green; flip
-    # to a required check once the real-Windows run is consistently passing.
-    continue-on-error: true
+    # Gating (no longer continue-on-error): the manifest is embedded from a
+    # prebuilt .res (no windres preprocessor), the import check uses the
+    # MSYS2-unprefixed objdump, and the shell-builtin tests use a host-robust
+    # subject - so this job builds and runs the full exec/Winsock/ConPTY suite
+    # green on real Windows. It was informational while the MSYS2 toolchain was
+    # being stabilised. (Add it to the branch-protection required checks to make
+    # it a hard merge gate.)
     defaults:
       run:
         shell: msys2 {0}
@@ -469,7 +487,9 @@ jobs:
         cmake --build --preset mingw
     - name: Verify the device still imports ONLY kernel32 + user32
       run: |
-        IMPORTS=$(i686-w64-mingw32-objdump -p build/mingw/mcp-w32s.exe \
+        # MSYS2 MINGW32 ships UNPREFIXED binutils (objdump, not
+        # i686-w64-mingw32-objdump - the cross-prefixed name does not exist here).
+        IMPORTS=$(objdump -p build/mingw/mcp-w32s.exe \
           | sed -n 's/.*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
         echo "imports: $IMPORTS"
         echo "$IMPORTS" | grep -vqE '^(kernel32|user32)\.dll$' && {

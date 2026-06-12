@@ -335,11 +335,14 @@ TEST_CASE(invalid_base64_is_dispatcher)
 }
 
 /* ================================================================
- * #15 - shell=true vs shell=false: dir works only via shell. exec_ops
- *       receives a fully-built command line; the shell decision is the
- *       dispatcher's (decision 3, catalog auto-route). At the exec_ops
- *       layer we verify that "cmd /c dir" works and a bare "dir" (no
- *       shell wrap) spawn-fails - dir is not an .exe.
+ * #15 - shell=true vs shell=false: a cmd built-in works only via shell.
+ *       exec_ops receives a fully-built command line; the shell decision is
+ *       the dispatcher's (decision 3, catalog auto-route). At the exec_ops
+ *       layer we verify that "cmd /c <builtin>" works and a bare "<builtin>"
+ *       (no shell wrap) spawn-fails - the built-in is not an .exe. Use "ver",
+ *       not "dir": some runners ship a coreutils dir.exe on PATH (e.g. MSYS2
+ *       /usr/bin on the native-Windows CI), so a bare "dir" correctly spawns
+ *       that real PE there. "ver" has no .exe equivalent on any host.
  * ================================================================ */
 TEST_CASE(shell_dir_routing)
 {
@@ -347,17 +350,17 @@ TEST_CASE(shell_dir_routing)
     char msg[128];
     int ok_shell, ok_bare;
     clear_bufs();
-    ok_shell = ExecOpRun("cmd /c dir", "C:\\", T_TIMEOUT, 1,
+    ok_shell = ExecOpRun("cmd /c ver", "C:\\", T_TIMEOUT, 1,
                          NULL, 0, g_out, sizeof(g_out), g_err, sizeof(g_err),
                          0, 0, BIN_PE32, &r, msg, sizeof(msg));
-    TEST_ASSERT(ok_shell, "dir via shell works");
-    TEST_ASSERT_INT_EQUAL(0, r.exit_code, "shelled dir exit 0");
+    TEST_ASSERT(ok_shell, "ver via shell works");
+    TEST_ASSERT_INT_EQUAL(0, r.exit_code, "shelled ver exit 0");
 
     clear_bufs();
-    ok_bare = ExecOpRun("dir", "C:\\", T_TIMEOUT, 1,
+    ok_bare = ExecOpRun("ver", "C:\\", T_TIMEOUT, 1,
                         NULL, 0, g_out, sizeof(g_out), g_err, sizeof(g_err),
                         0, 0, BIN_PE32, &r, msg, sizeof(msg));
-    TEST_ASSERT(!ok_bare, "bare dir (no .exe) spawn-fails");
+    TEST_ASSERT(!ok_bare, "bare ver (no .exe) spawn-fails");
 }
 
 /* ================================================================
