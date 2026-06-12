@@ -209,16 +209,19 @@ TEST_CASE(missing_file_errors) {
     TEST_ASSERT(err[0] != '\0', "error message populated");
 }
 
-/* 6. Shell built-in name ("dir") -> BIN_SHELL without file read */
+/* 6. Shell built-in name -> BIN_SHELL without file read. Use "ver" (a cmd
+ * built-in with no .exe equivalent on ANY host), not "dir": some runners ship a
+ * coreutils dir.exe on PATH (e.g. MSYS2 /usr/bin on the native-Windows CI), so
+ * "dir" correctly resolves to a real PE there - a host-tolerance trap. */
 TEST_CASE(shell_builtin_is_shell) {
     char err[128];
     BinaryType type;
     int ok;
 
     type = BIN_UNKNOWN;
-    ok = BinFmtClassify("dir", &type, err, sizeof(err));
-    TEST_ASSERT_INT_EQUAL(1, ok, "classify 'dir' succeeds");
-    TEST_ASSERT_INT_EQUAL(BIN_SHELL, type, "'dir' is shell built-in");
+    ok = BinFmtClassify("ver", &type, err, sizeof(err));
+    TEST_ASSERT_INT_EQUAL(1, ok, "classify 'ver' succeeds");
+    TEST_ASSERT_INT_EQUAL(BIN_SHELL, type, "'ver' is shell built-in");
 }
 
 /* 7. Uplift: after FeatInit, if pGetBinaryTypeA present, self still PE32. */
