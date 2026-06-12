@@ -6,7 +6,7 @@
  * system (Win32s ships the older CRTDLL.DLL instead), so a normally-linked
  * mcp-w32s.exe fails to load there with "Cannot find MSVCRT.DLL". CI never
  * caught this because the PEs run under Wine, which provides msvcrt.dll. This
- * was surfaced by the Phase 6 real-hardware test (see plan/PHASE6.md Finding
+ * was surfaced by the real-hardware test (see plan/PHASE6.md Finding
  * #1) and matches the device's own stated goal of "zero DLL dependencies
  * beyond what the OS provides".
  *

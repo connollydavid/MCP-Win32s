@@ -1,5 +1,5 @@
 /*
- * catalog.h - Command catalog loader and whitelist (Phase 4)
+ * catalog.h - Command catalog loader and whitelist
  *
  * Loads catalog/win32-commands.json (a nested document the single-level
  * json_parser.c cannot handle) via a small self-contained recursive-descent

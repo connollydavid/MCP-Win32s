@@ -103,7 +103,7 @@ int Base64Decode(const char *in, unsigned char *out, int out_size)
     int out_pos;
     /* Accumulator is unsigned: the rolling (buf << 6) would overflow a
      * signed int after enough high-value sextets - undefined behaviour
-     * in C89 (found by the theft/UBSan host harness, Phase 4). Only the
+     * in C89 (found by the theft/UBSan host harness). Only the
      * low bits are ever extracted, so unsigned wraparound is correct. */
     unsigned int buf;
     int buf_bits;

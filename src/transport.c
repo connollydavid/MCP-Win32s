@@ -176,7 +176,7 @@ int ParseCommandLine(const char *cmdLine, TransportConfig *config)
         copy_until_space(val, config->bindAddr, sizeof(config->bindAddr));
     }
 
-    /* Exec-gate modifiers (Phase 4; spec: catalog.allium ServerStartup).
+    /* Exec-gate modifiers (spec: catalog.allium ServerStartup).
      * Parsed before the transport branches below, which return early. */
     val = find_flag_tok(cmdLine, "UNSAFE");
     if (val != NULL) {

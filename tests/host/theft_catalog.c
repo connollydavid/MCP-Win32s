@@ -1,7 +1,7 @@
 /*
  * theft_catalog.c - host-native property-based tests for src/catalog.c.
  *
- * Phase 4 theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
+ * theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
  * harness"; tests/OBLIGATIONS-PHASE4.md catalog.allium: gate-exclusivity,
  * invariant.EntriesBelongToTheCatalog).
  *

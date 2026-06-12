@@ -1,7 +1,7 @@
 /*
  * theft_argv.c - host-native property-based test for src/argv.c.
  *
- * Phase 4 theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
+ * theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
  * harness"; tests/OBLIGATIONS-PHASE4.md: argv roundtrip / Q8 quoting).
  *
  * Property (autoshrinking, >= 50000 trials):

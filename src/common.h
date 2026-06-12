@@ -56,7 +56,7 @@ typedef struct {
     char line[MCP_MAX_LINE];        /* Command line for exec (legacy; argv wins) */
     char data[MCP_MAX_DATA];        /* Base64 encoded file data */
 
-    /* exec / ptyExec fields (Phase 4) */
+    /* exec / ptyExec fields */
     int  argv_count;                            /* 0 = argv absent */
     char argv[MCP_MAX_ARGV][MCP_MAX_ARG_LEN];   /* Parsed argv array */
     char cwd[MCP_MAX_PATH_LEN];                 /* Working directory ("" = inherit) */

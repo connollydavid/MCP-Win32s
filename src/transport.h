@@ -24,7 +24,7 @@
 #define TRANSPORT_NONE   0
 #define TRANSPORT_SERIAL 1
 #define TRANSPORT_TCP    2
-#define TRANSPORT_PIPE   3    /* reserved - Phase 5+ */
+#define TRANSPORT_PIPE   3    /* reserved - named pipes, not yet implemented */
 #define TRANSPORT_MOCK   99   /* test-only */
 
 /* Transport flags */

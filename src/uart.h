@@ -82,7 +82,7 @@ typedef enum {
  * i386 targets); the host tests wire them to a simulated-16550 register machine.
  * `yield` is the cooperative pump called between bounded re-polls (Win 3.11 is
  * non-preemptive): the real build uses Sleep(0)/Sleep(1) (or, if the guest
- * proves it necessary, a PeekMessage pump - resolved on hardware in Phase 6);
+ * proves it necessary, a PeekMessage pump - resolved on hardware);
  * the host build uses a no-op (the bound is asserted by an op counter, not time).
  * `ctx` is passed back to in/out/yield (the simulated chip in tests; unused real).
  */
@@ -148,7 +148,7 @@ int UartProgramDivisor(const UartPortIo *io, UartDriver *drv, unsigned int divis
  * Set MCR LOOP (bit4); send 0xAE to THR; poll LSR DR (BOUNDED) and read RBR ==
  * 0xAE; confirm MCR->MSR reflects (LOOP|OUT2|RTS gives MSR DCD/CTS). A dead /
  * clone chip that decodes registers but does not truly loop fails here. Restore
- * MCR (OUT2 left CLEAR) afterward. Returns 1 pass, 0 fail (or the DR poll bound
+ * MCR (OUT2 left CLEAR) afterward. Returns 1 on success, 0 on failure (or the DR poll bound
  * expiring -> fail-closed).
  */
 int UartLoopbackSelfTest(const UartPortIo *io, UartDriver *drv);
