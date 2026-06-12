@@ -180,6 +180,44 @@ jobs:
         fi
         echo "OK: Only i386 instructions in application code."
 
+    # uart.allium PIN #2 (BarePortIoNoEscalation): the Win32s direct-UART seam
+    # reaches the 16550 by bare ring-3 IN/OUT ONLY. Assert uart.c.obj carries the
+    # port ops and NO ring-0 / escalation / IRQ-control / software-interrupt /
+    # far-transfer instruction - a regression smuggling in cli/sti/int/lgdt/lcall
+    # would defeat "use what the OS grants ring-3; never escalate".
+    - name: Verify the direct-UART seam is bare IN/OUT only (no escalation)
+      run: |
+        UOBJ=build/mingw/CMakeFiles/mcp-w32s.dir/src/uart.c.obj
+        i686-w64-mingw32-objdump -d "$UOBJ" > uart_disasm.txt
+        if ! grep -qiE '(in|out)[[:space:]]+(\(%dx\),%al|%al,\(%dx\))' uart_disasm.txt; then
+          echo "ERROR: uart.c.obj has no IN/OUT port op - the seam is missing?"
+          exit 1
+        fi
+        if grep -iwE 'cli|sti|lgdt|lidt|iret|iretd|hlt|sysenter|syscall|wrmsr|rdmsr|clts|invd|lmsw|lcall|ljmp|into' uart_disasm.txt; then
+          echo "ERROR: uart.c contains a privileged/escalation instruction (PIN #2)!"
+          exit 1
+        fi
+        if grep -iE '\bint +\$0x' uart_disasm.txt; then
+          echo "ERROR: uart.c contains a software interrupt (PIN #2)!"
+          exit 1
+        fi
+        echo "OK: the direct-UART seam is bare IN/OUT - no escalation (PIN #2)."
+
+    # uart.allium PIN #5 (UartOwnedExclusively): on the direct route COM1 is NEVER
+    # opened via the OS, so the Win16 COMM.DRV stays passive. Checked on the
+    # COMPILED object's undefined symbols (NOT the source text - uart.c's prose
+    # legitimately names these APIs, so a source grep would false-positive). A
+    # regression calling CreateFile/OpenComm/SetCommState from uart.c would link
+    # the symbol here.
+    - name: Verify the direct-UART route never opens COM via the OS
+      run: |
+        UOBJ=build/mingw/CMakeFiles/mcp-w32s.dir/src/uart.c.obj
+        if i686-w64-mingw32-nm "$UOBJ" | grep -iE ' U _?(CreateFile|OpenComm|BuildCommDCB|SetCommState|SetCommTimeouts)'; then
+          echo "ERROR: uart.c references an OS comm-open API - not owned exclusively (PIN #5)!"
+          exit 1
+        fi
+        echo "OK: uart.c references no OS comm-open API (PIN #5, UART owned exclusively)."
+
     - name: Upload main executable
       uses: actions/upload-artifact@v7
       with:
