@@ -1,7 +1,7 @@
 /*
  * win32_shim.h - Minimal Win32 shim for the host-native theft PBT harness.
  *
- * Phase 4 theft host harness (plan/PHASE4.md, "theft host-side PBT harness").
+ * theft host harness (plan/PHASE4.md, "theft host-side PBT harness").
  *
  * The shipped modules under test stay strict C89 and #include <windows.h>
  * (src/catalog.c) or use the Win32 ANSI string helpers. theft itself is

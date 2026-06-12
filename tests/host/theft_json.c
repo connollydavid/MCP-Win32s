@@ -1,7 +1,7 @@
 /*
  * theft_json.c - host-native property-based tests for src/json_parser.c.
  *
- * Phase 4 theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
+ * theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
  * harness"; tests/OBLIGATIONS-PHASE4.md entity-fields.Command parse path).
  *
  * Properties (autoshrinking):

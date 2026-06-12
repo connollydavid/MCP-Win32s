@@ -1,5 +1,5 @@
 /*
- * catalog.c - Command catalog loader and whitelist (Phase 4)
+ * catalog.c - Command catalog loader and whitelist
  *
  * The shipped json_parser.c is single-level (flat key/value objects) and
  * cannot parse catalog/win32-commands.json, which nests objects, arrays,

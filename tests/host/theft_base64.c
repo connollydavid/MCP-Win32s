@@ -1,7 +1,7 @@
 /*
  * theft_base64.c - host-native property-based tests for src/base64.c.
  *
- * Phase 4 theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
+ * theft host PBT harness (plan/PHASE4.md, "theft host-side PBT
  * harness"). Deep, autoshrinking version of tests/test_pbt_base64.c.
  *
  * Properties (>= 50000 trials each, autoshrinking):

@@ -1,5 +1,5 @@
 /*
- * test_catalog.c - Unit tests for catalog.c (Phase 4)
+ * test_catalog.c - Unit tests for catalog.c
  *
  * Obligations (tests/OBLIGATIONS-PHASE4.md, specs/catalog.allium):
  *   enum-comparable.EntryKind ............... lookup_dir_is_builtin

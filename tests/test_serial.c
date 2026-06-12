@@ -44,7 +44,7 @@ extern int ProcessBuffer(LineBuffer *buf, const char *input, int inputLen,
 
 extern void ProcessCommand(const char *line, Transport *t);
 
-/* Phase 4 exec dispatcher hooks (mcp-w32s.c, TEST_BUILD) */
+/* exec dispatcher hooks (mcp-w32s.c, TEST_BUILD) */
 extern void ExecConfigure(Catalog *cat, int unsafeMode);
 extern void ExecInjectOrphanForTest(HANDLE h, DWORD startTick,
                                     const char *cmdLine);
@@ -595,7 +595,7 @@ TEST_CASE(dispatch_rmdir_nonempty_envelope) {
 
 
 /* ========================================================
- * Phase 4 exec integration (full JSON -> ProcessCommand ->
+ * exec integration (full JSON -> ProcessCommand ->
  * response shape). Obligations (tests/OBLIGATIONS-PHASE4.md):
  * rule-success.ExecCommand, rule-success.ExecSuccess,
  * rule-success.ExecRejectedResponse, rule-success.GateMiss,
@@ -626,7 +626,7 @@ static Catalog *load_test_catalog(void)
 }
 
 TEST_CASE(exec_integration_full_response) {
-    /* exec happy path: every Phase 4 response key present.
+    /* exec happy path: every response key present.
      * unsafe:true so the test is catalog-independent; asserts the
      * unsafe_used response field (decision 6). */
     MockTransport m;
@@ -1421,7 +1421,7 @@ int main(void)
     RUN_TEST(dispatch_rmdir_ok_envelope);
     RUN_TEST(dispatch_rmdir_nonempty_envelope);
 
-    printf("\nPhase 4 exec integration:\n");
+    printf("\nexec integration:\n");
     FeatInit();
     RUN_TEST(exec_integration_full_response);
     RUN_TEST(exec_catalog_miss_rejected);

@@ -10,21 +10,21 @@
  *
  * Usage: wire_client <host> <port> [--ready-only]
  *
- * Phase 1 (always): connect, read the FIRST line, validate the ready shape
+ * Ready handshake: connect, read the FIRST line, validate the ready shape
  *   per contract ReadyHandshake (status:"ready", codepage Integer, version
  *   non-empty String, transport non-empty, features object with the eight
  *   documented boolean keys). Extra keys are tolerated (a missing catalog
  *   adds a "warning" key). A malformed/non-ready first line fails the
  *   session (rule ReadyMalformed) -> nonzero exit.
  *
- * Phase 2: request/response round trips, correlated by id (rule
+ * Request/response: round trips correlated by id (rule
  *   ResponseCorrelated; invariant ResponsesMatchTheirRequest), sent
  *   strictly sequentially (invariant OneLineOneMessage):
  *     echo  -> status ok, data=="ping", id=="w1"
  *     exec  -> status ok, exit_code 0, stdout_b64 present, id=="w2"
  *     error -> status error, id=="w3"
  *
- * Phase 3: in-process property-based tests (prop.h) against the tolerant
+ * Property-based: in-process tests (prop.h) against the tolerant
  *   response parser only (no network):
  *     a. correlation ids round-trip (rule-success.ResponseCorrelated PBT)
  *     b. unknown response keys are ignored (RequestResponse @guidance)
@@ -225,7 +225,7 @@ static int wc_parse_int(const char *p, int *out, const char **endp)
  * wire_parse_response - the tolerant response parser. Scans one response
  * line. Extracts id/status/data/exit_code/stdout_b64; ignores every other
  * key. Sets out->ok=0 (never crashes) on any malformed input. This is the
- * single function the Phase 3 PBT properties hammer.
+ * single function the PBT properties hammer.
  */
 static void wire_parse_response(const char *line, WireResponse *out)
 {
@@ -567,7 +567,7 @@ static int round_trip(SOCKET s, const char *request, WireResponse *resp)
 }
 
 /* ------------------------------------------------------------------ */
-/* Phase 3 - property-based tests against wire_parse_response          */
+/* Property-based tests against wire_parse_response          */
 /* ------------------------------------------------------------------ */
 
 static void wc_rand_alnum(prop_ctx *_pc, char *out, int len)
@@ -737,7 +737,7 @@ int main(int argc, char **argv)
     }
 
     /* SessionOpened: connection established -> session in 'connected'. */
-    printf("--- Phase 1: ready handshake ---\n");
+    printf("--- ready handshake ---\n");
 
     /* ReadyIsFirst: the FIRST line must be the ready message. */
     if (!recv_line(sock, line, (int)sizeof(line))) {
@@ -765,8 +765,8 @@ int main(int argc, char **argv)
         return g_fail == 0 ? 0 : 1;
     }
 
-    /* --- Phase 2: request/response round trips, sequential --- */
-    printf("--- Phase 2: request/response round trips ---\n");
+    /* --- request/response round trips, sequential --- */
+    printf("--- request/response round trips ---\n");
 
     /* 1. echo round-trip. */
     {
@@ -816,8 +816,8 @@ int main(int argc, char **argv)
     closesocket(sock);
     WSACleanup();
 
-    /* --- Phase 3: in-process PBT against the response parser --- */
-    printf("--- Phase 3: parser property-based tests ---\n");
+    /* --- in-process PBT against the response parser --- */
+    printf("--- parser property-based tests ---\n");
     prop_seed(0x5712C0DEUL);   /* fixed seed for reproducibility */
     PROP_RUN(pbt_id_round_trip,          250);
     PROP_RUN(pbt_unknown_keys_ignored,   250);

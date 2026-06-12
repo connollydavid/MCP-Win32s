@@ -450,7 +450,7 @@ TEST_CASE(build_response_null_value) {
 }
 
 /* ========================================================
- * Parsing - Phase 4 exec fields
+ * Parsing - exec fields
  * Obligation: entity-fields.Command (mcp-protocol.allium) - argv
  * array, cwd, shell/unsafe booleans, timeout_ms/max_output ints,
  * stdin_b64. See tests/OBLIGATIONS-PHASE4.md.
@@ -635,7 +635,7 @@ int main(void)
     RUN_TEST(parse_value_truncation);
     RUN_TEST(parse_just_whitespace);
 
-    printf("\nParsing - Phase 4 exec fields:\n");
+    printf("\nParsing - exec fields:\n");
     RUN_TEST(parse_exec_argv_array);
     RUN_TEST(parse_exec_argv_escapes);
     RUN_TEST(parse_exec_numbers_and_bools);

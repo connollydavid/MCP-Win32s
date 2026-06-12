@@ -1,5 +1,5 @@
 /*
- * test_exec_ops.c - Unit tests for exec_ops.c (Phase 4 process core).
+ * test_exec_ops.c - Unit tests for exec_ops.c (process core).
  *
  * Runs cmd.exe children (dev host is Win11 via WSL interop; cmd /c works
  * natively, and under Wine in CI). Timeouts are kept small (<= ~3s); the
