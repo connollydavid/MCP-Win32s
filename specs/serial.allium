@@ -61,6 +61,14 @@ rule PortOpenFails {
     )
 }
 
+-- Note (Win32s direct-UART route, see uart.allium): on the Win32s tier the
+-- serial session is realised by direct ring-3 UART I/O (the 16550 driven by
+-- IN/OUT), not by COMM.DRV. A failed open there is likewise TERMINAL - there
+-- is NO degrade to the OS comm path, because that route never opens COM1 via
+-- the OS (uart.allium's UartOwnedExclusively). The `failed` outcome above
+-- covers it; this note records the absence of a fallback so a later weed pass
+-- does not read the missing degrade as drift.
+
 -- The defining serial decision (distilled from the interval-only
 -- timeout configuration): an IDLE LINE IS A LIVE SESSION. A read on an
 -- idle port waits indefinitely for the first byte, then delivers each

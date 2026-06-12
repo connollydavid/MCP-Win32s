@@ -34,6 +34,10 @@ if [ "$1" = "host-pbt" ]; then
     # encoding: the pure UTF-8<->UTF-16 codec (ENCODING_HOST_PURE excludes the
     # Win32 tier surface in encoding.h) - the four codec property pins at 50k.
     gcc $HFLAGS -DENCODING_HOST_PURE tests/host/theft_encoding.c src/encoding.c build/host/theft/*.o -lm -o build/host/theft_encoding
+    # uart: the pure detection ladder + driving logic (UART_HOST_PURE excludes the
+    # asm IN/OUT seam + transport wiring) vs a simulated 16550 (tests/uart_sim.h,
+    # hence -Itests) - the security-invariant pins at 50k.
+    gcc $HFLAGS -Itests -DUART_HOST_PURE tests/host/theft_uart.c src/uart.c build/host/theft/*.o -lm -o build/host/theft_uart
     # UBSan runs in recover mode: theft's own PRNG prints one benign
     # shift diagnostic (vendored, not patched). The modules under test
     # are expected to stay diagnostic-free - see tests/host/README.md.
@@ -43,6 +47,7 @@ if [ "$1" = "host-pbt" ]; then
     build/host/theft_catalog
     build/host/theft_mem
     build/host/theft_encoding
+    build/host/theft_uart
     echo "host-pbt: all properties passed"
     exit 0
 fi
