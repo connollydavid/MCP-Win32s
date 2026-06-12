@@ -459,10 +459,13 @@ jobs:
   windows-native:
     name: real-Windows (exec / Winsock / ConPTY, no Wine)
     runs-on: windows-latest
-    # Newly introduced job, still being stabilised on the MSYS2 toolchain - keep
-    # it informational so it cannot gate merges until it is reliably green; flip
-    # to a required check once the real-Windows run is consistently passing.
-    continue-on-error: true
+    # Gating (no longer continue-on-error): the manifest is embedded from a
+    # prebuilt .res (no windres preprocessor), the import check uses the
+    # MSYS2-unprefixed objdump, and the shell-builtin tests use a host-robust
+    # subject - so this job builds and runs the full exec/Winsock/ConPTY suite
+    # green on real Windows. It was informational while the MSYS2 toolchain was
+    # being stabilised. (Add it to the branch-protection required checks to make
+    # it a hard merge gate.)
     defaults:
       run:
         shell: msys2 {0}
