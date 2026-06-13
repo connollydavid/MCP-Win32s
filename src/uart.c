@@ -512,6 +512,7 @@ void UartDrainAndClose(const UartPortIo *io, UartDriver *drv)
  * probe, lives in serial.c where the dispatch branch is.)
  */
 #include <windows.h>
+#include "strutil.h"
 #include "transport.h"
 #include "feat.h"
 
@@ -681,7 +682,7 @@ int UartBackendOpenDirect(const TransportConfig *cfg, Transport *out,
     base = uart_base_for_port(cfg->port);
     if (base == 0) {
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "win32s direct-uart: unknown COM port", errSize);
+            McpStrCpyN(err, "win32s direct-uart: unknown COM port", errSize);
         }
         return 0;
     }
@@ -691,7 +692,7 @@ int UartBackendOpenDirect(const TransportConfig *cfg, Transport *out,
 
     if (UartOpenSequence(&g_uart_io, &g_uart, base, divisor) != UART_OPEN_LIVE) {
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err,
+            McpStrCpyN(err,
                 "win32s direct-uart: no working UART at the COM port", errSize);
         }
         return 0;   /* terminal - no degrade to the OS comm path (invariant 5) */

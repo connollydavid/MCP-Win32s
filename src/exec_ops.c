@@ -37,6 +37,7 @@
 #include "feat.h"
 #include "binfmt.h"
 #include "encoding.h"   /* Utf8ToUtf16 for the -W spawn (wide tier) */
+#include "strutil.h"    /* McpStrCpyN (the NT 3.1 floor lacks lstrcpynA) */
 
 /* ------------------------------------------------------------------
  * Job-object declarations. MinGW's C89 headers may lack these; declare
@@ -124,7 +125,33 @@ typedef struct {
 static void SetMsg(char *errMsg, int errSize, const char *s)
 {
     if (errMsg != NULL && errSize > 0) {
-        lstrcpynA(errMsg, s, errSize);
+        McpStrCpyN(errMsg, s, errSize);
+    }
+}
+
+/*
+ * ClearHandleInherit - clear a handle's HANDLE_FLAG_INHERIT (Q5: the
+ * parent-only pipe ends must not be inherited by the child). NT 3.1's kernel32
+ * - the native-Win32 floor - has no SetHandleInformation (it arrived in NT
+ * 3.51/Win95), so when the runtime probe found it absent we fall back to the
+ * classic pre-3.51 idiom: duplicate the handle non-inheritable and drop the
+ * inheritable original. DuplicateHandle is present since NT 3.1.
+ */
+static void ClearHandleInherit(HANDLE *ph)
+{
+    HANDLE dup;
+    if (ph == NULL || *ph == NULL || *ph == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    if (g_features.pSetHandleInformation != NULL) {
+        g_features.pSetHandleInformation(*ph, HANDLE_FLAG_INHERIT, 0);
+        return;
+    }
+    if (DuplicateHandle(GetCurrentProcess(), *ph,
+                        GetCurrentProcess(), &dup,
+                        0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        CloseHandle(*ph);
+        *ph = dup;
     }
 }
 
@@ -375,9 +402,9 @@ int ExecOpRun(
         goto fail_pipes;
     }
     /* Q5: child must not inherit the parent-only ends. */
-    SetHandleInformation(inWr, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(outRd, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(errRd, HANDLE_FLAG_INHERIT, 0);
+    ClearHandleInherit(&inWr);
+    ClearHandleInherit(&outRd);
+    ClearHandleInherit(&errRd);
 
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);

@@ -8,6 +8,7 @@
 #include <string.h>
 #include "serial.h"
 #include "uart.h"      /* the Win32s tier gate + direct-UART route */
+#include "strutil.h"   /* McpStrCpyN (the NT 3.1 floor lacks lstrcpynA) */
 
 #ifdef TEST_BUILD
 /* The route SerialBackendOpen last selected (uart.h UartLastRouteForTest): the
@@ -166,7 +167,7 @@ int SerialBackendOpen(const TransportConfig *cfg, Transport *out,
          * the on-target hardware acceptance. */
         g_serial_route = UART_ROUTE_DIRECT_UART;
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "win32s direct-uart route (test: no port I/O)",
+            McpStrCpyN(err, "win32s direct-uart route (test: no port I/O)",
                       errSize);
         }
         return 0;
@@ -181,7 +182,7 @@ int SerialBackendOpen(const TransportConfig *cfg, Transport *out,
     h = OpenSerialPort(cfg->port, cfg->baudRate);
     if (h == INVALID_HANDLE_VALUE) {
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "failed to open serial port", errSize);
+            McpStrCpyN(err, "failed to open serial port", errSize);
         }
         return 0;
     }

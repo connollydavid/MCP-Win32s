@@ -12,6 +12,7 @@
 
 #include <winsock.h>
 #include <windows.h>
+#include "strutil.h"
 #include <string.h>
 #include "tcp.h"
 
@@ -206,7 +207,7 @@ int TcpBackendOpen(const TransportConfig *cfg, Transport *out,
 
     if (!TcpBackendProbe()) {
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "winsock (wsock32.dll) not available", errSize);
+            McpStrCpyN(err, "winsock (wsock32.dll) not available", errSize);
         }
         return 0;
     }
@@ -214,14 +215,14 @@ int TcpBackendOpen(const TransportConfig *cfg, Transport *out,
     if (!g_started) {
         if (g_ws.startup(MAKEWORD(1, 1), &wsa) != 0) {
             if (err != NULL && errSize > 0) {
-                lstrcpynA(err, "WSAStartup failed", errSize);
+                McpStrCpyN(err, "WSAStartup failed", errSize);
             }
             return 0;
         }
         if (LOBYTE(wsa.wVersion) != 1 || HIBYTE(wsa.wVersion) != 1) {
             g_ws.cleanup();
             if (err != NULL && errSize > 0) {
-                lstrcpynA(err, "winsock 1.1 not supported", errSize);
+                McpStrCpyN(err, "winsock 1.1 not supported", errSize);
             }
             return 0;
         }
@@ -231,7 +232,7 @@ int TcpBackendOpen(const TransportConfig *cfg, Transport *out,
     s = g_ws.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "socket() failed", errSize);
+            McpStrCpyN(err, "socket() failed", errSize);
         }
         return 0;
     }
@@ -245,7 +246,7 @@ int TcpBackendOpen(const TransportConfig *cfg, Transport *out,
         SOCKET_ERROR) {
         g_ws.closesocket(s);
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "bind() failed", errSize);
+            McpStrCpyN(err, "bind() failed", errSize);
         }
         return 0;
     }
@@ -253,7 +254,7 @@ int TcpBackendOpen(const TransportConfig *cfg, Transport *out,
     if (g_ws.listen(s, 1) == SOCKET_ERROR) {
         g_ws.closesocket(s);
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "listen() failed", errSize);
+            McpStrCpyN(err, "listen() failed", errSize);
         }
         return 0;
     }

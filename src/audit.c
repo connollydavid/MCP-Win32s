@@ -13,6 +13,7 @@
  */
 
 #include <windows.h>
+#include "strutil.h"
 #include "audit.h"
 
 #define AUDIT_DEFAULT_NAME "audit-mem.log"
@@ -78,7 +79,7 @@ int AuditIsWritable(void)
 int AuditConfigure(int armRequested, const char *path)
 {
     if (path != NULL && path[0] != '\0') {
-        lstrcpynA(g_auditPath, path, (int)sizeof(g_auditPath));
+        McpStrCpyN(g_auditPath, path, (int)sizeof(g_auditPath));
     } else {
         resolve_default_path(g_auditPath, (int)sizeof(g_auditPath));
     }

@@ -69,6 +69,8 @@ typedef struct {
     BOOL    (WINAPI *pAssignProcessToJobObject)(HANDLE, HANDLE);
     BOOL    (WINAPI *pSetInformationJobObject)(HANDLE, int, LPVOID, DWORD);
     BOOL    (WINAPI *pGetBinaryTypeA)(LPCSTR, LPDWORD);
+    /* NT 3.1's kernel32 lacks SetHandleInformation (arrived NT 3.51/Win95). */
+    BOOL    (WINAPI *pSetHandleInformation)(HANDLE, DWORD, DWORD);
     BOOL    (WINAPI *pIsWow64Process)(HANDLE, BOOL *);
     BOOL    (WINAPI *pGenerateConsoleCtrlEvent)(DWORD, DWORD);
     BOOL    (WINAPI *pQueryFullProcessImageNameA)(HANDLE, DWORD, LPSTR, LPDWORD);
