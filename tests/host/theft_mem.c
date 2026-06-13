@@ -1,7 +1,7 @@
 /*
  * theft_mem.c - host-native property-based tests for the pure memory guards.
  *
- * 5.3 theft host PBT harness (tests/OBLIGATIONS-5.3.md, specs/memory-ops.allium:
+ * Theft host PBT harness (tests/OBLIGATIONS-5.3.md, specs/memory-ops.allium:
  * SAFETY PIN #1 invariant.AddressIsWellFormed, SAFETY PIN #2
  * invariant.MemoryAccessRangeBounded - the strongest pin on the off-by-overflow
  * class). Properties (autoshrinking):

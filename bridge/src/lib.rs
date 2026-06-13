@@ -1,4 +1,4 @@
-//! MCP bridge for the MCP-Win32s device (Phase 5.0, bridge core).
+//! MCP bridge for the MCP-Win32s device (bridge core).
 //!
 //! An MCP server (stdio, via `rmcp`) that fronts a Win32s..Win11 device
 //! reachable over the frozen newline-JSON wire protocol (serial/TCP).

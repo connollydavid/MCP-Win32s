@@ -39,7 +39,7 @@ const FILE_TOOLS: &[&str] = &[
 
 /// rule-success.FileToolsRegistered, rule-entity-creation.FileToolsRegistered.1 —
 /// tools/list over the duplex advertises exactly the eight win32_* file
-/// tools plus the existing 5.0 echo tool, each with an inputSchema.
+/// tools plus the existing echo tool, each with an inputSchema.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn file_tools_all_advertised() {
     use rmcp::ServiceExt;
@@ -368,7 +368,7 @@ async fn file_tools_relay_to_device_cmds() {
     );
 }
 
-/// Cross-module scenario (device reply -> MCP result, the 5.0 generic
+/// Cross-module scenario (device reply -> MCP result, the generic
 /// mapping): a device status:"error" reply to a copy surfaces as an
 /// isError tool result carrying the reason; a device ok reply surfaces as
 /// a success result with structuredContent.

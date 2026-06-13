@@ -1,4 +1,4 @@
-//! 5.5 integration tests: runtime resilience and the power-tool audit. A
+//! Integration tests: runtime resilience and the power-tool audit. A
 //! tripped circuit-breaker and an exhausted rate limiter refuse a call LOCALLY
 //! (recoverable isError, device untouched — ToolCallCircuitOpen /
 //! ToolCallRateLimited); every power-tool call produces a durable audit record

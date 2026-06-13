@@ -219,7 +219,7 @@ struct Inner {
     /// registration mutates it (the new tools materialise on the next session,
     /// per the registry-as-source-of-truth model).
     registry: Mutex<Registry>,
-    /// Runtime resilience (5.5): the device-facing circuit-breaker and the
+    /// Runtime resilience: the device-facing circuit-breaker and the
     /// per-tool token-bucket rate limiter every relayed call passes through
     /// (rate-limit -> breaker -> relay), plus the append-only power-tool audit
     /// log (PowerToolsAreAudited).
@@ -399,7 +399,7 @@ impl Bridge {
     /// successful call (compile-error-≠-tool-error). The device failing to RUN
     /// the toolchain (a `status:"error"` reply) is the only isError case.
     // The build descriptors (role/command/template/dialect/diagnostic) are a
-    // flat per-call list bound in build_route; the 5.5 audit added tool_name,
+    // flat per-call list bound in build_route; the audit added tool_name,
     // tipping one past clippy's 7-arg heuristic. Bundling them into a struct
     // would be a single-use wrapper, so the list is kept flat.
     #[allow(clippy::too_many_arguments)]
@@ -744,7 +744,7 @@ impl Bridge {
         Ok(self.round_trip_power("win32_remove_dir", cmd).await)
     }
 
-    // ----- memory tools (5.3) -------------------------------------------
+    // ----- memory tools -------------------------------------------------
     // Each is a 1:1 relay to a device wire command (MemoryToolsRegistered).
     // They are gated by GATED_TOOLS: spawn_retain/peek/terminate/release on
     // "mem", poke on the two-factor "mem_write" — pruned from tools/list on a
@@ -846,7 +846,7 @@ impl Bridge {
         Ok(self.round_trip("win32_release", cmd).await)
     }
 
-    // ----- exec discovery tools (5.5) -----------------------------------
+    // ----- exec discovery tools -----------------------------------------
     // The three exec tools are 1:1 relays to the device's exec/ptyExec/
     // listCommands wire commands (ExecToolsRegistered, ExecToolsAreDirectRelays).
     // win32_exec/win32_pty_exec are destructive and power-audited; win32_exec
@@ -1074,8 +1074,8 @@ fn catalogued_build_commands() -> HashSet<String> {
         .collect()
 }
 
-/// Base64-decode a device reply field (`stdout_b64`/`stderr_b64`) to text. As
-/// of 5.4 the device owns the whole text pipeline and transcodes console output
+/// Base64-decode a device reply field (`stdout_b64`/`stderr_b64`) to text. The
+/// device owns the whole text pipeline and transcodes console output
 /// to UTF-8 on every tier, so these bytes are ALREADY valid UTF-8 — the bridge
 /// only validates them (no codepage logic, no `encoding_rs`/`oem_cp`). The
 /// `from_utf8_lossy` is kept purely as a belt-and-suspenders for a malformed

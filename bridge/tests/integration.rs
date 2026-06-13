@@ -1,4 +1,4 @@
-//! 5.0 integration tests: the bridge's tool-call -> device round-trip ->
+//! Integration tests: the bridge's tool-call -> device round-trip ->
 //! result mapping, against the mock device. Each cites its obligation
 //! IDs from bridge/OBLIGATIONS-5.0.md.
 
@@ -83,8 +83,8 @@ async fn transport_failure_maps_to_iserror() {
 }
 
 /// rule-success.ToolAdvertised, invariant.AdvertisedToolsAreCapable — the
-/// gate mechanism. 5.3 wires the FIRST real gated tools (the five memory
-/// tools), closing the G1 gap that left this prune set empty since 5.0. The
+/// gate mechanism. The FIRST real gated tools (the five memory
+/// tools) close the G1 gap that had left this prune set empty. The
 /// `caps()` helper here is a `mem: none` device, so every memory tool is
 /// pruned regardless of pty. (The per-capability logic is property-tested in
 /// props.rs; the tools/list effect in memory.rs.)

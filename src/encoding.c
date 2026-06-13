@@ -1,5 +1,5 @@
 /*
- * encoding.c - Full-range text encoding for MCP-Win32s (work-item 5.4).
+ * encoding.c - Full-range text encoding for MCP-Win32s.
  *
  * This translation unit carries the PURE UTF-8 <-> UTF-16 codec (the
  * Utf8Codec contract: utf16_to_utf8 / utf8_to_utf16). No Win32, no floating

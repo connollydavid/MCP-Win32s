@@ -2,7 +2,7 @@
  * theft_encoding.c - host-native property-based tests for the pure UTF-8 <->
  * UTF-16 codec (src/encoding.c: Utf16ToUtf8 / Utf8ToUtf16).
  *
- * 5.4 theft host PBT harness (specs/encoding.allium contract Utf8Codec). The
+ * Theft host PBT harness (specs/encoding.allium contract Utf8Codec). The
  * codec's SAFETY pins, each hammered at 50k autoshrinking trials:
  *
  *   codec/round_trip      a WELL-FORMED UTF-16 unit sequence survives
