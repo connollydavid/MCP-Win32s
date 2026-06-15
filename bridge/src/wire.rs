@@ -64,8 +64,8 @@ pub struct Features {
     pub extra: BTreeMap<String, Value>,
 }
 
-/// A command to the device: `{"cmd":..,"id":.., <args>}`. 5.0 issues
-/// only `echo`; the typed capability commands arrive in 5.1+.
+/// A command to the device: `{"cmd":..,"id":.., <args>}`. The bridge issues
+/// only `echo`; the typed capability commands are added later.
 #[derive(Debug, Clone, Serialize)]
 pub struct Command {
     pub cmd: String,

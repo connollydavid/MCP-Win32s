@@ -1248,7 +1248,7 @@ TEST_CASE(mem_wire_roundtrip) {
 }
 
 /* ========================================================
- * 5.5 listCommands discovery verb (full JSON -> ProcessCommand
+ * listCommands discovery verb (full JSON -> ProcessCommand
  * -> ok envelope). Obligations (tests/OBLIGATIONS-5.5.md):
  * rule-success.ListCommandsCommand (dispatch_list_commands),
  * rule-success.ListCommandsResult / CatalogListed
@@ -1308,7 +1308,7 @@ TEST_CASE(list_commands_round_trip) {
 }
 
 /* ========================================================
- * 6.2 direct-UART tier gate (SECURITY PIN #1,
+ * direct-UART tier gate (SECURITY PIN #1,
  * uart.allium ServingViaUartImpliesWin32s). The dispatch decision is pinned
  * WITHOUT driving a real port (a ring-3 IN #GPs on the CI/NT host); each test
  * restores g_features via FeatInit() so later tests are unaffected.

@@ -24,7 +24,7 @@
 #define FEAT_FORCE_NO_CTRL_EVENTS      0x0004
 #define FEAT_FORCE_NO_PTY              0x0008
 #define FEAT_FORCE_NO_BINARY_TYPE      0x0010
-/* 5.4: force the pre-NT -A fallback on an NT host so the codepage tier (our own
+/* Force the pre-NT -A fallback on an NT host so the codepage tier (our own
  * tables) and the -A file/spawn paths are exercisable where the -W uplift would
  * otherwise win. */
 #define FEAT_FORCE_NO_WIDE_FILEAPI     0x0020
@@ -57,7 +57,7 @@ typedef struct {
     int has_proc_thread_attr_list;
     int has_set_process_mitigation;
 
-    /* 5.4: the delay-loaded -W (UTF-16) file/dir uplift (the `wide` encoding
+    /* The delay-loaded -W (UTF-16) file/dir uplift (the `wide` encoding
      * tier). All eight file/dir -W APIs exist since NT 3.1, so one flag covers
      * them; CreateProcessW is tracked separately (the spawn path). NULL/0 on
      * Win32s/9x -> the codepage tier (our own tables) handles narrowing. */
@@ -81,7 +81,7 @@ typedef struct {
     BOOL    (WINAPI *pSetProcessMitigationPolicy)(int, PVOID, FeatSizeT);
 
     /*
-     * 5.4 -W uplift (the `wide` tier). The find-data / startup-info out-params
+     * The -W uplift (the `wide` tier). The find-data / startup-info out-params
      * are typed void * so feat.h need not pull in WIN32_FIND_DATAW / STARTUPINFOW
      * (the C89 SDK headers carry them inconsistently - the exec_ops.c job-struct
      * precedent); the caller declares the W struct locally and casts. NULL when

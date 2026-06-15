@@ -1,4 +1,4 @@
-//! 5.3 integration tests: the memory peek/poke tool surface — the five
+//! Integration tests: the memory peek/poke tool surface — the five
 //! win32_* memory tools, the FIRST real G1 capability prune (mem: none ->
 //! absent from tools/list), the two-factor poke opt-in gate, honest hints,
 //! and the 1:1 device-command relay. Each cites its obligation IDs from
@@ -136,7 +136,7 @@ async fn memory_tools_registered() {
     let _ = client.cancel().await;
 }
 
-/// The FIRST real G1 capability prune (carried empty/unexercised since 5.0):
+/// The FIRST real G1 capability prune (carried empty/unexercised until now):
 /// with `mem: none` the four mem-gated tools are ABSENT from tools/list; with
 /// `mem: process` they appear. The prune->absence path, finally exercised.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,6 +1,6 @@
 /*
  * uart.c - Win32s direct-UART serial route: the PURE detection ladder and
- * driving logic (work-item 6.2 / task #37). Spec: specs/uart.allium; the frozen
+ * driving logic (task #37). Spec: specs/uart.allium; the frozen
  * contract is src/uart.h (each function's doc comment is the per-function spec).
  *
  * Everything here is OS-independent: it touches the 16550 ONLY through the

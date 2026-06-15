@@ -1,5 +1,5 @@
 /*
- * mem_ops.c - Tiered, user-mode memory peek/poke (work-item 5.3).
+ * mem_ops.c - Tiered, user-mode memory peek/poke.
  *
  * The device's highest-stakes capability: bounded, consented, logged ring-3
  * memory read/write. See mem_ops.h for the contract and memory-ops.allium for

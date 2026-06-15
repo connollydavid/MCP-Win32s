@@ -1,7 +1,7 @@
 //! Device capabilities resolved from the ready message, and the
 //! capability-gating contract (`specs/mcp-bridge.allium`): a tool that
 //! names a required capability is advertised iff the device provides it.
-//! The concrete capability tools arrive in 5.1-5.4; 5.0 fixes the gate.
+//! The concrete capability tools are added later; this fixes the gate.
 
 use crate::wire::{DetectedToolchain, Features};
 
@@ -127,7 +127,7 @@ impl Capabilities {
             // PokeRequiresBothArmingLayers (the device /ALLOWMEMWRITE arm is the
             // independent device half).
             "mem_write" => self.mem != MemTier::None && self.allow_memory_write,
-            // 5.4 retired "utf8": the device emits valid UTF-8 on every tier, so
+            // "utf8" was retired: the device emits valid UTF-8 on every tier, so
             // the wire is uniformly UTF-8 and no tool gates on encoding
             // (DeviceCapabilities.encoding is informational provenance only).
             // The runtime-registration opt-in gates win32_register_toolchain
@@ -140,8 +140,8 @@ impl Capabilities {
 
 /// The capability a tool requires to be advertised. `None` = always
 /// advertised; `Some(cap)` = advertised iff `Capabilities::satisfies(cap)`.
-/// 5.3 wires the FIRST real entries (the gate was empty/unexercised since
-/// 5.0): the five memory tools. The four read/control tools require `mem`
+/// Wires the FIRST real entries (the gate was empty/unexercised before):
+/// the five memory tools. The four read/control tools require `mem`
 /// (any tier); `win32_poke` requires the two-factor `mem_write`
 /// (`MemoryWriteToolRequiresOptIn`). On a `mem: none` device all five are
 /// pruned from `tools/list` — the first real exercise of the G1
@@ -152,7 +152,7 @@ pub const GATED_TOOLS: &[(&str, &str)] = &[
     ("win32_poke", "mem_write"),
     ("win32_terminate", "mem"),
     ("win32_release", "mem"),
-    // 5.5: the pty exec tool advertises only on a ConPTY-capable device
+    // The pty exec tool advertises only on a ConPTY-capable device
     // (PtyToolGatedOnCapability); win32_exec/win32_list_commands name no
     // capability and are always advertised.
     ("win32_pty_exec", "pty"),

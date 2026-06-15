@@ -1,4 +1,4 @@
-//! mcp-w32s-bridge entry point (Phase 5.0).
+//! mcp-w32s-bridge entry point.
 //!
 //! Connects to the Win32 device, completes the ready handshake, then
 //! serves MCP over stdio. Logging goes to stderr — stdout is the MCP

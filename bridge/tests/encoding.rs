@@ -1,4 +1,4 @@
-//! 5.4 bridge passthrough tests. The device owns the whole text pipeline and
+//! Bridge passthrough tests. The device owns the whole text pipeline and
 //! emits valid UTF-8 on every OS tier, so the wire is uniformly UTF-8: the
 //! `encoding` ready tag is INFORMATIONAL provenance (it gates nothing) and the
 //! bridge adds no charset crate. Obligations: bridge/OBLIGATIONS-5.4.md.

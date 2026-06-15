@@ -86,7 +86,7 @@ fn truncate(s: &str) -> String {
 }
 
 /// Whole seconds since the Unix epoch (integer-only; no float). A clock before
-/// the epoch records 0.
+/// this point records 0.
 fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

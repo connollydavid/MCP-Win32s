@@ -1,4 +1,4 @@
-//! 5.0 property tests (the theft analog): the pure capability-gating and
+//! Property tests (the theft analog): the pure capability-gating and
 //! response-mapping logic. Cites obligations from bridge/OBLIGATIONS-5.0.md.
 
 use mcp_w32s_bridge::capabilities::{Capabilities, EncodingProvenance, MemTier};
@@ -45,7 +45,7 @@ fn caps(
 
 proptest! {
     /// capability_satisfied (rule-success.ToolAdvertised, invariant.
-    /// AdvertisedToolsAreCapable; 5.3 capability_satisfied_mem): each named
+    /// AdvertisedToolsAreCapable; capability_satisfied_mem): each named
     /// capability matches the device exactly; an unknown capability is never
     /// satisfied. The two-factor mem_write gate holds iff BOTH the tier is
     /// non-none AND the operator opted in (MemoryWriteToolRequiresOptIn).
@@ -60,7 +60,7 @@ proptest! {
         prop_assert_eq!(c.satisfies("pty"), pty);
         prop_assert_eq!(c.satisfies("mem"), mem != MemTier::None);
         prop_assert_eq!(c.satisfies("mem_write"), mem != MemTier::None && amw);
-        // 5.4 retired "utf8": encoding is informational, so it never gates a
+        // "utf8" was retired: encoding is informational, so it never gates a
         // tool. The old gate name now falls through to the unknown arm.
         prop_assert!(!c.satisfies("utf8"));
         prop_assert!(!c.satisfies("unknown_capability_xyz"));

@@ -4,7 +4,7 @@
  * seam against a simulated 16550 (tests/uart_sim.h).
  *
  * Mirrors the nine theft host properties (tests/host/theft_uart.c, P1..P9) at
- * lower trial counts, so the 6.2 security pins (uart.allium invariants) are
+ * lower trial counts, so the security pins (uart.allium invariants) are
  * proven on the actual C89/i386 build, not only natively:
  *   uart_fifo_iff_16550a      PIN #4: fifo_enabled IFF kind==16550A; tx_chunk 16
  *                             on 16550A else 1; fifo on => 16550A.

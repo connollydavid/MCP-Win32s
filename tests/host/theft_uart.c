@@ -2,13 +2,13 @@
  * theft_uart.c - host-native property-based tests for the pure Win32s direct-
  * UART ladder (src/uart.c), driven over the injected UartPortIo seam against a
  * simulated 16550 (tests/uart_sim.h). C99 + POSIX, ASan/UBSan, 50k trials per
- * property - the strongest pin on the 6.2 security invariants.
+ * property - the strongest pin on the security invariants.
  *
  * Spec: specs/uart.allium; obligations: tests/OBLIGATIONS-6.2.md. The pure
  * functions reference no Win32 type, so src/uart.c is compiled -DUART_HOST_PURE
  * (which leaves the asm inb/outb + transport wiring out) and linked here.
  *
- * Properties (each maps to a 6.2 obligation; SECURITY PINs called out):
+ * Properties (each maps to an obligation; SECURITY PINs called out):
  *
  *   P1 fifo_iff_16550a        PIN #4 invariant.FifoEnabledImpliesDetected16550A,
  *                             rule-success.UartChipIdentified: fifo_enabled==1

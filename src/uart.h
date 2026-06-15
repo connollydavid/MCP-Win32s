@@ -1,5 +1,5 @@
 /*
- * uart.h - Win32s direct-UART serial route (work-item 6.2 / task #37)
+ * uart.h - Win32s direct-UART serial route (task #37)
  *
  * Spec: uart.allium. The tier-aware serial backend's Win32s-only internal
  * route: where the Win32 communications API is an exported-but-stubbed no-op

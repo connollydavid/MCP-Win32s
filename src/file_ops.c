@@ -1,7 +1,7 @@
 /*
  * file_ops.c - File operations for MCP-Win32s
  *
- * Tier-aware text encoding (work-item 5.4): every inbound agent path is a
+ * Tier-aware text encoding: every inbound agent path is a
  * UTF-8 wire path, prepared for the host's file API by EncOpenPath. On the
  * `wide` tier (NT family) the ops call the delay-loaded -W file APIs over the
  * widened UTF-16 (g_features.p*W); on the `manifest`/`codepage` tiers they call

@@ -1,5 +1,5 @@
 /*
- * encoding.h - Full-range text encoding for MCP-Win32s (work-item 5.4)
+ * encoding.h - Full-range text encoding for MCP-Win32s
  *
  * The device owns the ENTIRE text pipeline and emits valid UTF-8 on every wire
  * surface across the whole target range (Win3.1+Win32s 1.25a -> Win11), using

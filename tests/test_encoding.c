@@ -1,6 +1,6 @@
 /*
  * test_encoding.c - on-target tests for the full-range text encoding subsystem
- * (work-item 5.4). Spec: encoding.allium.
+ * Spec: encoding.allium.
  *
  * This file grows across the encoding modules; the section below covers the
  * code-page tables (M2): the exhaustive per-page round-trip on the bijective

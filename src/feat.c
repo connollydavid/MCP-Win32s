@@ -189,7 +189,7 @@ void FeatInit(void)
         }
 
         /*
-         * 5.4: the delay-loaded -W (UTF-16) file/dir/spawn set - the `wide`
+         * The delay-loaded -W (UTF-16) file/dir/spawn set - the `wide`
          * encoding tier. Resolved only here as string literals, never linked
          * by name, so the import resolver still loads the binary on Win32s.
          */

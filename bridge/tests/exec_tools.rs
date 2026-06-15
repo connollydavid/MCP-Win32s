@@ -1,4 +1,4 @@
-//! 5.5 integration tests: the exec discovery tool surface — the three exec
+//! Integration tests: the exec discovery tool surface — the three exec
 //! tools (win32_exec / win32_pty_exec / win32_list_commands), the pty
 //! capability prune (PtyToolGatedOnCapability), THE UNSAFE-EXEC SAFETY GATE
 //! (UnsafeExecRequiresOperatorOptIn: refused without opt-in, relayed with it),

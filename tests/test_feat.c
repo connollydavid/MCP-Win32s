@@ -165,7 +165,7 @@ TEST_CASE(force_fallback_zeroes_flags_and_pointers) {
 }
 
 /* ========================================================
- * #7 The 5.4 delay-loaded -W (UTF-16) uplift resolves on
+ * #7 The delay-loaded -W (UTF-16) uplift resolves on
  *    this NT host: all eight file/dir pointers plus
  *    CreateProcessW are non-NULL and the two flags are set.
  *    The has_wide_fileapi flag implies every backing pointer
@@ -208,7 +208,7 @@ TEST_CASE(wide_uplift_probe) {
 }
 
 /* ========================================================
- * #8 FeatForceFallback drops the 5.4 -W uplift: both wide
+ * #8 FeatForceFallback drops the -W uplift: both wide
  *    flags clear and ALL NINE -W pointers go NULL, so the
  *    codepage (-A) tier can be exercised on an NT host.
  *    An unrelated capability is preserved.
@@ -256,7 +256,7 @@ TEST_CASE(force_fallback_wide) {
 }
 
 /* The os_family_maps_to_tier / EncTierCurrent test is added with the
- * encoding tier half (a later 5.4 module supplies that function). */
+ * encoding tier half (a later module supplies that function). */
 
 int main(void)
 {

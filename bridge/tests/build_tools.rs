@@ -1,4 +1,4 @@
-//! 5.2 integration tests: the schema-driven build subsystem — generated
+//! Integration tests: the schema-driven build subsystem — generated
 //! win32_<vendor>_<role> tools, the two meta tools, the opt-in gate, and the
 //! end-to-end build pipeline (typed params -> injection-safe argv -> catalogued
 //! exec -> diagnostic parse). Each cites its obligation IDs from
@@ -177,7 +177,7 @@ async fn registration_requires_opt_in() {
     let _ = on.cancel().await;
 }
 
-/// rule-success.CapabilitiesResolved (the 5.2 additions) — from_ready parses the
+/// rule-success.CapabilitiesResolved (the build-subsystem additions) — from_ready parses the
 /// ready features' `toolchains` array, and the operator opt-in flag threads
 /// through to toolchain_registration. An empty/absent array is no toolchains.
 #[test]

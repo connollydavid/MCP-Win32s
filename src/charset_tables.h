@@ -1,5 +1,5 @@
 /*
- * charset_tables.h - Embedded code-page <-> Unicode tables (work-item 5.4)
+ * charset_tables.h - Embedded code-page <-> Unicode tables
  *
  * GENERATED DATA. The tables in src/charset_tables.c are produced by
  * tools/gen_charset_tables.py from the vendored Unicode Consortium MICSFT
