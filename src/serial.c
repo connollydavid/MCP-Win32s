@@ -77,6 +77,22 @@ HANDLE OpenSerialPort(const char *portName, DWORD baudRate)
                         GENERIC_READ | GENERIC_WRITE,
                         0, NULL, OPEN_EXISTING, 0, NULL);
 
+    /*
+     * NT 3.1 fallback: the bare "COMn" DOS-device alias can fail to resolve on
+     * the earliest NT loader where the canonical device-namespace form opens.
+     * Retry once via "\\.\COMn" before giving up; skipped when the caller
+     * already passed a "\\.\"-prefixed name. CreateFileA leaves GetLastError()
+     * from this final attempt intact for the caller to surface.
+     */
+    if (hPort == INVALID_HANDLE_VALUE &&
+        !(portName[0] == '\\' && portName[1] == '\\')) {
+        char devName[40];
+        wsprintfA(devName, "\\\\.\\%s", portName);
+        hPort = CreateFileA(devName,
+                            GENERIC_READ | GENERIC_WRITE,
+                            0, NULL, OPEN_EXISTING, 0, NULL);
+    }
+
     if (hPort == INVALID_HANDLE_VALUE) {
         return INVALID_HANDLE_VALUE;
     }
@@ -181,8 +197,17 @@ int SerialBackendOpen(const TransportConfig *cfg, Transport *out,
 
     h = OpenSerialPort(cfg->port, cfg->baudRate);
     if (h == INVALID_HANDLE_VALUE) {
+        DWORD gle = GetLastError();
         if (err != NULL && errSize > 0) {
-            McpStrCpyN(err, "failed to open serial port", errSize);
+            char msg[128];
+            /* Surface the real CreateFileA failure + the port tried, so an
+             * on-target open failure is diagnosable in one run: error 2
+             * (ERROR_FILE_NOT_FOUND) => COM port not enumerated; 5
+             * (ERROR_ACCESS_DENIED) => in use; 87 => bad param/name form. */
+            wsprintfA(msg,
+                      "failed to open serial port '%s' (CreateFileA error %lu)",
+                      cfg->port, (unsigned long)gle);
+            McpStrCpyN(err, msg, errSize);
         }
         return 0;
     }
