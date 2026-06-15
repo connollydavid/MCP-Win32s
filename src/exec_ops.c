@@ -136,32 +136,38 @@ static void SetMsg(char *errMsg, int errSize, const char *s)
  * 3.51/Win95), so when the runtime probe found it absent we fall back to the
  * classic pre-3.51 idiom: duplicate the handle non-inheritable and drop the
  * inheritable original. DuplicateHandle is present since NT 3.1.
+ *
+ * Fails closed: returns TRUE iff the handle is guaranteed non-inheritable
+ * afterward. A discarded SetHandleInformation/DuplicateHandle failure would
+ * leave an inheritable parent end the child could leak, so the caller aborts
+ * the spawn when this returns FALSE.
  */
-static void ClearHandleInherit(HANDLE *ph)
+static BOOL ClearHandleInherit(HANDLE *ph)
 {
     HANDLE dup;
     if (ph == NULL || *ph == NULL || *ph == INVALID_HANDLE_VALUE) {
-        return;
+        return TRUE;
     }
     if (g_features.pSetHandleInformation != NULL) {
-        g_features.pSetHandleInformation(*ph, HANDLE_FLAG_INHERIT, 0);
-        return;
+        return g_features.pSetHandleInformation(*ph, HANDLE_FLAG_INHERIT, 0);
     }
     if (DuplicateHandle(GetCurrentProcess(), *ph,
                         GetCurrentProcess(), &dup,
                         0, FALSE, DUPLICATE_SAME_ACCESS)) {
         CloseHandle(*ph);
         *ph = dup;
+        return TRUE;
     }
+    return FALSE;
 }
 
 #ifdef TEST_BUILD
 /* Test-only hook: invoke the static ClearHandleInherit so test_exec_ops can
  * pin both the SetHandleInformation route and the NT 3.1 DuplicateHandle
  * fallback (forced by NULLing g_features.pSetHandleInformation). */
-void ExecClearHandleInheritForTest(HANDLE *ph)
+BOOL ExecClearHandleInheritForTest(HANDLE *ph)
 {
-    ClearHandleInherit(ph);
+    return ClearHandleInherit(ph);
 }
 #endif
 
@@ -411,10 +417,15 @@ int ExecOpRun(
         SetMsg(errMsg, errSize, "pipe creation failed");
         goto fail_pipes;
     }
-    /* Q5: child must not inherit the parent-only ends. */
-    ClearHandleInherit(&inWr);
-    ClearHandleInherit(&outRd);
-    ClearHandleInherit(&errRd);
+    /* Q5: child must not inherit the parent-only ends. Fail closed - if the
+     * inherit flag cannot be dropped, do NOT spawn with an inheritable parent
+     * end (a child handle leak); abort the open instead. */
+    if (!ClearHandleInherit(&inWr) ||
+        !ClearHandleInherit(&outRd) ||
+        !ClearHandleInherit(&errRd)) {
+        SetMsg(errMsg, errSize, "spawn failed: could not isolate parent pipe handles");
+        goto fail_pipes;
+    }
 
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
