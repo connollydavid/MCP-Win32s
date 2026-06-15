@@ -67,22 +67,37 @@ void BuildSerialTimeouts(COMMTIMEOUTS *timeouts)
     /* Write timeouts left at 0 (no timeout) */
 }
 
+/*
+ * The precise failure stage + error code from the last OpenSerialPort attempt,
+ * surfaced verbatim by SerialBackendOpen. Without it the caller cannot tell a
+ * CreateFile failure (port absent) from a SetCommState failure (DCB rejected):
+ * the NT 3.1 floor returns ERROR_INVALID_PARAMETER (87) from SetCommState on a
+ * from-zeroed DCB, which a generic "failed to open" message would hide.
+ */
+static char g_open_err[160];
+
+static void open_err(const char *stage, const char *name, DWORD gle)
+{
+    wsprintfA(g_open_err, "%s('%s') failed, error %lu",
+              stage, name, (unsigned long)gle);
+}
+
 HANDLE OpenSerialPort(const char *portName, DWORD baudRate)
 {
     HANDLE hPort;
     DCB dcb;
     COMMTIMEOUTS timeouts;
 
+    g_open_err[0] = '\0';
+
     hPort = CreateFileA(portName,
                         GENERIC_READ | GENERIC_WRITE,
                         0, NULL, OPEN_EXISTING, 0, NULL);
 
     /*
-     * NT 3.1 fallback: the bare "COMn" DOS-device alias can fail to resolve on
-     * the earliest NT loader where the canonical device-namespace form opens.
-     * Retry once via "\\.\COMn" before giving up; skipped when the caller
-     * already passed a "\\.\"-prefixed name. CreateFileA leaves GetLastError()
-     * from this final attempt intact for the caller to surface.
+     * NT 3.1 robustness: if the bare "COMn" DOS-device alias does not resolve,
+     * retry once via the canonical "\\.\COMn" device-namespace form (skipped
+     * when the caller already passed a "\\.\"-prefixed name).
      */
     if (hPort == INVALID_HANDLE_VALUE &&
         !(portName[0] == '\\' && portName[1] == '\\')) {
@@ -94,17 +109,46 @@ HANDLE OpenSerialPort(const char *portName, DWORD baudRate)
     }
 
     if (hPort == INVALID_HANDLE_VALUE) {
+        open_err("CreateFileA", portName, GetLastError());
         return INVALID_HANDLE_VALUE;
     }
 
-    BuildSerialDCB(baudRate, &dcb);
+    /*
+     * GetCommState-first: seed the DCB from the driver's current (valid) state,
+     * then change only the fields we need. A from-zeroed DCB leaves
+     * XonChar == XoffChar == 0 and other fields NT 3.1's serial driver rejects
+     * with ERROR_INVALID_PARAMETER (87); get-then-modify preserves the driver's
+     * valid defaults. This is what MODE/Terminal do, and they open COM1 on
+     * NT 3.1 where the cold from-zero SetCommState failed.
+     */
+    memset(&dcb, 0, sizeof(DCB));
+    dcb.DCBlength = sizeof(DCB);
+    if (!GetCommState(hPort, &dcb)) {
+        open_err("GetCommState", portName, GetLastError());
+        CloseHandle(hPort);
+        return INVALID_HANDLE_VALUE;
+    }
+    dcb.BaudRate     = baudRate;
+    dcb.ByteSize     = 8;
+    dcb.Parity       = NOPARITY;
+    dcb.StopBits     = ONESTOPBIT;
+    dcb.fBinary      = TRUE;
+    dcb.fParity      = FALSE;
+    dcb.fOutxCtsFlow = FALSE;
+    dcb.fOutxDsrFlow = FALSE;
+    dcb.fDtrControl  = DTR_CONTROL_ENABLE;
+    dcb.fRtsControl  = RTS_CONTROL_ENABLE;
+    dcb.fOutX        = FALSE;
+    dcb.fInX         = FALSE;
     if (!SetCommState(hPort, &dcb)) {
+        open_err("SetCommState", portName, GetLastError());
         CloseHandle(hPort);
         return INVALID_HANDLE_VALUE;
     }
 
     BuildSerialTimeouts(&timeouts);
     if (!SetCommTimeouts(hPort, &timeouts)) {
+        open_err("SetCommTimeouts", portName, GetLastError());
         CloseHandle(hPort);
         return INVALID_HANDLE_VALUE;
     }
@@ -197,17 +241,13 @@ int SerialBackendOpen(const TransportConfig *cfg, Transport *out,
 
     h = OpenSerialPort(cfg->port, cfg->baudRate);
     if (h == INVALID_HANDLE_VALUE) {
-        DWORD gle = GetLastError();
         if (err != NULL && errSize > 0) {
-            char msg[128];
-            /* Surface the real CreateFileA failure + the port tried, so an
-             * on-target open failure is diagnosable in one run: error 2
-             * (ERROR_FILE_NOT_FOUND) => COM port not enumerated; 5
-             * (ERROR_ACCESS_DENIED) => in use; 87 => bad param/name form. */
-            wsprintfA(msg,
-                      "failed to open serial port '%s' (CreateFileA error %lu)",
-                      cfg->port, (unsigned long)gle);
-            McpStrCpyN(err, msg, errSize);
+            /* g_open_err names the precise failing stage + error code, set by
+             * OpenSerialPort: CreateFileA / GetCommState / SetCommState /
+             * SetCommTimeouts. One boot pinpoints the NT 3.1 floor failure. */
+            McpStrCpyN(err,
+                       g_open_err[0] ? g_open_err : "failed to open serial port",
+                       errSize);
         }
         return 0;
     }
