@@ -102,7 +102,11 @@ HANDLE OpenSerialPort(const char *portName, DWORD baudRate)
     if (hPort == INVALID_HANDLE_VALUE &&
         !(portName[0] == '\\' && portName[1] == '\\')) {
         char devName[40];
-        wsprintfA(devName, "\\\\.\\%s", portName);
+        /* Bounded build of "\\.\<portName>" - the 4-char literal prefix then a
+         * length-limited copy of the name into the remainder, so this does not
+         * depend on the caller's port[] size (wsprintfA is unbounded). */
+        lstrcpyA(devName, "\\\\.\\");
+        McpStrCpyN(devName + 4, portName, (int)sizeof(devName) - 4);
         hPort = CreateFileA(devName,
                             GENERIC_READ | GENERIC_WRITE,
                             0, NULL, OPEN_EXISTING, 0, NULL);
