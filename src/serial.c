@@ -8,6 +8,7 @@
 #include <string.h>
 #include "serial.h"
 #include "uart.h"      /* the Win32s tier gate + direct-UART route */
+#include "strutil.h"   /* McpStrCpyN (the NT 3.1 floor lacks lstrcpynA) */
 
 #ifdef TEST_BUILD
 /* The route SerialBackendOpen last selected (uart.h UartLastRouteForTest): the
@@ -66,28 +67,92 @@ void BuildSerialTimeouts(COMMTIMEOUTS *timeouts)
     /* Write timeouts left at 0 (no timeout) */
 }
 
+/*
+ * The precise failure stage + error code from the last OpenSerialPort attempt,
+ * surfaced verbatim by SerialBackendOpen. Without it the caller cannot tell a
+ * CreateFile failure (port absent) from a SetCommState failure (DCB rejected):
+ * the NT 3.1 floor returns ERROR_INVALID_PARAMETER (87) from SetCommState on a
+ * from-zeroed DCB, which a generic "failed to open" message would hide.
+ */
+static char g_open_err[160];
+
+static void open_err(const char *stage, const char *name, DWORD gle)
+{
+    wsprintfA(g_open_err, "%s('%s') failed, error %lu",
+              stage, name, (unsigned long)gle);
+}
+
 HANDLE OpenSerialPort(const char *portName, DWORD baudRate)
 {
     HANDLE hPort;
     DCB dcb;
     COMMTIMEOUTS timeouts;
 
+    g_open_err[0] = '\0';
+
     hPort = CreateFileA(portName,
                         GENERIC_READ | GENERIC_WRITE,
                         0, NULL, OPEN_EXISTING, 0, NULL);
 
+    /*
+     * NT 3.1 robustness: if the bare "COMn" DOS-device alias does not resolve,
+     * retry once via the canonical "\\.\COMn" device-namespace form (skipped
+     * when the caller already passed a "\\.\"-prefixed name).
+     */
+    if (hPort == INVALID_HANDLE_VALUE &&
+        !(portName[0] == '\\' && portName[1] == '\\')) {
+        char devName[40];
+        /* Bounded build of "\\.\<portName>" - the 4-char literal prefix then a
+         * length-limited copy of the name into the remainder, so this does not
+         * depend on the caller's port[] size (wsprintfA is unbounded). */
+        lstrcpyA(devName, "\\\\.\\");
+        McpStrCpyN(devName + 4, portName, (int)sizeof(devName) - 4);
+        hPort = CreateFileA(devName,
+                            GENERIC_READ | GENERIC_WRITE,
+                            0, NULL, OPEN_EXISTING, 0, NULL);
+    }
+
     if (hPort == INVALID_HANDLE_VALUE) {
+        open_err("CreateFileA", portName, GetLastError());
         return INVALID_HANDLE_VALUE;
     }
 
-    BuildSerialDCB(baudRate, &dcb);
+    /*
+     * GetCommState-first: seed the DCB from the driver's current (valid) state,
+     * then change only the fields we need. A from-zeroed DCB leaves
+     * XonChar == XoffChar == 0 and other fields NT 3.1's serial driver rejects
+     * with ERROR_INVALID_PARAMETER (87); get-then-modify preserves the driver's
+     * valid defaults. This is what MODE/Terminal do, and they open COM1 on
+     * NT 3.1 where the cold from-zero SetCommState failed.
+     */
+    memset(&dcb, 0, sizeof(DCB));
+    dcb.DCBlength = sizeof(DCB);
+    if (!GetCommState(hPort, &dcb)) {
+        open_err("GetCommState", portName, GetLastError());
+        CloseHandle(hPort);
+        return INVALID_HANDLE_VALUE;
+    }
+    dcb.BaudRate     = baudRate;
+    dcb.ByteSize     = 8;
+    dcb.Parity       = NOPARITY;
+    dcb.StopBits     = ONESTOPBIT;
+    dcb.fBinary      = TRUE;
+    dcb.fParity      = FALSE;
+    dcb.fOutxCtsFlow = FALSE;
+    dcb.fOutxDsrFlow = FALSE;
+    dcb.fDtrControl  = DTR_CONTROL_ENABLE;
+    dcb.fRtsControl  = RTS_CONTROL_ENABLE;
+    dcb.fOutX        = FALSE;
+    dcb.fInX         = FALSE;
     if (!SetCommState(hPort, &dcb)) {
+        open_err("SetCommState", portName, GetLastError());
         CloseHandle(hPort);
         return INVALID_HANDLE_VALUE;
     }
 
     BuildSerialTimeouts(&timeouts);
     if (!SetCommTimeouts(hPort, &timeouts)) {
+        open_err("SetCommTimeouts", portName, GetLastError());
         CloseHandle(hPort);
         return INVALID_HANDLE_VALUE;
     }
@@ -166,7 +231,7 @@ int SerialBackendOpen(const TransportConfig *cfg, Transport *out,
          * the on-target hardware acceptance. */
         g_serial_route = UART_ROUTE_DIRECT_UART;
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "win32s direct-uart route (test: no port I/O)",
+            McpStrCpyN(err, "win32s direct-uart route (test: no port I/O)",
                       errSize);
         }
         return 0;
@@ -181,7 +246,12 @@ int SerialBackendOpen(const TransportConfig *cfg, Transport *out,
     h = OpenSerialPort(cfg->port, cfg->baudRate);
     if (h == INVALID_HANDLE_VALUE) {
         if (err != NULL && errSize > 0) {
-            lstrcpynA(err, "failed to open serial port", errSize);
+            /* g_open_err names the precise failing stage + error code, set by
+             * OpenSerialPort: CreateFileA / GetCommState / SetCommState /
+             * SetCommTimeouts. One boot pinpoints the NT 3.1 floor failure. */
+            McpStrCpyN(err,
+                       g_open_err[0] ? g_open_err : "failed to open serial port",
+                       errSize);
         }
         return 0;
     }

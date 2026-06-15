@@ -122,6 +122,7 @@ int MemRangeInBounds(unsigned long addr, unsigned long len, unsigned long cap)
 #ifndef MEM_OPS_HOST_PURE
 
 #include <windows.h>
+#include "strutil.h"
 #include "mem_ops.h"
 #include "feat.h"
 #include "audit.h"
@@ -351,7 +352,7 @@ void MemSpawnRetain(const Catalog *cat, int unsafeMode,
     out->reason[0] = '\0';
 
     if (argv == NULL || argc <= 0 || argv[0] == NULL || argv[0][0] == '\0') {
-        lstrcpynA(out->reason, "empty command", (int)sizeof(out->reason));
+        McpStrCpyN(out->reason, "empty command", (int)sizeof(out->reason));
         return;
     }
 
@@ -361,12 +362,12 @@ void MemSpawnRetain(const Catalog *cat, int unsafeMode,
     if (unsafeMode == 0 && cat != NULL) {
         entry = CatalogLookup(cat, argv[0]);
         if (entry == NULL) {
-            lstrcpynA(out->reason, "command not in catalog",
+            McpStrCpyN(out->reason, "command not in catalog",
                       (int)sizeof(out->reason));
             return;
         }
         if (CatalogEntryIsBuiltin(entry)) {
-            lstrcpynA(out->reason, "shell builtin is not a spawn-retain target",
+            McpStrCpyN(out->reason, "shell builtin is not a spawn-retain target",
                       (int)sizeof(out->reason));
             return;
         }
@@ -381,13 +382,13 @@ void MemSpawnRetain(const Catalog *cat, int unsafeMode,
         }
     }
     if (slot == NULL) {
-        lstrcpynA(out->reason, "process table full", (int)sizeof(out->reason));
+        McpStrCpyN(out->reason, "process table full", (int)sizeof(out->reason));
         return;
     }
 
     /* Build the command line from argv (CreateProcessA quoting). */
     if (ArgvJoin(argv, argc, cmdLine, (int)sizeof(cmdLine)) < 0) {
-        lstrcpynA(out->reason, "command line too long",
+        McpStrCpyN(out->reason, "command line too long",
                   (int)sizeof(out->reason));
         return;
     }
@@ -421,9 +422,9 @@ void MemSpawnRetain(const Catalog *cat, int unsafeMode,
     slot->in_use = 1;
     slot->handle = pi.hProcess;
     slot->pid = (int)pi.dwProcessId;
-    lstrcpynA(slot->command, cmdLine, (int)sizeof(slot->command));
+    McpStrCpyN(slot->command, cmdLine, (int)sizeof(slot->command));
 
-    lstrcpynA(out->token, slot->token, (int)sizeof(out->token));
+    McpStrCpyN(out->token, slot->token, (int)sizeof(out->token));
     out->pid = slot->pid;
     out->ok = 1;
 }
@@ -503,7 +504,7 @@ void MemPeek(const char *token, unsigned long addr, unsigned long len,
     res->reason[0] = '\0';
 
     if (!MemRangeInBounds(addr, len, MEM_MAX_ACCESS)) {
-        lstrcpynA(res->reason, "range out of bounds", (int)sizeof(res->reason));
+        McpStrCpyN(res->reason, "range out of bounds", (int)sizeof(res->reason));
         return;
     }
 
@@ -513,7 +514,7 @@ void MemPeek(const char *token, unsigned long addr, unsigned long len,
     /* A device with no memory tier never reads (defence in depth: the bridge
      * prunes the tools, but a direct wire client must be refused too). */
     if (tier == MEM_TIER_NONE) {
-        lstrcpynA(res->reason, "no memory capability", (int)sizeof(res->reason));
+        McpStrCpyN(res->reason, "no memory capability", (int)sizeof(res->reason));
         return;
     }
 
@@ -526,17 +527,17 @@ void MemPeek(const char *token, unsigned long addr, unsigned long len,
         FeatSizeT got;
 
         if (token == NULL || token[0] == '\0') {
-            lstrcpynA(res->reason, "token required on the process tier",
+            McpStrCpyN(res->reason, "token required on the process tier",
                       (int)sizeof(res->reason));
             return;
         }
         h = MemTokenHandle(token);
         if (h == NULL) {
-            lstrcpynA(res->reason, "invalid token", (int)sizeof(res->reason));
+            McpStrCpyN(res->reason, "invalid token", (int)sizeof(res->reason));
             return;
         }
         if (g_pReadProcessMemory == NULL) {
-            lstrcpynA(res->reason, "ReadProcessMemory unavailable",
+            McpStrCpyN(res->reason, "ReadProcessMemory unavailable",
                       (int)sizeof(res->reason));
             return;
         }
@@ -553,7 +554,7 @@ void MemPeek(const char *token, unsigned long addr, unsigned long len,
             res->ok = 1;
             return;
         }
-        lstrcpynA(res->reason, "read failed", (int)sizeof(res->reason));
+        McpStrCpyN(res->reason, "read failed", (int)sizeof(res->reason));
         return;
     }
 
@@ -568,13 +569,13 @@ void MemPeek(const char *token, unsigned long addr, unsigned long len,
 
         memset(&mbi, 0, sizeof(mbi));
         if (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) == 0) {
-            lstrcpynA(res->reason, "address not accessible",
+            McpStrCpyN(res->reason, "address not accessible",
                       (int)sizeof(res->reason));
             return;
         }
         n = MemRegionAccessibleDecision(&mbi, addr, len, 0);
         if (n == 0) {
-            lstrcpynA(res->reason, "address not accessible",
+            McpStrCpyN(res->reason, "address not accessible",
                       (int)sizeof(res->reason));
             return;
         }
@@ -606,14 +607,14 @@ void MemPoke(const char *token, unsigned long addr,
     /* (1) Device write arm (/ALLOWMEMWRITE), the device half of the two-layer
      * arm. Clear -> refused with no write, binding every client. */
     if (!AuditIsArmed()) {
-        lstrcpynA(res->reason, "memory writes not armed (/ALLOWMEMWRITE)",
+        McpStrCpyN(res->reason, "memory writes not armed (/ALLOWMEMWRITE)",
                   (int)sizeof(res->reason));
         return;
     }
 
     /* (2) Overflow-safe range floor. */
     if (!MemRangeInBounds(addr, len, MEM_MAX_ACCESS)) {
-        lstrcpynA(res->reason, "range out of bounds", (int)sizeof(res->reason));
+        McpStrCpyN(res->reason, "range out of bounds", (int)sizeof(res->reason));
         return;
     }
 
@@ -624,7 +625,7 @@ void MemPoke(const char *token, unsigned long addr,
     /* A device with no memory tier never writes (defence in depth: the bridge
      * prunes the tool, but a direct wire client must be refused too). */
     if (tier == MEM_TIER_NONE) {
-        lstrcpynA(res->reason, "no memory capability", (int)sizeof(res->reason));
+        McpStrCpyN(res->reason, "no memory capability", (int)sizeof(res->reason));
         return;
     }
 
@@ -635,17 +636,17 @@ void MemPoke(const char *token, unsigned long addr,
      * region is rejected WHOLE (never a partial pre-NT write). */
     if (tier == MEM_TIER_PROCESS) {
         if (token == NULL || token[0] == '\0') {
-            lstrcpynA(res->reason, "token required on the process tier",
+            McpStrCpyN(res->reason, "token required on the process tier",
                       (int)sizeof(res->reason));
             return;
         }
         h = MemTokenHandle(token);
         if (h == NULL) {
-            lstrcpynA(res->reason, "invalid token", (int)sizeof(res->reason));
+            McpStrCpyN(res->reason, "invalid token", (int)sizeof(res->reason));
             return;
         }
         if (g_pWriteProcessMemory == NULL) {
-            lstrcpynA(res->reason, "WriteProcessMemory unavailable",
+            McpStrCpyN(res->reason, "WriteProcessMemory unavailable",
                       (int)sizeof(res->reason));
             return;
         }
@@ -658,13 +659,13 @@ void MemPoke(const char *token, unsigned long addr,
 
         memset(&mbi, 0, sizeof(mbi));
         if (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) == 0) {
-            lstrcpynA(res->reason, "address not writable",
+            McpStrCpyN(res->reason, "address not writable",
                       (int)sizeof(res->reason));
             return;
         }
         n = MemRegionAccessibleDecision(&mbi, addr, len, 1);
         if (n < len) {
-            lstrcpynA(res->reason, "address not writable",
+            McpStrCpyN(res->reason, "address not writable",
                       (int)sizeof(res->reason));
             return;
         }
@@ -673,7 +674,7 @@ void MemPoke(const char *token, unsigned long addr,
     /* (4) Audit sink writable (fail-closed): a poke that cannot be recorded
      * performs NO write. */
     if (!AuditIsWritable()) {
-        lstrcpynA(res->reason, "audit sink not writable",
+        McpStrCpyN(res->reason, "audit sink not writable",
                   (int)sizeof(res->reason));
         return;
     }
@@ -690,7 +691,7 @@ void MemPoke(const char *token, unsigned long addr,
             res->bytes_written = (unsigned long)wrote;
             res->partial = 1;
         } else {
-            lstrcpynA(res->reason, "write failed", (int)sizeof(res->reason));
+            McpStrCpyN(res->reason, "write failed", (int)sizeof(res->reason));
             return;
         }
     } else {
@@ -716,7 +717,7 @@ void MemPoke(const char *token, unsigned long addr,
      * unlogged success. */
     if (!AuditWritePoke(MemTierName(tier), auditTok, auditPid, auditCmd,
                         addr, len, res->bytes_written, res->partial)) {
-        lstrcpynA(res->reason,
+        McpStrCpyN(res->reason,
                   "audit write failed after the memory was modified - "
                   "investigate the audit log",
                   (int)sizeof(res->reason));

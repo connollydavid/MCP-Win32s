@@ -67,10 +67,19 @@ endif()
 # Win32s load requirements: the PE must carry relocations (/FIXED:NO) and be
 # based at 0x10000 (the default 0x400000 region is occupied by Win32s).
 # Applied to every executable we emit.
+#
+# PE version stamp: the native-Win32 floor is Windows NT 3.1 (1993), whose loader
+# rejects a PE stamped with a newer OS/subsystem version (ERROR_BAD_FORMAT) - and
+# mingw/MSVC default the stamp to 4.0. Stamp 3.10 so the 1993 loader accepts it;
+# 3.10 still loads on every later Windows (they accept older stamps). The Win32s/
+# Win9x loaders do not enforce this, so only NT 3.1 surfaced it (see the host
+# repo's plan/PHASE6.md, NT 3.1 floor validation).
 if(MSVC)
-  add_link_options(/FIXED:NO /BASE:0x10000 /MACHINE:I386 /SUBSYSTEM:CONSOLE)
+  add_link_options(/FIXED:NO /BASE:0x10000 /MACHINE:I386 /SUBSYSTEM:CONSOLE,3.10)
 else()
-  add_link_options(-Wl,--dynamicbase -Wl,--image-base,0x10000)
+  add_link_options(-Wl,--dynamicbase -Wl,--image-base,0x10000
+    -Wl,--major-os-version,3 -Wl,--minor-os-version,10
+    -Wl,--major-subsystem-version,3 -Wl,--minor-subsystem-version,10)
 endif()
 
 include_directories(src tests)
@@ -96,7 +105,8 @@ set(CORE_SOURCES
   src/pty_exec.c
   src/toolchain_probe.c
   src/mem_ops.c
-  src/audit.c)
+  src/audit.c
+  src/strutil.c)
 
 # --- main executable -------------------------------------------------------
 # The TCP backend is runtime-loaded (LoadLibraryA), so we deliberately do NOT
@@ -142,7 +152,7 @@ target_link_libraries(test_transport PRIVATE kernel32)
 
 # test_tcp's own client side links wsock32 directly; the backend under test
 # still resolves Winsock at runtime.
-add_executable(test_tcp tests/test_tcp.c src/tcp.c src/transport.c)
+add_executable(test_tcp tests/test_tcp.c src/tcp.c src/transport.c src/strutil.c)
 target_link_libraries(test_tcp PRIVATE kernel32 wsock32)
 
 # test_serial includes mcp-w32s.c with TEST_BUILD to exclude main() and reach
@@ -166,6 +176,13 @@ target_link_libraries(test_file_ops PRIVATE kernel32 user32)
 add_executable(test_pbt_base64 tests/test_pbt_base64.c src/base64.c)
 target_link_libraries(test_pbt_base64 PRIVATE kernel32)
 
+# test_strutil: the prop.h on-target mirror of the McpStrCpyN properties
+# (bounded/NUL/prefix/no-split), proving the device's own DBCS-aware bounded
+# copy holds on the shipped C89/i386 path. The deep 50k-trial theft host run
+# lives in tests/host/theft_strutil.c (built by build.sh host-pbt).
+add_executable(test_strutil tests/test_strutil.c src/strutil.c)
+target_link_libraries(test_strutil PRIVATE kernel32 user32)
+
 # --- Phase 4 test targets ---------------------------------------------------
 add_executable(test_feat tests/test_feat.c src/feat.c)
 target_link_libraries(test_feat PRIVATE kernel32)
@@ -182,14 +199,17 @@ add_executable(test_binfmt tests/test_binfmt.c src/binfmt.c src/feat.c)
 target_link_libraries(test_binfmt PRIVATE kernel32)
 
 # catalog.c serialises the listCommands listing via json_parser.c's JsonEscape.
-add_executable(test_catalog tests/test_catalog.c src/catalog.c src/json_parser.c)
+add_executable(test_catalog tests/test_catalog.c src/catalog.c src/json_parser.c src/strutil.c)
 target_link_libraries(test_catalog PRIVATE kernel32)
 
 # exec_ops.c widens the cmdline for the -W spawn (encoding.c), so the
 # standalone exec target links the codec + tables too.
 add_executable(test_exec_ops
   tests/test_exec_ops.c src/exec_ops.c src/feat.c src/binfmt.c
-  src/encoding.c src/charset_tables.c src/charset_tables_data.c)
+  src/encoding.c src/charset_tables.c src/charset_tables_data.c src/strutil.c)
+# TEST_BUILD exposes ExecClearHandleInheritForTest (the static
+# ClearHandleInherit hook) so the NT 3.1 DuplicateHandle fallback is testable.
+target_compile_definitions(test_exec_ops PRIVATE TEST_BUILD)
 target_link_libraries(test_exec_ops PRIVATE kernel32)
 
 add_executable(test_pty_exec tests/test_pty_exec.c src/pty_exec.c src/feat.c)
@@ -199,7 +219,7 @@ target_link_libraries(test_pty_exec PRIVATE kernel32)
 add_executable(test_toolchain_probe
   tests/test_toolchain_probe.c src/toolchain_probe.c
   src/exec_ops.c src/catalog.c src/json_parser.c src/feat.c src/binfmt.c
-  src/encoding.c src/charset_tables.c src/charset_tables_data.c)
+  src/encoding.c src/charset_tables.c src/charset_tables_data.c src/strutil.c)
 target_link_libraries(test_toolchain_probe PRIVATE kernel32)
 
 # --- 5.3 memory peek/poke test targets -------------------------------------
@@ -208,7 +228,7 @@ target_link_libraries(test_toolchain_probe PRIVATE kernel32)
 # helper child next to it. audit.c is linked because MemPoke audits.
 add_executable(test_mem_ops
   tests/test_mem_ops.c src/mem_ops.c src/audit.c
-  src/feat.c src/catalog.c src/json_parser.c src/argv.c)
+  src/feat.c src/catalog.c src/json_parser.c src/argv.c src/strutil.c)
 target_compile_definitions(test_mem_ops PRIVATE TEST_BUILD)
 target_link_libraries(test_mem_ops PRIVATE kernel32 user32)
 
@@ -217,7 +237,7 @@ add_executable(mem_target tests/mem_target.c)
 target_link_libraries(mem_target PRIVATE kernel32)
 add_dependencies(test_mem_ops mem_target)
 
-add_executable(test_audit tests/test_audit.c src/audit.c)
+add_executable(test_audit tests/test_audit.c src/audit.c src/strutil.c)
 target_link_libraries(test_audit PRIVATE kernel32 user32)
 
 # --- 5.4 text-encoding test targets ----------------------------------------
@@ -242,7 +262,7 @@ target_link_libraries(test_pbt_encoding PRIVATE kernel32)
 # test_uart: the prop.h on-target mirror of the theft UART properties, proving
 # the pure detection ladder + driving logic hold on the shipped C89/i386 path.
 # UART_HOST_PURE excludes the asm IN/OUT seam + transport wiring (links uart.c only).
-add_executable(test_uart tests/test_uart.c src/uart.c)
+add_executable(test_uart tests/test_uart.c src/uart.c src/strutil.c)
 target_compile_definitions(test_uart PRIVATE UART_HOST_PURE)
 target_link_libraries(test_uart PRIVATE kernel32)
 
@@ -267,7 +287,7 @@ add_custom_command(TARGET test_catalog POST_BUILD
 # CMAKE_CROSSCOMPILING_EMULATOR (set by the toolchain: empty for native
 # WSL-interop execution, "wine" otherwise) is applied to each test command.
 foreach(t test_json test_transport test_tcp test_serial
-          test_base64 test_file_ops test_pbt_base64
+          test_base64 test_file_ops test_pbt_base64 test_strutil
           test_feat test_argv test_binfmt test_catalog
           test_exec_ops test_pty_exec test_toolchain_probe
           test_mem_ops test_audit test_encoding test_pbt_encoding test_uart)

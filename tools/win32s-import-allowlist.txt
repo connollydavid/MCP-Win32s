@@ -40,6 +40,7 @@ CreateProcessA
 CreateThread
 DeleteCriticalSection
 DeleteFileA
+DuplicateHandle
 EnterCriticalSection
 ExitProcess
 FindClose
@@ -48,6 +49,7 @@ FindNextFileA
 FlushFileBuffers
 GetACP
 GetCommandLineA
+GetCommState
 GetCurrentProcess
 GetExitCodeProcess
 GetFileSize
@@ -75,7 +77,6 @@ SetCommState
 SetCommTimeouts
 SetErrorMode
 SetFilePointer
-SetHandleInformation
 Sleep
 TerminateProcess
 VirtualQuery
@@ -85,6 +86,5 @@ lstrcatA
 lstrcmpA
 lstrcmpiA
 lstrcpyA
-lstrcpynA
 lstrlenA
 wsprintfA

@@ -117,6 +117,13 @@ void FeatInit(void)
             g_features.has_get_binary_type = 1;
         }
 
+        /* Absent on the NT 3.1 floor; callers fall back to DuplicateHandle. */
+        proc = GetProcAddress(hKernel, "SetHandleInformation");
+        if (proc != NULL) {
+            g_features.pSetHandleInformation =
+                (BOOL (WINAPI *)(HANDLE, DWORD, DWORD))proc;
+        }
+
         proc = GetProcAddress(hKernel, "IsWow64Process");
         if (proc != NULL) {
             g_features.pIsWow64Process =

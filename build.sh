@@ -27,7 +27,11 @@ if [ "$1" = "host-pbt" ]; then
     gcc $HFLAGS tests/host/theft_base64.c  src/base64.c      build/host/theft/*.o -lm -o build/host/theft_base64
     gcc $HFLAGS tests/host/theft_json.c    src/json_parser.c build/host/theft/*.o -lm -o build/host/theft_json
     gcc $HFLAGS tests/host/theft_argv.c    src/argv.c        build/host/theft/*.o -lm -o build/host/theft_argv
-    gcc $HFLAGS tests/host/theft_catalog.c src/catalog.c src/json_parser.c build/host/theft/*.o -lm -o build/host/theft_catalog
+    gcc $HFLAGS tests/host/theft_catalog.c src/catalog.c src/json_parser.c src/strutil.c build/host/theft/*.o -lm -o build/host/theft_catalog
+    # strutil: the DBCS-aware bounded copy (McpStrCpyN). CharNextA resolves to
+    # the cp932-style shim (tests/host/win32_shim.h) so the no-split property
+    # is deterministically testable - the bounded/NUL/prefix/no-split pins at 50k.
+    gcc $HFLAGS tests/host/theft_strutil.c src/strutil.c     build/host/theft/*.o -lm -o build/host/theft_strutil
     # mem_ops: only the two pure arithmetic guards compile natively
     # (MEM_OPS_HOST_PURE excludes the Win32 surface) - the off-by-overflow pin.
     gcc $HFLAGS -DMEM_OPS_HOST_PURE tests/host/theft_mem.c src/mem_ops.c build/host/theft/*.o -lm -o build/host/theft_mem
@@ -45,6 +49,7 @@ if [ "$1" = "host-pbt" ]; then
     build/host/theft_json
     build/host/theft_argv
     build/host/theft_catalog
+    build/host/theft_strutil
     build/host/theft_mem
     build/host/theft_encoding
     build/host/theft_uart

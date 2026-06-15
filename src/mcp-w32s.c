@@ -14,6 +14,7 @@
  */
 
 #include <windows.h>
+#include "strutil.h"
 #include <string.h>
 #include "common.h"
 #include "json_parser.h"
@@ -77,7 +78,7 @@ void ExecInjectOrphanForTest(HANDLE h, DWORD startTick, const char *cmdLine)
 {
     g_orphanHandle = h;
     g_orphanStartTick = startTick;
-    lstrcpynA(g_orphanCmdLine, cmdLine != NULL ? cmdLine : "", MCP_MAX_LINE);
+    McpStrCpyN(g_orphanCmdLine, cmdLine != NULL ? cmdLine : "", MCP_MAX_LINE);
 }
 #endif
 
@@ -275,7 +276,7 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
     /* 2. Command name: argv[0] preferred, first token of line legacy. */
     name[0] = '\0';
     if (cmd->argv_count > 0) {
-        lstrcpynA(name, cmd->argv[0], (int)sizeof(name));
+        McpStrCpyN(name, cmd->argv[0], (int)sizeof(name));
     } else {
         int n;
         n = 0;
@@ -383,7 +384,7 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
                 return;
             }
         } else {
-            lstrcpynA(joined, cmd->line, (int)sizeof(joined));
+            McpStrCpyN(joined, cmd->line, (int)sizeof(joined));
         }
 
         if (viaShell) {
@@ -405,7 +406,7 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
                 prefix = g_features.is_win32s
                     ? "command.com /c" : "cmd.exe /c";
             }
-            lstrcpynA(cmdLine, prefix, (int)sizeof(cmdLine));
+            McpStrCpyN(cmdLine, prefix, (int)sizeof(cmdLine));
             if (escapedTail[0] != '\0') {
                 if (lstrlenA(cmdLine) + 1 + lstrlenA(escapedTail) >=
                     (int)sizeof(cmdLine)) {
@@ -416,7 +417,7 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
                 lstrcatA(cmdLine, escapedTail);
             }
         } else {
-            lstrcpynA(cmdLine, joined, (int)sizeof(cmdLine));
+            McpStrCpyN(cmdLine, joined, (int)sizeof(cmdLine));
         }
     }
 
@@ -529,7 +530,7 @@ static void HandleExec(JsonCommand *cmd, Transport *t, int isPty)
     if (res.still_active) {
         g_orphanHandle = res.orphan_handle;
         g_orphanStartTick = res.orphan_start_tick;
-        lstrcpynA(g_orphanCmdLine, cmdLine, MCP_MAX_LINE);
+        McpStrCpyN(g_orphanCmdLine, cmdLine, MCP_MAX_LINE);
         send_exec_error(cmd->id, "timed out", t);
         return;
     }
@@ -1043,7 +1044,7 @@ static Catalog *LoadCatalogAtStartup(const TransportConfig *config)
     char err[160];
 
     if (config->catalogPath[0] != '\0') {
-        lstrcpynA(path, config->catalogPath, (int)sizeof(path));
+        McpStrCpyN(path, config->catalogPath, (int)sizeof(path));
     } else {
         int n;
         char *p;

@@ -110,4 +110,16 @@ int ExecOpRun(
     char *errMsg, int errSize
 );
 
+#ifdef TEST_BUILD
+/*
+ * ExecClearHandleInheritForTest - test-only hook onto the static
+ * ClearHandleInherit, so test_exec_ops can pin BOTH routes: the
+ * SetHandleInformation path and the NT 3.1 DuplicateHandle fallback (reached
+ * by forcing g_features.pSetHandleInformation to NULL in the test).
+ * Returns TRUE iff the handle is guaranteed non-inheritable afterward
+ * (the helper fails closed).
+ */
+BOOL ExecClearHandleInheritForTest(HANDLE *ph);
+#endif
+
 #endif /* EXEC_OPS_H */

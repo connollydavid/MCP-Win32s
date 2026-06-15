@@ -37,6 +37,7 @@
 #include "feat.h"
 #include "binfmt.h"
 #include "encoding.h"   /* Utf8ToUtf16 for the -W spawn (wide tier) */
+#include "strutil.h"    /* McpStrCpyN (the NT 3.1 floor lacks lstrcpynA) */
 
 /* ------------------------------------------------------------------
  * Job-object declarations. MinGW's C89 headers may lack these; declare
@@ -124,9 +125,51 @@ typedef struct {
 static void SetMsg(char *errMsg, int errSize, const char *s)
 {
     if (errMsg != NULL && errSize > 0) {
-        lstrcpynA(errMsg, s, errSize);
+        McpStrCpyN(errMsg, s, errSize);
     }
 }
+
+/*
+ * ClearHandleInherit - clear a handle's HANDLE_FLAG_INHERIT (Q5: the
+ * parent-only pipe ends must not be inherited by the child). NT 3.1's kernel32
+ * - the native-Win32 floor - has no SetHandleInformation (it arrived in NT
+ * 3.51/Win95), so when the runtime probe found it absent we fall back to the
+ * classic pre-3.51 idiom: duplicate the handle non-inheritable and drop the
+ * inheritable original. DuplicateHandle is present since NT 3.1.
+ *
+ * Fails closed: returns TRUE iff the handle is guaranteed non-inheritable
+ * afterward. A discarded SetHandleInformation/DuplicateHandle failure would
+ * leave an inheritable parent end the child could leak, so the caller aborts
+ * the spawn when this returns FALSE.
+ */
+static BOOL ClearHandleInherit(HANDLE *ph)
+{
+    HANDLE dup;
+    if (ph == NULL || *ph == NULL || *ph == INVALID_HANDLE_VALUE) {
+        return TRUE;
+    }
+    if (g_features.pSetHandleInformation != NULL) {
+        return g_features.pSetHandleInformation(*ph, HANDLE_FLAG_INHERIT, 0);
+    }
+    if (DuplicateHandle(GetCurrentProcess(), *ph,
+                        GetCurrentProcess(), &dup,
+                        0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        CloseHandle(*ph);
+        *ph = dup;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+#ifdef TEST_BUILD
+/* Test-only hook: invoke the static ClearHandleInherit so test_exec_ops can
+ * pin both the SetHandleInformation route and the NT 3.1 DuplicateHandle
+ * fallback (forced by NULLing g_features.pSetHandleInformation). */
+BOOL ExecClearHandleInheritForTest(HANDLE *ph)
+{
+    return ClearHandleInherit(ph);
+}
+#endif
 
 /*
  * PumpPipe - polling-path non-blocking drain (Q3). PeekNamedPipe to find
@@ -374,10 +417,15 @@ int ExecOpRun(
         SetMsg(errMsg, errSize, "pipe creation failed");
         goto fail_pipes;
     }
-    /* Q5: child must not inherit the parent-only ends. */
-    SetHandleInformation(inWr, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(outRd, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(errRd, HANDLE_FLAG_INHERIT, 0);
+    /* Q5: child must not inherit the parent-only ends. Fail closed - if the
+     * inherit flag cannot be dropped, do NOT spawn with an inheritable parent
+     * end (a child handle leak); abort the open instead. */
+    if (!ClearHandleInherit(&inWr) ||
+        !ClearHandleInherit(&outRd) ||
+        !ClearHandleInherit(&errRd)) {
+        SetMsg(errMsg, errSize, "spawn failed: could not isolate parent pipe handles");
+        goto fail_pipes;
+    }
 
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);

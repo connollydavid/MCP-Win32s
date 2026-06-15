@@ -684,6 +684,186 @@ TEST_CASE(killed_by_vocabulary)
     TEST_ASSERT_INT_EQUAL(4, EXEC_KILLED_CPU_CAP, "cpu_cap = 4");
 }
 
+/* ================================================================
+ * ClearHandleInherit - both routes. Obligation (propagate gap, F2): the
+ * static ClearHandleInherit clears HANDLE_FLAG_INHERIT via
+ * SetHandleInformation when present, ELSE (the NT 3.1 floor) via a
+ * non-inheritable DuplicateHandle + CloseHandle(original) + *ph = dup. The
+ * fallback route had no test. ExecClearHandleInheritForTest (TEST_BUILD)
+ * reaches the static helper; NULLing g_features.pSetHandleInformation forces
+ * the fallback on a host whose kernel32 DOES export SetHandleInformation
+ * (mingw/wine/native), simulating the NT 3.1 path.
+ *
+ * GetHandleInformation/SetHandleInformation exist on the host even though NT
+ * 3.1 lacks them - the test forces the probe NULL only inside exec_ops, and
+ * still reads back the flag through the host's real GetHandleInformation.
+ * ================================================================ */
+
+/* Same type as g_features.pSetHandleInformation, so save/restore stays a
+ * function-pointer assignment (C89 forbids fnptr<->void* casts). */
+typedef BOOL (WINAPI *SetHandleInfoFn)(HANDLE, DWORD, DWORD);
+
+/* Make an inheritable pipe-read handle (HANDLE_FLAG_INHERIT set). */
+static HANDLE make_inheritable_handle(void)
+{
+    SECURITY_ATTRIBUTES sa;
+    HANDLE rd, wr;
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = NULL;
+    sa.bInheritHandle = TRUE;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+        return NULL;
+    }
+    CloseHandle(wr);          /* we only need the read end */
+    return rd;                /* inheritable per the SECURITY_ATTRIBUTES */
+}
+
+/* ClearHandleInherit, fallback (NT 3.1 DuplicateHandle) route. */
+TEST_CASE(clear_inherit_fallback)
+{
+    SetHandleInfoFn saved;
+    HANDLE h;
+    DWORD flags;
+    BOOL ok;
+    saved = g_features.pSetHandleInformation;
+
+    h = make_inheritable_handle();
+    TEST_ASSERT(h != NULL && h != INVALID_HANDLE_VALUE, "made inheritable handle");
+    flags = 0;
+    TEST_ASSERT(GetHandleInformation(h, &flags) != 0, "read initial flags");
+    TEST_ASSERT((flags & HANDLE_FLAG_INHERIT) != 0, "handle starts inheritable");
+
+    /* Force the NT 3.1 fallback path. */
+    g_features.pSetHandleInformation = NULL;
+    ok = ExecClearHandleInheritForTest(&h);
+    g_features.pSetHandleInformation = saved;   /* restore */
+
+    TEST_ASSERT(ok, "fallback route reported success");
+
+    TEST_ASSERT(h != NULL && h != INVALID_HANDLE_VALUE,
+                "fallback left a valid handle");
+    flags = 0;
+    TEST_ASSERT(GetHandleInformation(h, &flags) != 0,
+                "duplicated handle is queryable");
+    TEST_ASSERT((flags & HANDLE_FLAG_INHERIT) == 0,
+                "fallback cleared HANDLE_FLAG_INHERIT");
+    CloseHandle(h);
+}
+
+/* ClearHandleInherit, API (SetHandleInformation) route. */
+TEST_CASE(clear_inherit_api)
+{
+    HANDLE h;
+    DWORD flags;
+    BOOL ok;
+
+    if (g_features.pSetHandleInformation == NULL) {
+        TEST_ASSERT(1, "skipped: host has no SetHandleInformation probe");
+        return;
+    }
+    h = make_inheritable_handle();
+    TEST_ASSERT(h != NULL && h != INVALID_HANDLE_VALUE, "made inheritable handle");
+    flags = 0;
+    TEST_ASSERT(GetHandleInformation(h, &flags) != 0, "read initial flags");
+    TEST_ASSERT((flags & HANDLE_FLAG_INHERIT) != 0, "handle starts inheritable");
+
+    ok = ExecClearHandleInheritForTest(&h);   /* probe present -> API route */
+    TEST_ASSERT(ok, "API route reported success");
+
+    TEST_ASSERT(h != NULL && h != INVALID_HANDLE_VALUE, "handle still valid");
+    flags = 0;
+    TEST_ASSERT(GetHandleInformation(h, &flags) != 0, "handle queryable");
+    TEST_ASSERT((flags & HANDLE_FLAG_INHERIT) == 0,
+                "API route cleared HANDLE_FLAG_INHERIT");
+    CloseHandle(h);
+}
+
+/* ClearHandleInherit guards: NULL ph, NULL handle, INVALID_HANDLE_VALUE all
+ * no-op without a crash, on both routes. */
+TEST_CASE(clear_inherit_guards)
+{
+    SetHandleInfoFn saved;
+    HANDLE h;
+    int route;
+
+    saved = g_features.pSetHandleInformation;
+    for (route = 0; route < 2; route++) {
+        /* route 0: API present (if any); route 1: forced fallback. */
+        if (route == 1) {
+            g_features.pSetHandleInformation = NULL;
+        }
+        /* NULL ph: no crash, vacuously safe -> TRUE. */
+        TEST_ASSERT(ExecClearHandleInheritForTest(NULL),
+                    "NULL ph vacuously safe (TRUE)");
+        /* NULL handle: no crash, vacuously safe -> TRUE. */
+        h = NULL;
+        TEST_ASSERT(ExecClearHandleInheritForTest(&h),
+                    "NULL handle vacuously safe (TRUE)");
+        TEST_ASSERT(h == NULL, "NULL handle left unchanged");
+        /* INVALID_HANDLE_VALUE: no crash, vacuously safe -> TRUE. */
+        h = INVALID_HANDLE_VALUE;
+        TEST_ASSERT(ExecClearHandleInheritForTest(&h),
+                    "INVALID handle vacuously safe (TRUE)");
+        TEST_ASSERT(h == INVALID_HANDLE_VALUE, "INVALID handle left unchanged");
+    }
+    g_features.pSetHandleInformation = saved;   /* restore */
+    TEST_ASSERT(1, "guards survived both routes");
+}
+
+/* A SetHandleInformation that always fails - drives the fail-closed path. */
+static BOOL WINAPI fail_set_handle_info(HANDLE h, DWORD m, DWORD f)
+{
+    (void)h; (void)m; (void)f;
+    SetLastError(ERROR_INVALID_FUNCTION);
+    return FALSE;
+}
+
+/* ClearHandleInherit fails CLOSED: a failing SetHandleInformation is detected
+ * (returns FALSE), not swallowed. */
+TEST_CASE(clear_inherit_failclosed_unit)
+{
+    SetHandleInfoFn saved;
+    HANDLE h;
+    BOOL ok;
+
+    saved = g_features.pSetHandleInformation;
+    h = make_inheritable_handle();
+    TEST_ASSERT(h != NULL && h != INVALID_HANDLE_VALUE, "made inheritable handle");
+
+    g_features.pSetHandleInformation = fail_set_handle_info;
+    ok = ExecClearHandleInheritForTest(&h);
+    g_features.pSetHandleInformation = saved;   /* restore */
+
+    TEST_ASSERT(!ok, "SetHandleInformation failure is DETECTED, not swallowed");
+    CloseHandle(h);
+}
+
+/* Integration pin: when the inherit flag cannot be dropped, ExecOpRun aborts
+ * at the handle-isolation step BEFORE CreateProcessA - it returns 0 (failure)
+ * and the errMsg names the isolation failure. (Aborting pre-spawn also keeps
+ * this case off the wine cmd.exe divergence the other exec cases hit.) */
+TEST_CASE(clear_inherit_failclosed_spawn)
+{
+    SetHandleInfoFn saved;
+    ExecResult r;
+    char msg[128];
+    int ok;
+
+    saved = g_features.pSetHandleInformation;
+    clear_bufs();
+    msg[0] = '\0';
+
+    g_features.pSetHandleInformation = fail_set_handle_info;
+    ok = ExecOpRun("cmd /c echo hello", NULL, T_TIMEOUT, 1,
+                   NULL, 0, g_out, sizeof(g_out), g_err, sizeof(g_err),
+                   0, 0, BIN_PE32, &r, msg, sizeof(msg));
+    g_features.pSetHandleInformation = saved;   /* restore */
+
+    TEST_ASSERT(!ok, "spawn aborts when parent ends cannot be isolated");
+    TEST_ASSERT(strstr(msg, "isolate") != NULL,
+                "errMsg names the fail-closed isolation step");
+}
+
 int main(void)
 {
     /* Unbuffered: a hang mid-suite must not swallow progress output. */
@@ -722,6 +902,13 @@ int main(void)
     RUN_TEST(orphan_reaped_on_repoll);
     RUN_TEST(pe32_timeout_not_still_active);
     RUN_TEST(killed_by_vocabulary);
+
+    /* F2: ClearHandleInherit - both routes + guards (propagate gap). */
+    RUN_TEST(clear_inherit_fallback);
+    RUN_TEST(clear_inherit_api);
+    RUN_TEST(clear_inherit_guards);
+    RUN_TEST(clear_inherit_failclosed_unit);
+    RUN_TEST(clear_inherit_failclosed_spawn);
 
     print_test_summary();
     return g_tests_failed;

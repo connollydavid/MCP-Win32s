@@ -13,6 +13,7 @@
  */
 
 #include <windows.h>
+#include "strutil.h"
 #include <stdlib.h>
 #include <string.h>
 #include "catalog.h"
@@ -57,7 +58,7 @@ typedef struct {
 static void scanError(Scanner *s, const char *msg)
 {
     if (s->err != NULL && s->errSize > 0) {
-        lstrcpynA(s->err, msg, s->errSize);
+        McpStrCpyN(s->err, msg, s->errSize);
     }
 }
 
@@ -448,7 +449,7 @@ static int parseCommands(Scanner *s, Catalog *cat)
         s->p++;
         if (cat->entry_count < CATALOG_MAX_ENTRIES) {
             CatalogEntry *e = &cat->entries[cat->entry_count];
-            lstrcpynA(e->name, name, sizeof(e->name));
+            McpStrCpyN(e->name, name, sizeof(e->name));
             if (!parseEntry(s, e)) {
                 return 0;
             }
@@ -573,7 +574,7 @@ int CatalogLoad(const char *path, Catalog **outCat, char *errMsg, int errSize)
     fileBuf = (char *)malloc(CATALOG_FILE_MAX);
     if (fileBuf == NULL) {
         if (errMsg != NULL) {
-            lstrcpynA(errMsg, "out of memory", errSize);
+            McpStrCpyN(errMsg, "out of memory", errSize);
         }
         return 0;
     }
@@ -582,7 +583,7 @@ int CatalogLoad(const char *path, Catalog **outCat, char *errMsg, int errSize)
     if (len < 0) {
         free(fileBuf);
         if (errMsg != NULL) {
-            lstrcpynA(errMsg, "catalog file not found or unreadable", errSize);
+            McpStrCpyN(errMsg, "catalog file not found or unreadable", errSize);
         }
         return 0;
     }
@@ -591,7 +592,7 @@ int CatalogLoad(const char *path, Catalog **outCat, char *errMsg, int errSize)
     if (cat == NULL) {
         free(fileBuf);
         if (errMsg != NULL) {
-            lstrcpynA(errMsg, "out of memory", errSize);
+            McpStrCpyN(errMsg, "out of memory", errSize);
         }
         return 0;
     }
@@ -615,7 +616,7 @@ int CatalogLoad(const char *path, Catalog **outCat, char *errMsg, int errSize)
         free(fileBuf);
         free(cat);
         if (errMsg != NULL) {
-            lstrcpynA(errMsg, "no commands in catalog", errSize);
+            McpStrCpyN(errMsg, "no commands in catalog", errSize);
         }
         return 0;
     }
@@ -702,7 +703,7 @@ int CatalogValidateArgs(const CatalogEntry *entry, const char **argv,
     }
     if (entry == NULL) {
         if (errMsg != NULL) {
-            lstrcpynA(errMsg, "no catalog entry", errSize);
+            McpStrCpyN(errMsg, "no catalog entry", errSize);
         }
         return 0;
     }
@@ -717,7 +718,7 @@ int CatalogValidateArgs(const CatalogEntry *entry, const char **argv,
             const CatalogOption *opt = findOption(entry, tok);
             if (opt == NULL) {
                 if (errMsg != NULL) {
-                    lstrcpynA(errMsg, "argument not allowed", errSize);
+                    McpStrCpyN(errMsg, "argument not allowed", errSize);
                 }
                 return 0;
             }
