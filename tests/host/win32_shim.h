@@ -32,6 +32,16 @@
 #include <string.h>
 #include <strings.h>   /* strcasecmp */
 
+/* Each host test TU touches only the subset of this shim it needs (catalog
+ * uses the file I/O + ANSI strings; strutil uses only CharNextA), so under
+ * -Werror an unused static here is an error. Mark the static helpers
+ * possibly-unused; this is a gcc-only host harness (CLAUDE.md "two frameworks"). */
+#if defined(__GNUC__)
+#define SHIM_UNUSED __attribute__((__unused__))
+#else
+#define SHIM_UNUSED
+#endif
+
 /* ---- Win32 scalar types (host approximations) ---- */
 typedef void *        HANDLE;
 typedef unsigned long DWORD;
@@ -63,7 +73,7 @@ typedef void *        LPSECURITY_ATTRIBUTES;
  * CreateFileA - open PATH read-only. Only the read-only path catalog.c uses
  * is honoured; the access/share/disposition flags are ignored.
  */
-static HANDLE CreateFileA(LPCSTR path, DWORD access, DWORD share,
+static SHIM_UNUSED HANDLE CreateFileA(LPCSTR path, DWORD access, DWORD share,
                           LPSECURITY_ATTRIBUTES sa, DWORD disp,
                           DWORD attrs, HANDLE tmpl)
 {
@@ -81,7 +91,7 @@ static HANDLE CreateFileA(LPCSTR path, DWORD access, DWORD share,
  * Returns FALSE only on a hard read error (matches catalog.c's expectations:
  * EOF is read==0 with a TRUE return).
  */
-static BOOL ReadFile(HANDLE h, void *buf, DWORD toRead, LPDWORD read,
+static SHIM_UNUSED BOOL ReadFile(HANDLE h, void *buf, DWORD toRead, LPDWORD read,
                      LPVOID overlapped)
 {
     size_t n;
@@ -96,7 +106,7 @@ static BOOL ReadFile(HANDLE h, void *buf, DWORD toRead, LPDWORD read,
     return TRUE;
 }
 
-static BOOL CloseHandle(HANDLE h)
+static SHIM_UNUSED BOOL CloseHandle(HANDLE h)
 {
     if (h == NULL || h == INVALID_HANDLE_VALUE) {
         return FALSE;
@@ -109,7 +119,7 @@ static BOOL CloseHandle(HANDLE h)
 
 /* lstrcpynA copies at most count-1 chars and always NUL-terminates (Win32
  * semantics), returning the destination. */
-static char *lstrcpynA(char *dst, const char *src, int count)
+static SHIM_UNUSED char *lstrcpynA(char *dst, const char *src, int count)
 {
     int i;
     if (count <= 0) {
@@ -125,5 +135,33 @@ static char *lstrcpynA(char *dst, const char *src, int count)
 #define lstrcmpA(a, b)  strcmp((a), (b))
 #define lstrcmpiA(a, b) strcasecmp((a), (b))
 #define lstrlenA(s)     ((int)strlen(s))
+
+/*
+ * CharNextA - DBCS-aware single-character step (Win32 LPSTR CharNextA(LPCSTR)).
+ * src/strutil.c steps with this to never split a multibyte character.
+ *
+ * The host harness is native Linux with no real CharNextA. To make the
+ * no-split property DETERMINISTICALLY testable, this shim models a cp932-style
+ * DBCS codepage: a lead byte in 0x81-0x9F or 0xE0-0xFC followed by a non-NUL
+ * trail byte advances by 2 bytes (one double-byte character); otherwise it
+ * advances by 1. At the terminating NUL it does not advance past it. This is
+ * the same lead-byte test the real CharNextA applies under a DBCS ACP.
+ */
+static SHIM_UNUSED char *CharNextA(const char *p)
+{
+    unsigned char lead;
+    if (p == NULL) {
+        return (char *)p;
+    }
+    if (*p == '\0') {
+        return (char *)p;           /* never step past the terminator */
+    }
+    lead = (unsigned char)*p;
+    if (((lead >= 0x81 && lead <= 0x9F) || (lead >= 0xE0 && lead <= 0xFC)) &&
+        p[1] != '\0') {
+        return (char *)(p + 2);     /* whole double-byte character */
+    }
+    return (char *)(p + 1);
+}
 
 #endif /* WIN32_SHIM_H */

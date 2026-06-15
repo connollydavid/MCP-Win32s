@@ -176,6 +176,13 @@ target_link_libraries(test_file_ops PRIVATE kernel32 user32)
 add_executable(test_pbt_base64 tests/test_pbt_base64.c src/base64.c)
 target_link_libraries(test_pbt_base64 PRIVATE kernel32)
 
+# test_strutil: the prop.h on-target mirror of the McpStrCpyN properties
+# (bounded/NUL/prefix/no-split), proving the device's own DBCS-aware bounded
+# copy holds on the shipped C89/i386 path. The deep 50k-trial theft host run
+# lives in tests/host/theft_strutil.c (built by build.sh host-pbt).
+add_executable(test_strutil tests/test_strutil.c src/strutil.c)
+target_link_libraries(test_strutil PRIVATE kernel32 user32)
+
 # --- Phase 4 test targets ---------------------------------------------------
 add_executable(test_feat tests/test_feat.c src/feat.c)
 target_link_libraries(test_feat PRIVATE kernel32)
@@ -200,6 +207,9 @@ target_link_libraries(test_catalog PRIVATE kernel32)
 add_executable(test_exec_ops
   tests/test_exec_ops.c src/exec_ops.c src/feat.c src/binfmt.c
   src/encoding.c src/charset_tables.c src/charset_tables_data.c src/strutil.c)
+# TEST_BUILD exposes ExecClearHandleInheritForTest (the static
+# ClearHandleInherit hook) so the NT 3.1 DuplicateHandle fallback is testable.
+target_compile_definitions(test_exec_ops PRIVATE TEST_BUILD)
 target_link_libraries(test_exec_ops PRIVATE kernel32)
 
 add_executable(test_pty_exec tests/test_pty_exec.c src/pty_exec.c src/feat.c)
@@ -277,7 +287,7 @@ add_custom_command(TARGET test_catalog POST_BUILD
 # CMAKE_CROSSCOMPILING_EMULATOR (set by the toolchain: empty for native
 # WSL-interop execution, "wine" otherwise) is applied to each test command.
 foreach(t test_json test_transport test_tcp test_serial
-          test_base64 test_file_ops test_pbt_base64
+          test_base64 test_file_ops test_pbt_base64 test_strutil
           test_feat test_argv test_binfmt test_catalog
           test_exec_ops test_pty_exec test_toolchain_probe
           test_mem_ops test_audit test_encoding test_pbt_encoding test_uart)

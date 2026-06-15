@@ -155,6 +155,16 @@ static void ClearHandleInherit(HANDLE *ph)
     }
 }
 
+#ifdef TEST_BUILD
+/* Test-only hook: invoke the static ClearHandleInherit so test_exec_ops can
+ * pin both the SetHandleInformation route and the NT 3.1 DuplicateHandle
+ * fallback (forced by NULLing g_features.pSetHandleInformation). */
+void ExecClearHandleInheritForTest(HANDLE *ph)
+{
+    ClearHandleInherit(ph);
+}
+#endif
+
 /*
  * PumpPipe - polling-path non-blocking drain (Q3). PeekNamedPipe to find
  * how many bytes are available; ReadFile up to the smaller of that and
